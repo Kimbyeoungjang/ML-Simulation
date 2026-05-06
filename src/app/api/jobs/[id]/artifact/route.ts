@@ -15,6 +15,10 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
   if (!target.startsWith(root + path.sep) && target !== root) {
     return NextResponse.json({ error: "invalid artifact path" }, { status: 400 });
   }
-  const data = await readFile(target, "utf8");
-  return new NextResponse(data, { headers: { "content-type": "text/plain; charset=utf-8" } });
+  const data = await readFile(target);
+  const headers: Record<string, string> = { "content-type": "text/plain; charset=utf-8" };
+  if (url.searchParams.get("download") === "1") {
+    headers["content-disposition"] = `attachment; filename="${encodeURIComponent(path.basename(artifactPath))}"`;
+  }
+  return new NextResponse(data, { headers });
 }

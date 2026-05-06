@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import type { ElementType } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { conv2dToGemm } from "@/lib/conv";
 import { parseShapesCsv } from "@/lib/csv";
@@ -24,6 +25,7 @@ import { totalCycleUncertainty } from "@/lib/uncertainty";
 import type {
   CalibrationProfile,
   Conv2DShape,
+  Dataflow,
   HardwareConfig,
   MatmulShape,
   Objective,
@@ -40,6 +42,7 @@ type Tab =
   | "calibration"
   | "iree"
   | "exports"
+  | "graphs"
   | "report"
   | "jobs"
   | "status";
@@ -64,6 +67,7 @@ const tabLabels: Record<Tab, string> = {
   calibration: "보정",
   iree: "IREE",
   exports: "내보내기",
+  graphs: "그래프",
   report: "보고서",
   jobs: "작업",
   status: "상태",
@@ -103,6 +107,7 @@ const tabTips: Record<Tab, string> = {
   calibration: "실측값 CSV로 적용한 보정 계수와 보정 보고서를 확인합니다.",
   iree: "생성된 MLIR과 IREE 실행 명령을 확인하고 다운로드합니다.",
   exports: "SCALE-Sim, LaTeX, SVG, manifest 등 산출물을 내려받습니다.",
+  graphs: "타일 후보별 cycle/utilization 차이를 그래프로 비교합니다.",
   report: "현재 실험 설정과 결과를 논문/보고서용 Markdown으로 확인합니다.",
   jobs: "백그라운드 작업의 상태, 로그, artifact 정보를 확인합니다.",
   status: "로컬 서버, 저장소, 워커, 외부 도구 상태를 JSON으로 확인합니다.",
@@ -143,8 +148,26 @@ function ActionButton({
   );
 }
 
+function MiniField({
+  label,
+  tip,
+  children,
+}: {
+  label: string;
+  tip?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="mini-field" title={tip}>
+      <span>{label}</span>
+      {children}
+    </div>
+  );
+}
+
 export default function Home() {
   const [hardware, setHardware] = useState<HardwareConfig>(defaultHardware);
+  const [dataflowModes, setDataflowModes] = useState<Dataflow[]>([defaultHardware.dataflow]);
   const [inputTab, setInputTab] = useState<InputTab>("presets");
   const [shapes, setShapes] = useState<MatmulShape[]>(defaultShapes);
   const [objective, setObjective] = useState<Objective>("balanced");
@@ -169,6 +192,16 @@ export default function Home() {
   const [csvText, setCsvText] = useState(
     "id,model,op_name,m,n,k,dtype_bytes\nbert_q,bert,query,384,768,768,2",
   );
+  const [manualShape, setManualShape] = useState<MatmulShape>({
+    id: "manual_matmul",
+    model: "custom",
+    opName: "matmul",
+    m: 128,
+    n: 128,
+    k: 128,
+    dtypeBytes: 2,
+    source: "manual",
+  });
   const [tab, setTab] = useState<Tab>("policy");
   const [serverMessage, setServerMessage] = useState("");
   const [jobsJson, setJobsJson] = useState("");
@@ -185,11 +218,25 @@ export default function Home() {
   const [liveAutoScroll, setLiveAutoScroll] = useState(true);
   const [autoAttachNewJob, setAutoAttachNewJob] = useState(false);
   const [customPresets, setCustomPresets] = useState<any[]>([]);
+  const [userHardwarePresets, setUserHardwarePresets] = useState<any[]>([]);
+  const [userWorkloadPresets, setUserWorkloadPresets] = useState<any[]>([]);
   const [customPresetName, setCustomPresetName] = useState("");
+  const [hardwarePresetName, setHardwarePresetName] = useState("");
+  const [workloadPresetName, setWorkloadPresetName] = useState("");
+  const [analysisJobId, setAnalysisJobId] = useState("");
+  const [selectedJobIds, setSelectedJobIds] = useState<string[]>([]);
   const liveEventSource = useRef<EventSource | null>(null);
   const [calibrationCsv, setCalibrationCsv] = useState(
     "model,op_name,array,dataflow,predicted_cycles,measured_cycles\nvit_s,qkv,128x128,WS,1000000,1120000",
   );
+  const [calibrationRow, setCalibrationRow] = useState({
+    model: "vit_s",
+    opName: "qkv",
+    array: "128x128",
+    dataflow: "WS",
+    predictedCycles: 1000000,
+    measuredCycles: 1120000,
+  });
   const [calibration, setCalibration] = useState<
     CalibrationProfile | undefined
   >(undefined);
@@ -222,7 +269,7 @@ export default function Home() {
     [tileM, tileN, tileK],
   );
   const request: SearchRequest = {
-    hardware,
+    hardware: { ...hardware, dataflow: dataflowModes[0] ?? hardware.dataflow },
     shapes,
     candidates,
     objective,
@@ -230,6 +277,17 @@ export default function Home() {
     calibration,
     scaleSim,
   };
+  const effectiveHardwarePresets = useMemo(
+    () => [...hardwarePresets, ...userHardwarePresets.map((p: any) => p.hardware).filter(Boolean)],
+    [userHardwarePresets],
+  );
+  const effectiveWorkloadPresets = useMemo(() => {
+    const map: Record<string, MatmulShape[]> = { ...workloadPresets };
+    for (const p of userWorkloadPresets) {
+      if (p?.name && Array.isArray(p?.shapes)) map[p.name] = p.shapes;
+    }
+    return map;
+  }, [userWorkloadPresets]);
   const result = useMemo(() => estimateAll(request), [JSON.stringify(request)]);
   const confidence = useMemo(
     () =>
@@ -255,17 +313,24 @@ export default function Home() {
   );
 
   useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem("tileforge.customPresets.v1");
-      if (raw) setCustomPresets(JSON.parse(raw));
-    } catch {}
+    void refreshPresets();
   }, []);
+
+  async function refreshPresets() {
+    try {
+      const r = await fetch("/api/presets", { cache: "no-store" });
+      if (!r.ok) throw new Error("프리셋 목록을 불러오지 못했습니다.");
+      const data = await r.json();
+      setCustomPresets(Array.isArray(data.presets) ? data.presets : []);
+      setUserHardwarePresets(Array.isArray(data.hardwarePresets) ? data.hardwarePresets : []);
+      setUserWorkloadPresets(Array.isArray(data.workloadPresets) ? data.workloadPresets : []);
+    } catch (error: any) {
+      setServerMessage(error?.message ?? String(error));
+    }
+  }
 
   function persistCustomPresets(next: any[]) {
     setCustomPresets(next);
-    try {
-      window.localStorage.setItem("tileforge.customPresets.v1", JSON.stringify(next));
-    } catch {}
   }
 
   useEffect(() => {
@@ -377,6 +442,7 @@ export default function Home() {
     if (!r.ok) return setServerMessage("저장된 프로젝트가 없습니다.");
     const p = await r.json();
     setHardware(p.hardware);
+    setDataflowModes([p.hardware?.dataflow ?? "WS"] as Dataflow[]);
     setShapes(p.shapes);
     setObjective(p.objective);
     if (p.scaleSim) setScaleSim((cur) => ({ ...cur, ...p.scaleSim }));
@@ -386,15 +452,23 @@ export default function Home() {
     setServerMessage(".tileforge/project.json을 불러왔습니다.");
   }
   async function createJob(kind: string) {
-    const r = await fetch("/api/jobs", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ kind, name: `${hardware.name}_${kind}`, request }),
-    });
-    const j = await r.json();
-    setServerMessage(`${kind} 작업 생성 완료: ${j.name ?? j.id} (${j.status})`);
+    const modes = dataflowModes.length ? dataflowModes : [hardware.dataflow];
+    const created: any[] = [];
+    for (const df of modes) {
+      const dfHardware = { ...hardware, dataflow: df };
+      const dfRequest = { ...request, hardware: dfHardware };
+      const suffix = modes.length > 1 ? `_${df}` : "";
+      const r = await fetch("/api/jobs", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ kind, name: `${dfHardware.name}_${kind}${suffix}`, request: dfRequest }),
+      });
+      created.push(await r.json());
+    }
+    const names = created.map((j) => j.name ?? j.id).filter(Boolean).join(", ");
+    setServerMessage(`${kind} 작업 ${created.length}개 생성 완료: ${names}`);
     await refreshJobs({ switchTab: true, updateReport: true });
-    if (j?.id && autoAttachNewJob) startLiveJob(j.id);
+    if (created[0]?.id && autoAttachNewJob) startLiveJob(created[0].id);
   }
   async function fetchJobReport(id: string) {
     if (!id) return;
@@ -407,6 +481,7 @@ export default function Home() {
       if (text.trim()) {
         setServerReportMarkdown(text);
         setServerReportJobId(id);
+        setAnalysisJobId(id);
       }
     } catch {
       // report.md may not exist until the job reaches the report stage.
@@ -448,7 +523,62 @@ export default function Home() {
       setServerReportMarkdown("");
       setServerReportJobId("");
     }
+    if (analysisJobId === id) setAnalysisJobId("");
+    setSelectedJobIds((prev) => prev.filter((x) => x !== id));
     if (liveJobId === id) stopLiveJob();
+    await refreshJobs({ switchTab: false, updateReport: true });
+    await refreshStatus(false);
+  }
+
+
+
+  async function deleteJobsByIds(ids: string[]) {
+    const unique = Array.from(new Set(ids.filter(Boolean)));
+    if (unique.length === 0) return;
+    if (!window.confirm(`선택한 작업 ${unique.length}개와 관련 artifact를 삭제할까요?`)) return;
+    let ok = 0;
+    for (const id of unique) {
+      const r = await fetch(`/api/jobs/${id}`, { method: "DELETE" });
+      if (r.ok) ok += 1;
+    }
+    setSelectedJobIds((prev) => prev.filter((id) => !unique.includes(id)));
+    if (unique.includes(serverReportJobId)) {
+      setServerReportMarkdown("");
+      setServerReportJobId("");
+    }
+    if (unique.includes(analysisJobId)) setAnalysisJobId("");
+    if (unique.includes(liveJobId)) stopLiveJob();
+    setServerMessage(`선택 작업 삭제 완료: ${ok}/${unique.length}`);
+    await refreshJobs({ switchTab: false, updateReport: true });
+    await refreshStatus(false);
+  }
+
+  async function cancelJobById(id: string) {
+    if (!id) return;
+    const r = await fetch(`/api/jobs/${id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "cancel" }),
+    });
+    const j = await r.json().catch(() => ({}));
+    setServerMessage(`중지 요청: ${jobDisplayName(j) || id} (${j.status ?? "요청됨"})`);
+    await refreshJobs({ switchTab: false, updateReport: true });
+  }
+
+  async function cancelJobsByIds(ids: string[]) {
+    const unique = Array.from(new Set(ids.filter(Boolean)));
+    if (unique.length === 0) return;
+    if (!window.confirm(`선택한 작업 ${unique.length}개를 중지할까요? 실행 중인 외부 프로세스는 다음 체크포인트에서 취소됩니다.`)) return;
+    let ok = 0;
+    for (const id of unique) {
+      const r = await fetch(`/api/jobs/${id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "cancel" }),
+      });
+      if (r.ok) ok += 1;
+    }
+    setServerMessage(`선택 작업 중지 요청 완료: ${ok}/${unique.length}`);
     await refreshJobs({ switchTab: false, updateReport: true });
     await refreshStatus(false);
   }
@@ -557,15 +687,15 @@ export default function Home() {
     setServerMessage("보정값을 해제했습니다.");
   }
   function applyHardwarePreset(name: string) {
-    const p = hardwarePresets.find((p) => p.name === name);
-    if (p) setHardware(p);
+    const p = effectiveHardwarePresets.find((p) => p.name === name);
+    if (p) { setHardware(p); setDataflowModes([p.dataflow]); }
   }
   function applyWorkloadPreset(name: string) {
-    const p = workloadPresets[name];
+    const p = effectiveWorkloadPresets[name];
     if (p) setShapes(p);
   }
 
-  function saveCustomPreset() {
+  async function saveCustomPreset() {
     const name = customPresetName.trim() || `${hardware.name}_${new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-")}`;
     const nextPreset = {
       name,
@@ -577,17 +707,32 @@ export default function Home() {
       tileN,
       tileK,
       scaleSim,
+      dataflowModes,
     };
-    const next = [nextPreset, ...customPresets.filter((p) => p.name !== name)].slice(0, 40);
-    persistCustomPresets(next);
-    setCustomPresetName(name);
-    setServerMessage(`사용자 프리셋 저장 완료: ${name}`);
+    const defaultNameConflict = customPresets.some((p: any) => p.source === "default" && p.name === name);
+    if (defaultNameConflict) {
+      setServerMessage(`사용자 프리셋 이름 '${name}'은 기본 프리셋과 겹칩니다. 다른 이름을 사용하세요.`);
+      return;
+    }
+    try {
+      const r = await fetch("/api/presets", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(nextPreset),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      await refreshPresets();
+      setCustomPresetName(name);
+      setServerMessage(`사용자 프리셋 저장 완료: ${name}`);
+    } catch (error: any) {
+      setServerMessage(`사용자 프리셋 저장 실패: ${error?.message ?? error}`);
+    }
   }
 
   function applyCustomPreset(name: string) {
     const p = customPresets.find((p) => p.name === name);
     if (!p) return;
-    if (p.hardware) setHardware(p.hardware);
+    if (p.hardware) { setHardware(p.hardware); setDataflowModes((Array.isArray(p.dataflowModes) && p.dataflowModes.length ? p.dataflowModes : [p.hardware.dataflow ?? "WS"]) as Dataflow[]); }
     if (p.shapes) setShapes(p.shapes);
     if (p.objective) setObjective(p.objective);
     if (p.tileM) setTileM(p.tileM);
@@ -598,13 +743,142 @@ export default function Home() {
     setServerMessage(`사용자 프리셋 적용: ${name}`);
   }
 
-  function deleteCustomPreset(name: string) {
+  async function deleteCustomPreset(name: string) {
     if (!name) return;
     if (!window.confirm(`사용자 프리셋 '${name}'을 삭제할까요?`)) return;
-    const next = customPresets.filter((p) => p.name !== name);
-    persistCustomPresets(next);
-    if (customPresetName === name) setCustomPresetName("");
-    setServerMessage(`사용자 프리셋 삭제: ${name}`);
+    const preset = customPresets.find((p) => p.name === name);
+    if (preset?.source === "default") {
+      setServerMessage("기본 프리셋은 UI에서 삭제하지 않습니다. presets/default 폴더의 JSON 파일을 직접 수정하거나 삭제하세요.");
+      return;
+    }
+    try {
+      const r = await fetch(`/api/presets?name=${encodeURIComponent(name)}`, { method: "DELETE" });
+      if (!r.ok) throw new Error(await r.text());
+      await refreshPresets();
+      if (customPresetName === name) setCustomPresetName("");
+      setServerMessage(`사용자 프리셋 삭제: ${name}`);
+    } catch (error: any) {
+      setServerMessage(`사용자 프리셋 삭제 실패: ${error?.message ?? error}`);
+    }
+  }
+
+  async function saveHardwarePreset() {
+    const name = hardwarePresetName.trim() || hardware.name;
+    try {
+      const r = await fetch("/api/presets", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ kind: "hardware", name, hardware: { ...hardware, name } }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      await refreshPresets();
+      setHardwarePresetName(name);
+      setServerMessage(`하드웨어 프리셋 저장 완료: ${name}`);
+    } catch (error: any) {
+      setServerMessage(`하드웨어 프리셋 저장 실패: ${error?.message ?? error}`);
+    }
+  }
+
+  async function deleteHardwarePreset(name: string) {
+    if (!name) return;
+    if (!window.confirm(`하드웨어 프리셋 '${name}'을 삭제할까요?`)) return;
+    const r = await fetch(`/api/presets?kind=hardware&name=${encodeURIComponent(name)}`, { method: "DELETE" });
+    if (!r.ok) return setServerMessage(`하드웨어 프리셋 삭제 실패: ${await r.text()}`);
+    await refreshPresets();
+    if (hardwarePresetName === name) setHardwarePresetName("");
+    setServerMessage(`하드웨어 프리셋 삭제: ${name}`);
+  }
+
+  async function saveWorkloadPreset() {
+    const name = workloadPresetName.trim() || `workload_${new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-")}`;
+    try {
+      const r = await fetch("/api/presets", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ kind: "workload", name, shapes }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      await refreshPresets();
+      setWorkloadPresetName(name);
+      setServerMessage(`워크로드 프리셋 저장 완료: ${name}`);
+    } catch (error: any) {
+      setServerMessage(`워크로드 프리셋 저장 실패: ${error?.message ?? error}`);
+    }
+  }
+
+  async function deleteWorkloadPreset(name: string) {
+    if (!name) return;
+    if (!window.confirm(`워크로드 프리셋 '${name}'을 삭제할까요?`)) return;
+    const r = await fetch(`/api/presets?kind=workload&name=${encodeURIComponent(name)}`, { method: "DELETE" });
+    if (!r.ok) return setServerMessage(`워크로드 프리셋 삭제 실패: ${await r.text()}`);
+    await refreshPresets();
+    if (workloadPresetName === name) setWorkloadPresetName("");
+    setServerMessage(`워크로드 프리셋 삭제: ${name}`);
+  }
+
+
+  function toggleDataflowMode(mode: Dataflow) {
+    setDataflowModes((prev) => {
+      const next = prev.includes(mode) ? prev.filter((x) => x !== mode) : [...prev, mode];
+      const normalized = next.length ? next : [mode];
+      updateHw({ dataflow: normalized[0] });
+      return normalized;
+    });
+  }
+
+  function addManualShape() {
+    const id = manualShape.id.trim() || `${manualShape.model}_${manualShape.opName}_${Date.now()}`;
+    setShapes((prev) => [...prev, { ...manualShape, id, source: "manual" }]);
+    setServerMessage(`수동 GEMM shape 추가: ${manualShape.model}.${manualShape.opName}`);
+  }
+
+  function appendCalibrationRow() {
+    const line = `${calibrationRow.model},${calibrationRow.opName},${calibrationRow.array},${calibrationRow.dataflow},${calibrationRow.predictedCycles},${calibrationRow.measuredCycles}`;
+    const header = "model,op_name,array,dataflow,predicted_cycles,measured_cycles";
+    setCalibrationCsv((cur) => {
+      const trimmed = cur.trim();
+      return trimmed ? `${trimmed}\n${line}` : `${header}\n${line}`;
+    });
+  }
+
+  async function appendCalibrationFromJob() {
+    const jobId = analysisJobId || latestCompletedJobId(jobsPayload);
+    if (!jobId) { setServerMessage("보정에 사용할 완료 작업을 먼저 선택하세요."); return; }
+    try {
+      const [resultRes, scaleRes] = await Promise.all([
+        fetch(`/api/jobs/${jobId}/artifact?path=${encodeURIComponent("result.json")}`, { cache: "no-store" }),
+        fetch(`/api/jobs/${jobId}/artifact?path=${encodeURIComponent("scalesim_summary.json")}`, { cache: "no-store" }),
+      ]);
+      if (!resultRes.ok || !scaleRes.ok) throw new Error("result.json 또는 scalesim_summary.json을 읽지 못했습니다.");
+      const resultJson = JSON.parse(await resultRes.text());
+      const scaleJson = JSON.parse(await scaleRes.text());
+      const response = resultJson?.payload?.response ?? resultJson?.response ?? resultJson;
+      const rows = Array.isArray(response?.results) ? response.results : [];
+      const layers = Array.isArray(scaleJson?.layers) ? scaleJson.layers : [];
+      const hw = response?.request?.hardware ?? hardware;
+      const array = `${hw.arrayRows ?? hardware.arrayRows}x${hw.arrayCols ?? hardware.arrayCols}`;
+      const dataflow = hw.dataflow ?? hardware.dataflow ?? "WS";
+      const header = "model,op_name,array,dataflow,predicted_cycles,measured_cycles";
+      const added: string[] = [];
+      for (let i = 0; i < Math.min(rows.length, layers.length); i++) {
+        const shape = rows[i]?.shape;
+        const predicted = Number(rows[i]?.best?.cycles ?? rows[i]?.cycles ?? 0);
+        const measured = Number(layers[i]?.cycles ?? 0);
+        if (!shape || predicted <= 0 || measured <= 0) continue;
+        added.push(`${shape.model},${shape.opName},${array},${dataflow},${Math.round(predicted)},${Math.round(measured)}`);
+      }
+      if (added.length === 0 && Number(response?.summary?.totalCycles) > 0 && Number(scaleJson?.totalCycles) > 0) {
+        added.push(`${hw.name ?? "job"},total,${array},${dataflow},${Math.round(response.summary.totalCycles)},${Math.round(scaleJson.totalCycles)}`);
+      }
+      if (added.length === 0) throw new Error("추가할 predicted/measured cycle pair가 없습니다.");
+      setCalibrationCsv((cur) => {
+        const trimmed = cur.trim();
+        return trimmed ? `${trimmed}\n${added.join("\n")}` : `${header}\n${added.join("\n")}`;
+      });
+      setServerMessage(`선택 작업에서 보정 sample ${added.length}개를 추가했습니다.`);
+    } catch (error: any) {
+      setServerMessage(`작업 결과 기반 보정 sample 추가 실패: ${error?.message ?? error}`);
+    }
   }
 
   return (
@@ -679,7 +953,7 @@ export default function Home() {
                   defaultValue=""
                 >
                   <option value="">직접 설정/현재값</option>
-                  {hardwarePresets.map((p) => (
+                  {effectiveHardwarePresets.map((p) => (
                     <option key={p.name}>{p.name}</option>
                   ))}
                 </select>
@@ -692,11 +966,11 @@ export default function Home() {
                   defaultValue=""
                 >
                   <option value="">직접 설정/현재값</option>
-                  {Object.keys(workloadPresets).map((k) => (
+                  {Object.keys(effectiveWorkloadPresets).map((k) => (
                     <option key={k}>{k}</option>
                   ))}
                 </select>
-                <h3 title="현재 수동 입력값을 브라우저 localStorage에 사용자 프리셋으로 저장합니다.">
+                <h3 title="현재 수동 입력값을 레포지토리 presets/user 폴더에 사용자 프리셋으로 저장합니다.">
                   사용자 프리셋
                 </h3>
                 <FieldLabel tip="현재 하드웨어, workload, 타일링, SCALE-Sim 설정을 저장할 이름입니다.">
@@ -743,11 +1017,25 @@ export default function Home() {
                     >
                       선택 프리셋 삭제
                     </ActionButton>
+                    <div className="preset-list" title="저장된 사용자 프리셋을 바로 적용하거나 삭제합니다.">
+                      {customPresets.map((p) => (
+                        <div className="preset-item" key={p.name}>
+                          <div>
+                            <b>{p.name}</b>
+                            <span className="small">{p.source === "default" ? "기본 프리셋" : "사용자 프리셋"} · {p.savedAt ? new Date(p.savedAt).toLocaleString() : "저장 시각 없음"}</span>
+                          </div>
+                          <div className="preset-actions">
+                            <button className="secondary" onClick={() => applyCustomPreset(p.name)}>적용</button>
+                            <button className="secondary danger-button" onClick={() => deleteCustomPreset(p.name)} disabled={p.source === "default"} title={p.source === "default" ? "기본 프리셋은 presets/default 폴더에서 관리합니다." : "프리셋 삭제"}>삭제</button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                   </>
                 )}
                 <p className="small">
                   프리셋을 적용한 뒤 하드웨어/타일링/SCALE-Sim/워크로드 탭에서 세부 값을
-                  조정하세요. 사용자 프리셋은 이 브라우저에 저장됩니다.
+                  조정하세요. 사용자 프리셋은 레포지토리의 presets/user 폴더에 저장됩니다.
                 </p>
               </>
             )}
@@ -765,6 +1053,21 @@ export default function Home() {
                   value={hardware.name}
                   onChange={(e) => updateHw({ name: e.target.value })}
                 />
+                <div className="preset-manager-inline" title="현재 하드웨어 입력값만 별도 프리셋으로 저장합니다. 저장 후 프리셋 탭의 하드웨어 프리셋 목록에 바로 나타납니다.">
+                  <MiniField label="하드웨어 프리셋 이름" tip="현재 하드웨어만 저장할 이름입니다.">
+                    <input value={hardwarePresetName} onChange={(e) => setHardwarePresetName(e.target.value)} placeholder={hardware.name} />
+                  </MiniField>
+                  <button onClick={saveHardwarePreset}>하드웨어 저장</button>
+                  {userHardwarePresets.length > 0 && (
+                    <MiniField label="사용자 하드웨어" tip="레포지토리 presets/hardware 폴더에 저장된 하드웨어 프리셋입니다.">
+                      <select value={hardwarePresetName} onChange={(e) => setHardwarePresetName(e.target.value)}>
+                        <option value="">선택 안 함</option>
+                        {userHardwarePresets.map((p: any) => <option key={p.name} value={p.name}>{p.name}</option>)}
+                      </select>
+                    </MiniField>
+                  )}
+                  <button className="secondary danger-button" onClick={() => deleteHardwarePreset(hardwarePresetName)} disabled={!hardwarePresetName}>삭제</button>
+                </div>
                 <div className="row">
                   <div>
                     <FieldLabel tip="systolic array의 세로 방향 PE 개수입니다.">
@@ -817,23 +1120,26 @@ export default function Home() {
                 </div>
                 <div className="row">
                   <div>
-                    <FieldLabel tip="WS는 weight-stationary, OS는 output-stationary, IS는 input-stationary 데이터플로우입니다.">
-                      데이터플로우
+                    <FieldLabel tip="데이터가 systolic array 안에서 어느 방향으로 오래 머무는지 정의합니다. WS는 weight-stationary, OS는 output-stationary, IS는 input-stationary입니다. 여러 개를 선택하면 full-pipeline 작업을 데이터플로우별로 큐에 나누어 넣어 비교합니다. 혼합 비교는 동일 workload를 여러 dataflow 조건으로 실행하는 방식입니다.">
+                      데이터플로우 비교
                     </FieldLabel>
-                    <select
-                      title="데이터 이동 방식입니다. SCALE-Sim/IREE 비교 시 중요한 조건입니다."
-                      value={hardware.dataflow}
-                      onChange={(e) =>
-                        updateHw({ dataflow: e.target.value as any })
-                      }
-                    >
-                      <option>WS</option>
-                      <option>OS</option>
-                      <option>IS</option>
-                    </select>
+                    <div className="dataflow-grid" title="여러 데이터플로우를 선택하면 선택한 조건별로 job을 큐에 넣어 비교합니다.">
+                      {([
+                        ["WS", "Weight stationary", "weight/filter를 PE 근처에 오래 두어 재사용합니다. Conv/GEMM weight 재사용이 큰 경우 자주 씁니다."],
+                        ["OS", "Output stationary", "partial sum/output을 고정해 누산 write-back을 줄입니다. output 재사용과 누산 비용을 볼 때 유용합니다."],
+                        ["IS", "Input stationary", "input activation을 오래 유지해 입력 재사용을 강조합니다. activation reuse가 큰 모델을 비교할 때 사용합니다."],
+                      ] as [Dataflow, string, string][]).map(([mode, title, desc]) => (
+                        <label className={`dataflow-card dataflow-card-compact ${dataflowModes.includes(mode) ? "selected" : ""}`} key={mode} title={`${mode} (${title}): ${desc}`}>
+                          <input type="checkbox" checked={dataflowModes.includes(mode)} onChange={() => toggleDataflowMode(mode)} />
+                          <span className="dataflow-code">{mode}</span>
+                          <span className="dataflow-title">{title}</span>
+                        </label>
+                      ))}
+                    </div>
+                    <p className="small">대표 표시값: {hardware.dataflow}. 여러 개 선택 시 동일 입력을 dataflow별 작업으로 나누어 큐에 추가합니다.</p>
                   </div>
                   <div>
-                    <FieldLabel tip="연산 데이터 하나가 차지하는 byte 수입니다. fp16/int16은 보통 2입니다.">
+                    <FieldLabel tip="연산 데이터 하나가 차지하는 byte 수입니다. fp16/bfloat16/int16은 보통 2, fp32는 4, int8은 1입니다. 이 값은 SRAM 사용량과 메모리 traffic 추정에 직접 반영됩니다.">
                       원소당 byte
                     </FieldLabel>
                     <input
@@ -923,6 +1229,10 @@ export default function Home() {
                 <h3 title="탐색할 타일 크기 후보를 쉼표로 입력합니다.">
                   타일 후보
                 </h3>
+                <div className="info-box">
+                  <b>타일링은 무엇을 정하나요?</b>
+                  <p className="small">GEMM C[M×N] = A[M×K] × B[K×N]을 tileM×tileN×tileK 블록으로 나누어 array에 공급합니다. tileM/tileN은 공간 PE 활용률과 경계 padding에, tileK는 reduction 재사용과 SRAM working set에 영향을 줍니다.</p>
+                </div>
                 <FieldLabel tip="GEMM M축 타일 후보입니다. 쉼표로 여러 값을 입력합니다.">
                   tileM
                 </FieldLabel>
@@ -961,6 +1271,17 @@ export default function Home() {
                   <option value="hardware-design">하드웨어 설계</option>
                   <option value="pareto">Pareto 후보</option>
                 </select>
+                <div className="objective-help">
+                  <b>목표별 가중치 해석</b>
+                  <ul>
+                    <li><b>균형</b>: cycle 65%, PE 미사용 penalty, padding, SRAM 초과 penalty를 함께 봅니다.</li>
+                    <li><b>사이클 최소</b>: cycle을 가장 강하게 보며 SRAM 초과만 큰 penalty로 둡니다.</li>
+                    <li><b>활용률 우선</b>: PE 사용률을 우선하고 padding/SRAM을 보조 penalty로 둡니다.</li>
+                    <li><b>하드웨어 설계</b>: cycle, utilization, padding, 경계 타일 penalty를 비슷하게 보며 array shape 평가에 유리합니다.</li>
+                    <li><b>Pareto 후보</b>: cycle, utilization, padding, SRAM이 서로 지배하지 않는 후보를 넓게 남깁니다.</li>
+                  </ul>
+                  <p className="small">내부 score는 낮을수록 좋습니다. 실제 보고서에는 최종 선택 후보뿐 아니라 그래프 탭에서 후보별 cycle/time/SRAM/DRAM 차이를 같이 확인할 수 있습니다.</p>
+                </div>
               </>
             )}
 
@@ -969,6 +1290,10 @@ export default function Home() {
                 <h3 title="SCALE-Sim cfg/layout 생성에 직접 반영되는 세부 파라미터입니다.">
                   SCALE-Sim 세부 설정
                 </h3>
+                <div className="info-box">
+                  <b>SCALE-Sim 메모리/레이아웃 설정</b>
+                  <p className="small">DRAM/Interface Bandwidth는 외부 메모리 대역폭, Ifmap/Filter/Ofmap SRAM은 operand별 온칩 버퍼 용량입니다. custom layout은 데이터 배치 순서를 바꾸는 고급 옵션이며, 먼저 기본 layout으로 통과 여부를 확인한 뒤 켜는 것을 권장합니다.</p>
+                </div>
                 <FieldLabel tip="SCALE-Sim 결과 디렉터리 아래 run_name으로 사용됩니다.">
                   run_name
                 </FieldLabel>
@@ -979,9 +1304,9 @@ export default function Home() {
                 <div className="row">
                   <div>
                     <FieldLabel tip="SCALE-Sim cfg의 Bandwidth 값입니다. DRAM/외부 인터페이스 대역폭 모델에 사용됩니다.">
-                      Bandwidth
+                      DRAM / Interface Bandwidth
                     </FieldLabel>
-                    <input type="number" value={scaleSim.bandwidth ?? 128} onChange={(e) => updateScaleSim({ bandwidth: +e.target.value })} />
+                    <input type="number" value={(scaleSim as any).dramBandwidth ?? scaleSim.bandwidth ?? 128} onChange={(e) => updateScaleSim({ bandwidth: +e.target.value, ...( { dramBandwidth: +e.target.value } as any ) })} />
                   </div>
                   <div>
                     <FieldLabel tip="SCALE-Sim cfg의 InterfaceBandwidth 값입니다. 보통 USER를 사용합니다.">
@@ -1018,27 +1343,29 @@ export default function Home() {
                     <input type="number" value={scaleSim.ofmapOffset ?? 20000000} onChange={(e) => updateScaleSim({ ofmapOffset: +e.target.value })} />
                   </div>
                 </div>
-                <label className="check" title="layout.csv를 SCALE-Sim 명령에 -l로 전달할지 결정합니다. 대부분의 SCALE-Sim v2/v3 fork에서 안전합니다.">
-                  <input type="checkbox" checked={scaleSim.useLayout !== false} onChange={(e) => updateScaleSim({ useLayout: e.target.checked })} />
-                  layout.csv 사용 (-l)
-                </label>
-                <label className="check" title="SCALE-Sim fork마다 cfg [layout] 섹션 지원 여부가 다릅니다. 기본값은 꺼짐이며, 켤 때만 bank/custom layout cfg 키를 내보냅니다.">
-                  <input type="checkbox" checked={Boolean(scaleSim.emitLayoutSection)} onChange={(e) => updateScaleSim({ emitLayoutSection: e.target.checked })} />
-                  [layout] cfg 고급값 사용
-                </label>
+                <div className="scale-checks">
+                  <label className="check" title="layout.csv를 SCALE-Sim 명령에 -l로 전달할지 결정합니다. custom layout을 쓰려면 켜두는 것이 좋습니다.">
+                    <input type="checkbox" checked={scaleSim.useLayout !== false} onChange={(e) => updateScaleSim({ useLayout: e.target.checked })} />
+                    <span>layout.csv 사용 (-l)</span>
+                  </label>
+                  <label className="check" title="현재 SCALE-Sim은 cfg [layout] 섹션을 항상 요구합니다. 이 옵션은 custom layout/bank 값을 UI에서 편집할지 결정합니다.">
+                    <input type="checkbox" checked={Boolean(scaleSim.emitLayoutSection)} onChange={(e) => updateScaleSim({ emitLayoutSection: e.target.checked })} />
+                    <span>custom layout/bank 값 편집</span>
+                  </label>
+                </div>
                 {!scaleSim.emitLayoutSection && (
-                  <p className="small warn-text">기본값은 호환성 우선입니다. layout.csv는 -l로 전달하지만, cfg 내부 [layout] 섹션은 SCALE-Sim fork 호환성 문제를 피하기 위해 내보내지 않습니다.</p>
+                  <p className="small warn-text">기본값은 안전한 일반 layout입니다. cfg의 필수 [layout] 섹션은 항상 생성되며, custom layout은 꺼진 상태로 실행됩니다.</p>
                 )}
                 {scaleSim.emitLayoutSection && (
                   <>
-                    <div className="row">
-                      <label className="check" title="IfmapCustomLayout 값을 True/False로 설정합니다.">
+                    <div className="scale-checks advanced-layout-checks">
+                      <label className="check" title="IfmapCustomLayout 값을 True/False로 설정합니다. 켜면 layout.csv의 ifmap order를 사용합니다.">
                         <input type="checkbox" checked={Boolean(scaleSim.ifmapCustomLayout)} onChange={(e) => updateScaleSim({ ifmapCustomLayout: e.target.checked })} />
-                        Ifmap custom layout
+                        <span><b>Ifmap custom layout</b><small>입력 activation 배치 순서 사용</small></span>
                       </label>
-                      <label className="check" title="FilterCustomLayout 값을 True/False로 설정합니다.">
+                      <label className="check" title="FilterCustomLayout 값을 True/False로 설정합니다. 켜면 layout.csv의 filter order를 사용합니다.">
                         <input type="checkbox" checked={Boolean(scaleSim.filterCustomLayout)} onChange={(e) => updateScaleSim({ filterCustomLayout: e.target.checked })} />
-                        Filter custom layout
+                        <span><b>Filter custom layout</b><small>weight/filter 배치 순서 사용</small></span>
                       </label>
                     </div>
                     <div className="row3">
@@ -1053,39 +1380,57 @@ export default function Home() {
                     </div>
                   </>
                 )}
-                <p className="small">SRAM/대역폭과 필수 [layout] 섹션은 scalesim.cfg에 항상 반영됩니다. layout.csv 전달 여부와 custom layout/bank 값은 별도로 제어합니다.</p>
+                <p className="small">SRAM/대역폭과 필수 [layout] 섹션은 scalesim.cfg에 항상 반영됩니다. custom layout을 켤 때는 중복 축이 생기지 않는 안전한 layout.csv를 자동 생성합니다.</p>
               </>
             )}
 
             {inputTab === "workload" && (
               <>
-                <h3 title="CSV 또는 ONNX/JSON 파일에서 연산 shape를 가져옵니다.">
-                  CSV / ONNX 불러오기
+                <h3 title="분석할 GEMM 연산을 추가합니다. LLM/ViT/Conv 프리셋을 적용하거나 직접 M/N/K를 입력할 수 있습니다.">
+                  워크로드 구성
                 </h3>
+                <div className="preset-manager-inline" title="현재 workload shape 목록만 별도 프리셋으로 저장합니다. 저장 후 프리셋 탭의 워크로드 프리셋에서 바로 선택할 수 있습니다.">
+                  <MiniField label="워크로드 프리셋 이름" tip="현재 shape 목록을 저장할 이름입니다.">
+                    <input value={workloadPresetName} onChange={(e) => setWorkloadPresetName(e.target.value)} placeholder="예: my_llm_block" />
+                  </MiniField>
+                  <button onClick={saveWorkloadPreset}>워크로드 저장</button>
+                  {userWorkloadPresets.length > 0 && (
+                    <MiniField label="사용자 워크로드" tip="레포지토리 presets/workload 폴더에 저장된 워크로드 프리셋입니다.">
+                      <select value={workloadPresetName} onChange={(e) => setWorkloadPresetName(e.target.value)}>
+                        <option value="">선택 안 함</option>
+                        {userWorkloadPresets.map((p: any) => <option key={p.name} value={p.name}>{p.name}</option>)}
+                      </select>
+                    </MiniField>
+                  )}
+                  <button className="secondary" onClick={() => applyWorkloadPreset(workloadPresetName)} disabled={!workloadPresetName}>적용</button>
+                  <button className="secondary danger-button" onClick={() => deleteWorkloadPreset(workloadPresetName)} disabled={!workloadPresetName}>삭제</button>
+                </div>
+                <div className="info-box">
+                  <b>GEMM shape 의미</b>
+                  <p className="small">TileForge는 각 연산을 C[M×N] = A[M×K] × B[K×N]으로 봅니다. M은 token/출력 위치 수, N은 출력 채널/hidden 차원, K는 reduction 차원입니다. LLM projection은 보통 M=token 수, N=출력 hidden, K=입력 hidden으로 입력하면 됩니다.</p>
+                </div>
+                <h4>수동 GEMM 추가</h4>
+                <div className="row3">
+                  <MiniField label="id" tip="shape id입니다. export와 로그에서 구분하기 쉽도록 고유 이름을 권장합니다."><input value={manualShape.id} onChange={(e) => setManualShape({ ...manualShape, id: e.target.value })} /></MiniField>
+                  <MiniField label="model" tip="모델 이름입니다. 예: llama7b, vit_s, custom"><input value={manualShape.model} onChange={(e) => setManualShape({ ...manualShape, model: e.target.value })} /></MiniField>
+                  <MiniField label="opName" tip="연산 이름입니다. 예: qkv_projection, ffn_expand"><input value={manualShape.opName} onChange={(e) => setManualShape({ ...manualShape, opName: e.target.value })} /></MiniField>
+                </div>
+                <div className="row4">
+                  <MiniField label="M" tip="M: batch×sequence length 또는 im2col 출력 위치 수입니다."><input type="number" value={manualShape.m} onChange={(e) => setManualShape({ ...manualShape, m: +e.target.value })} /></MiniField>
+                  <MiniField label="N" tip="N: 출력 feature/hidden/channel 차원입니다."><input type="number" value={manualShape.n} onChange={(e) => setManualShape({ ...manualShape, n: +e.target.value })} /></MiniField>
+                  <MiniField label="K" tip="K: reduction/input feature 차원입니다."><input type="number" value={manualShape.k} onChange={(e) => setManualShape({ ...manualShape, k: +e.target.value })} /></MiniField>
+                  <MiniField label="dtypeBytes" tip="fp16/bf16=2, fp32=4, int8=1."><input type="number" value={manualShape.dtypeBytes} onChange={(e) => setManualShape({ ...manualShape, dtypeBytes: +e.target.value })} /></MiniField>
+                </div>
+                <ActionButton tip="위 M/N/K 값을 현재 workload 목록 뒤에 추가합니다." onClick={addManualShape}>수동 GEMM 추가</ActionButton>
+                <h4>CSV / ONNX 불러오기</h4>
                 <textarea
                   title="GEMM shape CSV를 입력합니다. 열: id, model, op_name, m, n, k, dtype_bytes"
                   value={csvText}
                   onChange={(e) => setCsvText(e.target.value)}
                 />
-                <ActionButton
-                  tip="위 CSV 내용을 파싱하여 현재 workload shape 목록으로 교체합니다."
-                  onClick={importCsv}
-                >
-                  CSV 불러오기
-                </ActionButton>
-                <ActionButton
-                  className="secondary"
-                  tip="기본 예제 shape 목록으로 되돌립니다."
-                  onClick={() => setShapes(defaultShapes)}
-                >
-                  예제 초기화
-                </ActionButton>
-                <input
-                  title="ONNX 또는 JSON 파일에서 matmul/conv 계열 shape를 추출합니다."
-                  type="file"
-                  accept=".onnx,.json"
-                  onChange={(e) => importOnnxFile(e.target.files?.[0] ?? null)}
-                />
+                <ActionButton tip="위 CSV 내용을 파싱하여 현재 workload shape 목록으로 교체합니다." onClick={importCsv}>CSV 불러오기</ActionButton>
+                <ActionButton className="secondary" tip="기본 예제 shape 목록으로 되돌립니다." onClick={() => setShapes(defaultShapes)}>예제 초기화</ActionButton>
+                <input title="ONNX 또는 JSON 파일에서 matmul/conv 계열 shape를 추출합니다." type="file" accept=".onnx,.json" onChange={(e) => importOnnxFile(e.target.files?.[0] ?? null)} />
                 <p className="small">현재 workload shape: {shapes.length}개</p>
               </>
             )}
@@ -1095,92 +1440,31 @@ export default function Home() {
                 <h3 title="Conv2D 파라미터를 GEMM 형태로 변환해 workload에 추가합니다.">
                   Conv → GEMM
                 </h3>
-                <div className="row3">
-                  <input
-                    title="모델 이름입니다. 예: resnet, cnn"
-                    value={conv.model}
-                    onChange={(e) =>
-                      setConv({ ...conv, model: e.target.value })
-                    }
-                  />
-                  <input
-                    title="연산 이름입니다. 예: conv2d_0"
-                    value={conv.opName}
-                    onChange={(e) =>
-                      setConv({ ...conv, opName: e.target.value })
-                    }
-                  />
-                  <input
-                    title="출력 채널 수입니다."
-                    type="number"
-                    value={conv.outputC}
-                    onChange={(e) =>
-                      setConv({ ...conv, outputC: +e.target.value })
-                    }
-                  />
+                <div className="info-box">
+                  <b>Conv가 GEMM으로 바뀌는 방식</b>
+                  <p className="small">im2col 기준으로 M = batch × outputH × outputW, N = outputC, K = inputC × kernelH × kernelW입니다. outputH/outputW는 input, padding, stride, dilation으로 계산됩니다.</p>
                 </div>
                 <div className="row3">
-                  <input
-                    title="입력 feature map 높이입니다."
-                    type="number"
-                    value={conv.inputH}
-                    onChange={(e) =>
-                      setConv({ ...conv, inputH: +e.target.value })
-                    }
-                  />
-                  <input
-                    title="입력 feature map 너비입니다."
-                    type="number"
-                    value={conv.inputW}
-                    onChange={(e) =>
-                      setConv({ ...conv, inputW: +e.target.value })
-                    }
-                  />
-                  <input
-                    title="입력 채널 수입니다."
-                    type="number"
-                    value={conv.inputC}
-                    onChange={(e) =>
-                      setConv({ ...conv, inputC: +e.target.value })
-                    }
-                  />
+                  <MiniField label="model" tip="모델 이름입니다. 예: resnet, cnn"><input value={conv.model} onChange={(e) => setConv({ ...conv, model: e.target.value })} /></MiniField>
+                  <MiniField label="opName" tip="연산 이름입니다. 예: conv2d_0"><input value={conv.opName} onChange={(e) => setConv({ ...conv, opName: e.target.value })} /></MiniField>
+                  <MiniField label="outputC / N" tip="출력 채널 수이며 GEMM의 N이 됩니다."><input type="number" value={conv.outputC} onChange={(e) => setConv({ ...conv, outputC: +e.target.value })} /></MiniField>
                 </div>
                 <div className="row3">
-                  <input
-                    title="커널 높이입니다."
-                    type="number"
-                    value={conv.kernelH}
-                    onChange={(e) =>
-                      setConv({ ...conv, kernelH: +e.target.value })
-                    }
-                  />
-                  <input
-                    title="커널 너비입니다."
-                    type="number"
-                    value={conv.kernelW}
-                    onChange={(e) =>
-                      setConv({ ...conv, kernelW: +e.target.value })
-                    }
-                  />
-                  <input
-                    title="stride 값입니다. 현재 UI에서는 H/W stride를 같은 값으로 설정합니다."
-                    type="number"
-                    value={conv.strideH}
-                    onChange={(e) =>
-                      setConv({
-                        ...conv,
-                        strideH: +e.target.value,
-                        strideW: +e.target.value,
-                      })
-                    }
-                  />
+                  <MiniField label="inputH" tip="입력 feature map 높이입니다."><input type="number" value={conv.inputH} onChange={(e) => setConv({ ...conv, inputH: +e.target.value })} /></MiniField>
+                  <MiniField label="inputW" tip="입력 feature map 너비입니다."><input type="number" value={conv.inputW} onChange={(e) => setConv({ ...conv, inputW: +e.target.value })} /></MiniField>
+                  <MiniField label="inputC" tip="입력 채널 수입니다. kernelH×kernelW와 곱해져 GEMM K가 됩니다."><input type="number" value={conv.inputC} onChange={(e) => setConv({ ...conv, inputC: +e.target.value })} /></MiniField>
                 </div>
-                <ActionButton
-                  tip="Conv2D shape를 im2col 기준 GEMM shape로 변환한 뒤 현재 workload 뒤에 추가합니다."
-                  onClick={addConv}
-                >
-                  Conv를 GEMM으로 추가
-                </ActionButton>
+                <div className="row3">
+                  <MiniField label="kernelH" tip="커널 높이입니다."><input type="number" value={conv.kernelH} onChange={(e) => setConv({ ...conv, kernelH: +e.target.value })} /></MiniField>
+                  <MiniField label="kernelW" tip="커널 너비입니다."><input type="number" value={conv.kernelW} onChange={(e) => setConv({ ...conv, kernelW: +e.target.value })} /></MiniField>
+                  <MiniField label="stride" tip="H/W stride를 같은 값으로 설정합니다."><input type="number" value={conv.strideH} onChange={(e) => setConv({ ...conv, strideH: +e.target.value, strideW: +e.target.value })} /></MiniField>
+                </div>
+                <div className="row3">
+                  <MiniField label="pad" tip="H/W padding을 같은 값으로 설정합니다."><input type="number" value={conv.padH} onChange={(e) => setConv({ ...conv, padH: +e.target.value, padW: +e.target.value })} /></MiniField>
+                  <MiniField label="dilation" tip="H/W dilation을 같은 값으로 설정합니다."><input type="number" value={conv.dilationH} onChange={(e) => setConv({ ...conv, dilationH: +e.target.value, dilationW: +e.target.value })} /></MiniField>
+                  <MiniField label="dtypeBytes" tip="fp16/bf16=2, fp32=4, int8=1."><input type="number" value={conv.dtypeBytes} onChange={(e) => setConv({ ...conv, dtypeBytes: +e.target.value })} /></MiniField>
+                </div>
+                <ActionButton tip="Conv2D shape를 im2col 기준 GEMM shape로 변환한 뒤 현재 workload 뒤에 추가합니다." onClick={addConv}>Conv를 GEMM으로 추가</ActionButton>
               </>
             )}
 
@@ -1189,6 +1473,26 @@ export default function Home() {
                 <h3 title="실측 결과를 사용해 analytic estimator의 cycle 예측을 보정합니다.">
                   보정
                 </h3>
+                <div className="info-box">
+                  <b>보정은 언제 쓰나요?</b>
+                  <p className="small">동일한 연산을 실제 측정하거나 SCALE-Sim 결과와 비교했을 때 estimator가 일관되게 높거나 낮으면 보정 sample을 추가하세요. measured/predicted 비율이 이후 cycle 추정에 곱해집니다.</p>
+                </div>
+                <h4>간편 보정 sample 추가</h4>
+                <div className="row3">
+                  <MiniField label="model" tip="보정 sample의 모델 이름입니다."><input value={calibrationRow.model} onChange={(e) => setCalibrationRow({ ...calibrationRow, model: e.target.value })} /></MiniField>
+                  <MiniField label="opName" tip="보정 sample의 연산 이름입니다."><input value={calibrationRow.opName} onChange={(e) => setCalibrationRow({ ...calibrationRow, opName: e.target.value })} /></MiniField>
+                  <MiniField label="array" tip="배열 크기입니다. 예: 128x128"><input value={calibrationRow.array} onChange={(e) => setCalibrationRow({ ...calibrationRow, array: e.target.value })} /></MiniField>
+                </div>
+                <div className="row3">
+                  <MiniField label="dataflow" tip="보정 sample의 dataflow입니다."><select value={calibrationRow.dataflow} onChange={(e) => setCalibrationRow({ ...calibrationRow, dataflow: e.target.value })}><option>WS</option><option>OS</option><option>IS</option></select></MiniField>
+                  <MiniField label="predictedCycles" tip="보정 전 estimator predicted cycle입니다."><input type="number" value={calibrationRow.predictedCycles} onChange={(e) => setCalibrationRow({ ...calibrationRow, predictedCycles: +e.target.value })} /></MiniField>
+                  <MiniField label="measuredCycles" tip="실측 또는 SCALE-Sim measured cycle입니다."><input type="number" value={calibrationRow.measuredCycles} onChange={(e) => setCalibrationRow({ ...calibrationRow, measuredCycles: +e.target.value })} /></MiniField>
+                </div>
+                <div className="calibration-actions">
+                  <ActionButton className="secondary" tip="간편 입력한 보정 sample을 아래 CSV 끝에 추가합니다." onClick={appendCalibrationRow}>sample을 CSV에 추가</ActionButton>
+                  <ActionButton className="secondary" tip="선택한 작업 또는 최신 완료 작업의 TileForge 예측 cycle과 SCALE-Sim cycle을 CSV sample로 자동 추가합니다." onClick={appendCalibrationFromJob}>선택 작업 오차 자동 입력</ActionButton>
+                </div>
+                <h4>Raw CSV 입력</h4>
                 <textarea
                   title="실측 CSV를 입력합니다. 열: model, op_name, array, dataflow, predicted_cycles, measured_cycles"
                   value={calibrationCsv}
@@ -1259,27 +1563,6 @@ export default function Home() {
                 </ActionButton>
                 <ActionButton
                   className="secondary"
-                  tip="작업 ID를 입력해 SSE로 진행 상황을 실시간 구독합니다."
-                  onClick={watchJob}
-                >
-                  작업 실시간 보기
-                </ActionButton>
-                <ActionButton
-                  className="secondary"
-                  tip="작업 ID를 입력해 진행 중인 작업을 취소 요청합니다."
-                  onClick={cancelJob}
-                >
-                  작업 취소
-                </ActionButton>
-                <ActionButton
-                  className="secondary"
-                  tip="작업 ID를 입력해 작업 기록과 artifact를 삭제합니다."
-                  onClick={deleteJobPrompt}
-                >
-                  작업 삭제
-                </ActionButton>
-                <ActionButton
-                  className="secondary"
                   tip="Node, 저장소, 외부 도구 등 실행 환경을 진단합니다."
                   onClick={runDoctorCheck}
                 >
@@ -1322,7 +1605,7 @@ export default function Home() {
           </div>
         </section>
 
-        <section title="오른쪽 패널에서 추정 결과, 분석 탭, 내보내기 산출물을 확인합니다.">
+        <section className={`results-section ${tab === "jobs" ? "jobs-wide" : ""}`} title="오른쪽 패널에서 추정 결과, 분석 탭, 내보내기 산출물을 확인합니다.">
           <div className="cards">
             <Metric
               title="총 사이클"
@@ -1345,7 +1628,12 @@ export default function Home() {
               value={result.summary.bottleneckOp}
             />
           </div>
-          <div className="panel alt" style={{ marginTop: 16 }}>
+          <div className={`panel alt ${tab === "jobs" ? "jobs-panel" : ""}`} style={{ marginTop: 16 }}>
+            <ResultContextBar
+              jobsPayload={jobsPayload}
+              selectedJobId={analysisJobId}
+              onSelect={(id) => { setAnalysisJobId(id); if (id) void fetchJobReport(id); }}
+            />
             <div className="tabs">
               {(
                 [
@@ -1357,6 +1645,7 @@ export default function Home() {
                   "calibration",
                   "iree",
                   "exports",
+                  "graphs",
                   "report",
                   "jobs",
                   "status",
@@ -1372,10 +1661,10 @@ export default function Home() {
                 </button>
               ))}
             </div>
-            {tab === "policy" && <Policy result={result} download={download} />}
-            {tab === "bottleneck" && <Bottleneck result={result} />}
-            {tab === "roofline" && <Roofline result={result} />}
-            {tab === "energy" && <Energy result={result} />}
+            {tab === "policy" && <Policy result={result} download={download} jobId={analysisJobId} jobsPayload={jobsPayload} />}
+            {tab === "bottleneck" && <Bottleneck result={result} jobId={analysisJobId} />}
+            {tab === "roofline" && <Roofline result={result} jobId={analysisJobId} />}
+            {tab === "energy" && <Energy result={result} jobId={analysisJobId} />}
             {tab === "array" && (
               <ArraySweep
                 rows={arraySweep}
@@ -1390,10 +1679,11 @@ export default function Home() {
                 download={download}
               />
             )}
-            {tab === "iree" && <Iree result={result} download={download} />}
+            {tab === "iree" && <Iree result={result} download={download} jobId={analysisJobId} />}
             {tab === "exports" && (
-              <Exports result={result} download={download} />
+              <Exports result={result} download={download} jobId={analysisJobId} jobsPayload={jobsPayload} />
             )}
+            {tab === "graphs" && <Graphs result={result} download={download} jobId={analysisJobId} jobsPayload={jobsPayload} />}
             {tab === "report" && (
               <ReportTab
                 report={serverReportMarkdown || result.artifacts.reportMarkdown}
@@ -1402,7 +1692,7 @@ export default function Home() {
                 download={download}
                 confidence={confidence}
                 jobsPayload={jobsPayload}
-                onSelectJobReport={(id) => void fetchJobReport(id)}
+                onSelectJobReport={(id) => { setAnalysisJobId(id); void fetchJobReport(id); }}
                 onDeleteJob={(id) => void deleteJobById(id)}
               />
             )}
@@ -1424,6 +1714,11 @@ export default function Home() {
                 setAutoAttachNewJob={setAutoAttachNewJob}
                 onWatchJob={startLiveJob}
                 onDeleteJob={(id) => void deleteJobById(id)}
+                selectedJobIds={selectedJobIds}
+                setSelectedJobIds={setSelectedJobIds}
+                onDeleteSelected={(ids) => void deleteJobsByIds(ids)}
+                onCancelSelected={(ids) => void cancelJobsByIds(ids)}
+                onCancelJob={(id) => void cancelJobById(id)}
               />
             )}
             {tab === "status" && (
@@ -1450,6 +1745,220 @@ export default function Home() {
   );
 }
 
+
+function jobDisplayName(job: any): string {
+  if (!job) return "작업 미선택";
+  return String(job.name || job.request?.hardware?.name || job.id || "작업");
+}
+
+function jobLabel(job: any): string {
+  if (!job) return "작업 미선택";
+  return `${jobDisplayName(job)} · ${job.status}`;
+}
+
+function jobTooltip(job: any): string {
+  if (!job) return "";
+  const when = job.createdAt ? new Date(job.createdAt).toLocaleString() : "";
+  return `${jobDisplayName(job)}${when ? " · 생성 " + when : ""}${job.id ? " · id " + job.id : ""}`;
+}
+
+function jobById(payload: any | null, id: string) {
+  const jobs = Array.isArray(payload?.jobs) ? payload.jobs : [];
+  return jobs.find((j: any) => j.id === id);
+}
+
+function ResultContextBar({
+  jobsPayload,
+  selectedJobId,
+  onSelect,
+}: {
+  jobsPayload: any | null;
+  selectedJobId: string;
+  onSelect: (id: string) => void;
+}) {
+  const jobs = Array.isArray(jobsPayload?.jobs) ? jobsPayload.jobs : [];
+  const artifactJobs = jobs.filter((j: any) => Array.isArray(j.artifacts) && j.artifacts.length > 0);
+  const selected = jobById(jobsPayload, selectedJobId);
+  return (
+    <section className="result-context" title="오른쪽 결과 탭이 현재 입력값 미리보기인지, 특정 작업의 산출물인지 표시합니다.">
+      <div>
+        <b>결과 기준</b>
+        <p className="small">
+          {selected ? `${jobDisplayName(selected)}의 산출물을 보고 있습니다.` : "현재 입력 설정으로 계산한 estimator 미리보기를 보고 있습니다."}
+        </p>
+      </div>
+      <div className="result-context-controls">
+        <select value={selectedJobId} onChange={(e) => onSelect(e.target.value)} title="타일 정책, IREE, 내보내기, 보고서 탭에서 참조할 작업을 선택합니다.">
+          <option value="">현재 입력 미리보기</option>
+          {artifactJobs.map((j: any) => (
+            <option key={j.id} value={j.id}>{jobLabel(j)}</option>
+          ))}
+        </select>
+        {selected && <span className={`badge ${selected.status === "failed" ? "err-badge" : selected.status === "running" ? "warn-badge" : "ok-badge"}`}>{selected.status}</span>}
+      </div>
+    </section>
+  );
+}
+
+function JobSourceNotice({ jobId, jobsPayload, tabName }: { jobId: string; jobsPayload?: any | null; tabName: string }) {
+  if (!jobId) return <p className="small source-notice">현재 입력 설정으로 계산한 {tabName} 미리보기입니다. 작업 결과를 보려면 위의 결과 기준에서 작업을 선택하세요.</p>;
+  const job = jobById(jobsPayload, jobId);
+  return <p className="small source-notice">작업 산출물 기준: <strong title={jobTooltip(job)}>{job ? jobDisplayName(job) : "선택 작업"}</strong>{job ? <span className="badge">{job.status}</span> : null}. 없는 항목은 현재 입력 미리보기로 대체됩니다.</p>;
+}
+
+function CsvArtifactTable({ jobId, path, title }: { jobId: string; path: string; title: string }) {
+  const [text, setText] = useState("");
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      if (!jobId) return;
+      try {
+        const r = await fetch(`/api/jobs/${jobId}/artifact?path=${encodeURIComponent(path)}`, { cache: "no-store" });
+        if (!r.ok) throw new Error(`${path} artifact를 읽지 못했습니다.`);
+        const t = await r.text();
+        if (!cancelled) { setText(t); setError(""); }
+      } catch (e: any) {
+        if (!cancelled) setError(e.message || String(e));
+      }
+    }
+    void load();
+    return () => { cancelled = true; };
+  }, [jobId, path]);
+  if (!jobId) return null;
+  if (error) return <p className="small warn">{title}: {error}</p>;
+  if (!text) return <p className="small">{title}를 불러오는 중입니다.</p>;
+  const rows = text.trim().split(/\r?\n/).map((line) => line.split(","));
+  const header = rows[0] ?? [];
+  const body = rows.slice(1);
+  return (
+    <section className="job-artifact-view">
+      <div className="artifact-toolbar"><b>{title}</b><a className="help-link" href={`/api/jobs/${jobId}/artifact?path=${encodeURIComponent(path)}`} target="_blank">원본 열기</a></div>
+      <div className="md-table-wrap"><table className="md-table"><thead><tr>{header.map((h, i) => <th key={i}>{h}</th>)}</tr></thead><tbody>{body.map((r, i) => <tr key={i}>{header.map((_, j) => <td key={j}>{r[j] ?? ""}</td>)}</tr>)}</tbody></table></div>
+    </section>
+  );
+}
+
+
+function JobArtifactText({ jobId, path, title }: { jobId: string; path: string; title: string }) {
+  const [text, setText] = useState("");
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      if (!jobId) return;
+      try {
+        const r = await fetch(`/api/jobs/${jobId}/artifact?path=${encodeURIComponent(path)}`, { cache: "no-store" });
+        if (!r.ok) throw new Error(`${path} artifact를 읽지 못했습니다.`);
+        const t = await r.text();
+        if (!cancelled) { setText(t); setError(""); }
+      } catch (e: any) {
+        if (!cancelled) setError(e.message || String(e));
+      }
+    }
+    void load();
+    return () => { cancelled = true; };
+  }, [jobId, path]);
+  if (!jobId) return null;
+  if (error) return <p className="small warn">{title}: {error}</p>;
+  if (!text) return <p className="small">{title}를 불러오는 중입니다.</p>;
+  return <Artifact name={path} text={text} download={(name, body) => {
+    const blob = new Blob([body], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    a.click();
+    URL.revokeObjectURL(url);
+  }} />;
+}
+
+function JobArtifactList({ jobId, jobsPayload }: { jobId: string; jobsPayload: any | null }) {
+  const job = jobById(jobsPayload, jobId);
+  const artifacts: string[] = Array.isArray(job?.artifacts) ? job.artifacts : [];
+  const storageKey = `tileforge:selected-artifacts:${jobId}`;
+  const [selected, setSelected] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (!jobId) return;
+    try {
+      const raw = window.localStorage.getItem(storageKey);
+      const parsed = raw ? JSON.parse(raw) : null;
+      if (Array.isArray(parsed)) setSelected(parsed.filter((x) => artifacts.includes(x)));
+      else setSelected([]);
+    } catch {
+      setSelected([]);
+    }
+  }, [jobId, artifacts.join("|")]);
+
+  useEffect(() => {
+    if (!jobId) return;
+    try {
+      window.localStorage.setItem(storageKey, JSON.stringify(selected));
+    } catch {
+      // best-effort UI state persistence only
+    }
+  }, [jobId, selected.join("|")]);
+
+  if (!jobId) return null;
+  if (!artifacts.length) return <p className="small warn">선택한 작업의 artifact 목록이 아직 없습니다.</p>;
+
+  const allSelected = selected.length === artifacts.length && artifacts.length > 0;
+  const toggleOne = (artifactPath: string) => {
+    setSelected((prev) => prev.includes(artifactPath) ? prev.filter((x) => x !== artifactPath) : [...prev, artifactPath]);
+  };
+  const selectAll = () => setSelected(artifacts);
+  const clearAll = () => setSelected([]);
+  const saveBlob = async (url: string, filename: string) => {
+    const r = await fetch(url, { cache: "no-store" });
+    if (!r.ok) { alert(await r.text()); return; }
+    const blob = await r.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = objectUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(objectUrl);
+  };
+  const downloadArtifact = async (artifactPath: string) => {
+    await saveBlob(`/api/jobs/${jobId}/artifact?path=${encodeURIComponent(artifactPath)}&download=1`, artifactPath.split(/[\\/]/).pop() || artifactPath);
+  };
+  const downloadSelected = async () => {
+    const paths = selected.length ? selected : artifacts;
+    const label = selected.length ? "selected" : "all";
+    await saveBlob(`/api/jobs/${jobId}/bundle?paths=${encodeURIComponent(JSON.stringify(paths))}`, `tileforge-${jobId}-${label}.zip`);
+  };
+
+  return (
+    <section className="job-artifact-view">
+      <div className="artifact-list-header">
+        <div>
+          <h3>선택 작업 산출물</h3>
+          <p className="small">체크한 산출물만 ZIP으로 내려받을 수 있습니다. 선택 상태는 작업별로 유지됩니다.</p>
+        </div>
+        <div className="artifact-actions">
+          <button className="secondary" onClick={selectAll} disabled={allSelected}>모두 선택</button>
+          <button className="secondary" onClick={clearAll} disabled={selected.length === 0}>모두 해제</button>
+          <button onClick={downloadSelected}>{selected.length ? `선택 ${selected.length}개 다운로드` : "모두 다운로드"}</button>
+        </div>
+      </div>
+      <div className="artifact-grid selectable-artifacts">
+        {artifacts.map((a) => (
+          <div key={a} className={`artifact-download artifact-card ${selected.includes(a) ? "selected" : ""}`} title={a}>
+            <label className="artifact-select-label">
+              <input type="checkbox" checked={selected.includes(a)} onChange={() => toggleOne(a)} />
+              <span>{a}</span>
+            </label>
+            <button className="secondary tiny-download" onClick={() => downloadArtifact(a)}>다운로드</button>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function Metric({
   title,
   value,
@@ -1467,9 +1976,11 @@ function Metric({
     </div>
   );
 }
-function Policy({ result, download }: { result: any; download: DownloadFn }) {
+function Policy({ result, download, jobId, jobsPayload }: { result: any; download: DownloadFn; jobId?: string; jobsPayload?: any | null }) {
   return (
     <>
+      <JobSourceNotice jobId={jobId ?? ""} jobsPayload={jobsPayload} tabName="타일 정책" />
+      {jobId && <CsvArtifactTable jobId={jobId} path="best_tile_policy.csv" title="선택 작업의 best_tile_policy.csv" />}
       <ActionButton
         tip="최적 타일 정책 표를 CSV로 저장합니다."
         onClick={() =>
@@ -1569,9 +2080,10 @@ function Heat({ points }: { points: any[] }) {
     </div>
   );
 }
-function Bottleneck({ result }: { result: any }) {
+function Bottleneck({ result, jobId }: { result: any; jobId?: string }) {
   return (
     <>
+      <JobSourceNotice jobId={jobId ?? ""} tabName="병목 분석" />
       <h3 title="전체 cycle 비중이 큰 연산과 병목 원인을 보여줍니다.">
         병목 대시보드
       </h3>
@@ -1603,9 +2115,10 @@ function Bottleneck({ result }: { result: any }) {
     </>
   );
 }
-function Roofline({ result }: { result: any }) {
+function Roofline({ result, jobId }: { result: any; jobId?: string }) {
   return (
     <>
+      <JobSourceNotice jobId={jobId ?? ""} tabName="루프라인 분석" />
       <h3 title="연산 집약도와 roofline 기준 성능 한계를 분석합니다.">
         루프라인 분석
       </h3>
@@ -1645,9 +2158,10 @@ function Roofline({ result }: { result: any }) {
     </>
   );
 }
-function Energy({ result }: { result: any }) {
+function Energy({ result, jobId }: { result: any; jobId?: string }) {
   return (
     <>
+      <JobSourceNotice jobId={jobId ?? ""} tabName="에너지/유효성 분석" />
       <h3 title="입력한 에너지 파라미터를 바탕으로 전체 에너지를 추정합니다.">
         에너지 추정
       </h3>
@@ -1748,9 +2262,11 @@ function ArraySweep({
     </>
   );
 }
-function Iree({ result, download }: { result: any; download: DownloadFn }) {
+function Iree({ result, download, jobId }: { result: any; download: DownloadFn; jobId?: string }) {
   return (
     <>
+      <JobSourceNotice jobId={jobId ?? ""} tabName="IREE/MLIR" />
+      {jobId && <JobArtifactText jobId={jobId} path="generated.mlir" title="선택 작업의 generated.mlir" />}
       <Artifact
         name="iree-command.sh"
         text={result.artifacts.ireeCommand}
@@ -1769,9 +2285,11 @@ function Iree({ result, download }: { result: any; download: DownloadFn }) {
     </>
   );
 }
-function Exports({ result, download }: { result: any; download: DownloadFn }) {
+function Exports({ result, download, jobId, jobsPayload }: { result: any; download: DownloadFn; jobId?: string; jobsPayload?: any | null }) {
   return (
     <>
+      <JobSourceNotice jobId={jobId ?? ""} jobsPayload={jobsPayload} tabName="내보내기" />
+      {jobId && <JobArtifactList jobId={jobId} jobsPayload={jobsPayload} />}
       <ActionButton
         tip="결과 artifact의 해시와 메타데이터를 담은 manifest를 저장합니다."
         onClick={() =>
@@ -1840,6 +2358,138 @@ function Exports({ result, download }: { result: any; download: DownloadFn }) {
         {result.artifacts.latexTable}
       </pre>
     </>
+  );
+}
+
+function Graphs({ result, download, jobId, jobsPayload }: { result: any; download: DownloadFn; jobId?: string; jobsPayload?: any | null }) {
+  const [jobResult, setJobResult] = useState<any | null>(null);
+  const [scaleSummary, setScaleSummary] = useState<any | null>(null);
+  const [selectedOp, setSelectedOp] = useState(0);
+  const [metric, setMetric] = useState("cycles");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      setError("");
+      setJobResult(null);
+      setScaleSummary(null);
+      if (!jobId) return;
+      try {
+        const [r, sr] = await Promise.all([
+          fetch(`/api/jobs/${jobId}/artifact?path=${encodeURIComponent("result.json")}`, { cache: "no-store" }),
+          fetch(`/api/jobs/${jobId}/artifact?path=${encodeURIComponent("scalesim_summary.json")}`, { cache: "no-store" }),
+        ]);
+        if (!r.ok) throw new Error(await r.text());
+        const text = await r.text();
+        const parsed = JSON.parse(text);
+        if (!cancelled) setJobResult(parsed?.payload?.response ?? parsed?.response ?? parsed);
+        if (sr.ok) {
+          const st = await sr.text();
+          if (!cancelled) setScaleSummary(JSON.parse(st));
+        }
+      } catch (e: any) {
+        if (!cancelled) setError(e?.message ?? String(e));
+      }
+    }
+    void load();
+    return () => { cancelled = true; };
+  }, [jobId]);
+
+  const source = jobResult ?? result;
+  const rows = Array.isArray(source?.results) ? source.results : [];
+  const opIndex = Math.min(selectedOp, Math.max(0, rows.length - 1));
+  const op = rows[opIndex];
+  const actualCycles = Number(scaleSummary?.layers?.[opIndex]?.cycles ?? 0);
+  const heat = Array.isArray(op?.heatmap) ? [...op.heatmap] : [];
+  const hw = source?.request?.hardware ?? result?.request?.hardware ?? { frequencyMHz: 700 };
+  const shape = op?.shape ?? {};
+  const dtype = Number(shape.dtypeBytes || hw.bytesPerElement || 2);
+  const dramBytes = Math.max(1, (Number(shape.m) * Number(shape.k) + Number(shape.k) * Number(shape.n) + 2 * Number(shape.m) * Number(shape.n)) * dtype);
+  const metricInfo: Record<string, { label: string; unit: string; lowerBetter: boolean; value: (p: any) => number; format: (v: number) => string; description: string }> = {
+    cycles: { label: "Cycle", unit: "cyc", lowerBetter: true, value: (p) => Number(p.cycles) || 0, format: (v) => Math.round(v).toLocaleString(), description: "TileForge estimator의 cycle 예측입니다." },
+    timeUs: { label: "실행 시간", unit: "us", lowerBetter: true, value: (p) => (Number(p.cycles) || 0) / Math.max(1, Number(hw.frequencyMHz || 700)), format: (v) => v.toFixed(3), description: "cycle을 주파수로 나눈 예상 실행 시간입니다." },
+    utilization: { label: "PE 사용률", unit: "%", lowerBetter: false, value: (p) => (Number(p.utilization) || 0) * 100, format: (v) => `${v.toFixed(1)}%`, description: "높을수록 systolic array를 더 잘 채웁니다." },
+    padding: { label: "패딩 비율", unit: "%", lowerBetter: true, value: (p) => (Number(p.paddingRatio) || 0) * 100, format: (v) => `${v.toFixed(1)}%`, description: "타일 경계에서 낭비되는 계산 비율입니다." },
+    sram: { label: "SRAM 작업 영역", unit: "KiB", lowerBetter: true, value: (p) => (Number(p.sramBytes) || 0) / 1024, format: (v) => `${v.toFixed(1)} KiB`, description: "해당 타일 후보가 요구하는 로컬 SRAM/cache 작업 영역입니다." },
+    dram: { label: "DRAM traffic", unit: "KiB", lowerBetter: true, value: () => dramBytes / 1024, format: (v) => `${v.toFixed(1)} KiB`, description: "A/B/C 텐서 기준의 추정 DRAM traffic입니다. 현재 후보 간 차이는 주로 op 크기에 의해 결정됩니다." },
+    score: { label: "종합 점수", unit: "score", lowerBetter: true, value: (p) => Number(p.score ?? p.cycles) || 0, format: (v) => v.toFixed(3), description: "objective에 따른 내부 ranking 점수입니다." },
+  };
+  const info = metricInfo[metric] ?? metricInfo.cycles;
+  const sorted = heat.sort((a: any, b: any) => info.lowerBetter ? info.value(a) - info.value(b) : info.value(b) - info.value(a));
+  const top = sorted.slice(0, 24);
+  const actualMetricValue = actualCycles > 0 ? (metric === "timeUs" ? actualCycles / Math.max(1, Number(hw.frequencyMHz || 700)) : metric === "cycles" ? actualCycles : undefined) : undefined;
+  const maxValue = Math.max(1e-9, actualMetricValue ? Math.abs(actualMetricValue) : 0, ...top.map((p: any) => Math.abs(info.value(p)) || 0));
+  const best = top[0];
+  const svgWidth = 980;
+  const rowH = actualMetricValue ? 34 : 26;
+  const svgHeight = 76 + top.length * rowH;
+  const safeTitle = `${info.label} comparison${op?.shape ? ` - ${op.shape.model}.${op.shape.opName}` : ""}`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${svgWidth}" height="${svgHeight}" viewBox="0 0 ${svgWidth} ${svgHeight}">
+  <rect width="100%" height="100%" fill="#0b1020"/>
+  <text x="20" y="30" fill="#eaf0ff" font-family="Arial" font-size="18">${safeTitle}</text>
+  <text x="20" y="52" fill="#9fb0d0" font-family="Arial" font-size="12">${info.description}</text>
+  ${top.map((p: any, i: number) => {
+    const y = 80 + i * rowH;
+    const v = info.value(p);
+    const w = Math.max(2, Math.round((Math.abs(v) / maxValue) * 600));
+    const label = `${p.tileM}x${p.tileN}x${p.tileK}`;
+    const actualW = actualMetricValue && i === 0 ? Math.max(2, Math.round((Math.abs(actualMetricValue) / maxValue) * 600)) : 0;
+    const actualPart = actualW ? `<rect x="170" y="${y + 17}" width="${actualW}" height="6" rx="3" fill="#ffb86b"/><text x="${180 + actualW}" y="${y + 23}" fill="#ffdfb0" font-family="Consolas, monospace" font-size="10">SCALE-Sim ${info.format(actualMetricValue!)}</text>` : "";
+    return `<text x="20" y="${y + 15}" fill="#cfe0ff" font-family="Consolas, monospace" font-size="12">${label}</text><rect x="170" y="${y}" width="${w}" height="16" rx="4" fill="#8db3ff"/><text x="${180 + w}" y="${y + 13}" fill="#eaf0ff" font-family="Consolas, monospace" font-size="12">예측 ${info.format(v)} · util ${((Number(p.utilization) || 0) * 100).toFixed(1)}% · SRAM ${((Number(p.sramBytes)||0)/1024).toFixed(1)} KiB</text>${actualPart}`;
+  }).join("\n  ")}
+</svg>`;
+
+  return (
+    <section className="graphs-panel">
+      <JobSourceNotice jobId={jobId ?? ""} jobsPayload={jobsPayload} tabName="그래프" />
+      <h3>타일 후보 성능 비교</h3>
+      <p className="small">cycle/시간 지표에서는 파란색이 TileForge 예측, 주황색이 SCALE-Sim 실제 simulation 값입니다. 다른 지표는 현재 estimator 후보값을 비교합니다.</p>
+      {error && <p className="small warn">선택 작업 result.json을 읽지 못해 현재 입력 미리보기를 사용합니다: {error}</p>}
+      <div className="row graph-controls">
+        <div>
+          <FieldLabel tip="그래프로 볼 연산을 선택합니다.">연산 선택</FieldLabel>
+          <select value={opIndex} onChange={(e) => setSelectedOp(Number(e.target.value))}>
+            {rows.map((r: any, i: number) => <option key={i} value={i}>{r.shape?.model}.{r.shape?.opName}</option>)}
+          </select>
+        </div>
+        <div>
+          <FieldLabel tip="막대 그래프의 기준 지표를 선택합니다.">그래프 지표</FieldLabel>
+          <select value={metric} onChange={(e) => setMetric(e.target.value)}>
+            <option value="cycles">Cycle</option>
+            <option value="timeUs">예상 실행 시간</option>
+            <option value="utilization">PE 사용률</option>
+            <option value="padding">패딩 비율</option>
+            <option value="sram">SRAM/cache 작업 영역</option>
+            <option value="dram">DRAM traffic 추정</option>
+            <option value="score">종합 점수</option>
+          </select>
+        </div>
+      </div>
+      <div className="graph-actions">
+        <ActionButton tip="현재 그래프를 SVG 파일로 다운로드합니다." onClick={() => download(`tile-candidate-${metric}.svg`, svg, "image/svg+xml")}>그래프 SVG 다운로드</ActionButton>
+      </div>
+      {best && (
+        <div className="cards graph-summary-cards">
+          <Metric title={info.lowerBetter ? `최저 ${info.label}` : `최고 ${info.label}`} value={info.format(info.value(best))} tip="현재 선택한 지표 기준 최상위 타일 후보입니다." />
+          <Metric title="선택 기준 최적 타일" value={`${best.tileM}×${best.tileN}×${best.tileK}`} tip="현재 그래프 지표 기준 상위 후보입니다." />
+          <Metric title="PE 사용률" value={`${((best.utilization ?? 0) * 100).toFixed(1)}%`} tip="선택 후보의 PE 사용률입니다." />
+          <Metric title="SRAM/cache" value={`${((best.sramBytes ?? 0) / 1024).toFixed(1)} KiB`} tip="선택 후보의 로컬 SRAM/cache 작업 영역입니다." />
+        </div>
+      )}
+      <div className="chart-scroll">
+        <div className="chart-svg" dangerouslySetInnerHTML={{ __html: svg }} />
+      </div>
+      <h3>상위 타일 후보</h3>
+      <table className="compact-table">
+        <thead><tr><th>순위</th><th>타일</th><th>{info.label}</th><th>예측 cycle</th><th>SCALE-Sim cycle</th><th>시간 us</th><th>사용률</th><th>패딩</th><th>SRAM</th><th>DRAM 추정</th></tr></thead>
+        <tbody>{top.map((p: any, i: number) => (
+          <tr key={`${p.tileM}-${p.tileN}-${p.tileK}-${i}`}>
+            <td>{i + 1}</td><td>{p.tileM}×{p.tileN}×{p.tileK}</td><td>{info.format(info.value(p))}</td><td>{Math.round(p.cycles).toLocaleString()}</td><td>{i === 0 && actualCycles > 0 ? Math.round(actualCycles).toLocaleString() : "-"}</td><td>{((Number(p.cycles)||0)/Math.max(1, Number(hw.frequencyMHz||700))).toFixed(3)}</td><td>{((p.utilization ?? 0) * 100).toFixed(1)}%</td><td>{((p.paddingRatio ?? 0) * 100).toFixed(1)}%</td><td>{((p.sramBytes ?? 0) / 1024).toFixed(1)} KiB</td><td>{(dramBytes/1024).toFixed(1)} KiB</td>
+          </tr>
+        ))}</tbody>
+      </table>
+    </section>
   );
 }
 
@@ -1928,7 +2578,8 @@ function MarkdownView({ text }: { text: string }) {
       const level = heading[1].length;
       const content = heading[2].trim();
       const id = slugifyHeading(content);
-      const Tag = (`h${Math.min(level + 1, 5)}`) as keyof JSX.IntrinsicElements;
+      const headingTags = ["h2", "h3", "h4", "h5"] as const;
+      const Tag: ElementType = headingTags[level - 1] ?? "h5";
       blocks.push(<Tag className="md-heading" id={id} key={key++}><InlineMarkdown text={content} /></Tag>);
       i++;
       continue;
@@ -1988,7 +2639,7 @@ function ReportTab({
         <span className="small">
           {fallback
             ? "full-pipeline 완료 전에는 외부 도구 반영 상태가 대기 중으로 보일 수 있습니다."
-            : `job ${sourceJobId}의 report.md를 보고 있습니다.`}
+            : (() => { const j = jobById(jobsPayload, sourceJobId); return j ? `${jobDisplayName(j)}의 report.md를 보고 있습니다.` : `선택한 작업의 report.md를 보고 있습니다.`; })()}
         </span>
       </div>
       <section className="report-picker" title="완료된 작업별 report.md를 골라 봅니다.">
@@ -2005,7 +2656,7 @@ function ReportTab({
             <option value="">Estimator 미리보기 / 최신 자동 선택</option>
             {reportJobs.map((j: any) => (
               <option key={j.id} value={j.id}>
-                {(j.name ?? j.id)} · {j.status} · {j.createdAt ? new Date(j.createdAt).toLocaleString() : ""}
+                {jobDisplayName(j)} · {j.status} · {j.createdAt ? new Date(j.createdAt).toLocaleString() : ""}
               </option>
             ))}
           </select>
@@ -2019,11 +2670,15 @@ function ReportTab({
       <ExternalStatusOverview report={report} />
       <JobExternalLogs jobId={sourceJobId} live={false} />
       <Artifact name="report.md" text={report} download={download} />
-      <Artifact
-        name="confidence.md"
-        text={confidenceMarkdown(confidence)}
-        download={download}
-      />
+      {sourceJobId ? (
+        <JobArtifactText jobId={sourceJobId} path="confidence.md" title="선택 작업의 confidence.md" />
+      ) : (
+        <Artifact
+          name="confidence.md"
+          text={confidenceMarkdown(confidence)}
+          download={download}
+        />
+      )}
     </>
   );
 }
@@ -2273,6 +2928,11 @@ function Jobs({
   setAutoAttachNewJob,
   onWatchJob,
   onDeleteJob,
+  selectedJobIds,
+  setSelectedJobIds,
+  onDeleteSelected,
+  onCancelSelected,
+  onCancelJob,
 }: {
   text: string;
   download: DownloadFn;
@@ -2290,6 +2950,11 @@ function Jobs({
   setAutoAttachNewJob: (value: boolean) => void;
   onWatchJob: (id: string) => void;
   onDeleteJob: (id: string) => void;
+  selectedJobIds: string[];
+  setSelectedJobIds: (ids: string[]) => void;
+  onDeleteSelected: (ids: string[]) => void;
+  onCancelSelected: (ids: string[]) => void;
+  onCancelJob: (id: string) => void;
 }) {
   return (
     <>
@@ -2329,7 +2994,7 @@ function Jobs({
         작업 목록은 자동으로 갱신됩니다. 각 작업은 stage 이력, 진행률, 로그,
         artifact, 취소, 삭제, SSE 실시간 업데이트를 포함합니다.
       </p>
-      <QueueSummary payload={jobsPayload} activeJobId={liveJobId} onWatchJob={onWatchJob} onDeleteJob={onDeleteJob} />
+      <QueueSummary payload={jobsPayload} activeJobId={liveJobId} onWatchJob={onWatchJob} onDeleteJob={onDeleteJob} onCancelJob={onCancelJob} selectedJobIds={selectedJobIds} setSelectedJobIds={setSelectedJobIds} onDeleteSelected={onDeleteSelected} onCancelSelected={onCancelSelected} />
       <LiveTerminal
         jobId={liveJobId}
         job={liveJob}
@@ -2361,17 +3026,31 @@ function QueueSummary({
   activeJobId,
   onWatchJob,
   onDeleteJob,
+  selectedJobIds,
+  setSelectedJobIds,
+  onDeleteSelected,
+  onCancelSelected,
+  onCancelJob,
 }: {
   payload: any | null;
   activeJobId: string;
   onWatchJob: (id: string) => void;
   onDeleteJob: (id: string) => void;
+  selectedJobIds: string[];
+  setSelectedJobIds: (ids: string[]) => void;
+  onDeleteSelected: (ids: string[]) => void;
+  onCancelSelected: (ids: string[]) => void;
+  onCancelJob: (id: string) => void;
 }) {
   const jobs = Array.isArray(payload?.jobs) ? payload.jobs : [];
   const queued = jobs.filter((j: any) => j.status === "queued");
   const running = jobs.filter((j: any) => j.status === "running");
   const recentDone = jobs.filter((j: any) => ["succeeded", "succeeded_with_warnings", "failed", "cancelled"].includes(j.status)).slice(0, 20);
   const visible = [...running, ...queued, ...recentDone];
+  const visibleIds = visible.map((j: any) => j.id);
+  const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id: string) => selectedJobIds.includes(id));
+  const toggleOne = (id: string) => setSelectedJobIds(selectedJobIds.includes(id) ? selectedJobIds.filter((x) => x !== id) : [...selectedJobIds, id]);
+  const toggleAll = () => setSelectedJobIds(allVisibleSelected ? selectedJobIds.filter((id) => !visibleIds.includes(id)) : Array.from(new Set([...selectedJobIds, ...visibleIds])));
   return (
     <section className="queue-panel" title="현재 worker 큐에 들어간 작업과 실행 중인 작업을 보여줍니다.">
       <div className="queue-header">
@@ -2380,6 +3059,10 @@ function QueueSummary({
           <span className="badge">running {running.length}</span>
           <span className="badge">queued {queued.length}</span>
           <span className="badge">total {payload?.total ?? jobs.length}</span>
+          <span className="badge">selected {selectedJobIds.length}</span>
+          <button className="secondary" onClick={toggleAll} disabled={visible.length === 0}>{allVisibleSelected ? "전체 해제" : "표시 작업 전체 선택"}</button>
+          <button className="secondary" onClick={() => onCancelSelected(selectedJobIds)} disabled={selectedJobIds.length === 0}>선택 중지</button>
+          <button className="secondary danger-button" onClick={() => onDeleteSelected(selectedJobIds)} disabled={selectedJobIds.length === 0}>선택 삭제</button>
         </div>
       </div>
       {visible.length === 0 ? (
@@ -2389,24 +3072,28 @@ function QueueSummary({
           <table className="queue-table">
             <thead>
               <tr>
+                <th><input type="checkbox" checked={allVisibleSelected} onChange={toggleAll} title="표시된 작업 전체 선택" /></th>
                 <th>상태</th>
                 <th>이름</th>
                 <th>단계</th>
                 <th>진행률</th>
                 <th>생성 시각</th>
                 <th>보기</th>
+                <th>중지</th>
                 <th>삭제</th>
               </tr>
             </thead>
             <tbody>
               {visible.map((job: any) => (
                 <tr key={job.id} className={job.id === activeJobId ? "active-row" : ""}>
+                  <td><input type="checkbox" checked={selectedJobIds.includes(job.id)} onChange={() => toggleOne(job.id)} title="삭제할 작업 선택" /></td>
                   <td><span className={`badge ${job.status === "running" ? "warn-badge" : job.status === "queued" ? "" : job.status === "failed" ? "err-badge" : "ok-badge"}`}>{job.status}</span></td>
-                  <td title={job.id}>{job.name ?? job.id}</td>
+                  <td title={jobTooltip(job)}>{jobDisplayName(job)}</td>
                   <td>{job.stage ?? "-"}</td>
                   <td>{Number(job.progress ?? 0)}%</td>
                   <td>{job.createdAt ? new Date(job.createdAt).toLocaleTimeString() : "-"}</td>
                   <td><button className="secondary" onClick={() => onWatchJob(job.id)}>{job.id === activeJobId ? "보는 중" : "콘솔 보기"}</button></td>
+                  <td><button className="secondary" onClick={() => onCancelJob(job.id)} disabled={["succeeded", "failed", "cancelled", "succeeded_with_warnings"].includes(job.status)}>중지</button></td>
                   <td><button className="secondary danger-button" onClick={() => onDeleteJob(job.id)}>삭제</button></td>
                 </tr>
               ))}
@@ -2459,7 +3146,7 @@ function LiveTerminal({
           <span className={`terminal-dot ${connected ? "on" : "off"}`} />
           <b>실시간 작업 콘솔</b>
           <span className="terminal-meta">
-            {jobId ? `job ${jobId}${job?.name ? ` · ${job.name}` : ""}` : "작업 미선택"}
+            {job ? jobLabel(job) : "작업 미선택"}
           </span>
         </div>
         <div className="terminal-actions">
@@ -2486,7 +3173,7 @@ function LiveTerminal({
         </div>
       </div>
       <div className="terminal-status">
-        {job?.name ? <span className="badge">name: {job.name}</span> : null}
+        {job ? <span className="badge">name: {jobDisplayName(job)}</span> : null}
         <span className="badge">status: {status}</span>
         <span className="badge">stage: {job?.stage ?? "-"}</span>
         <span className="badge">progress: {progress}%</span>

@@ -81,10 +81,14 @@ async function withTimeout<T>(
   }
 }
 
-export async function runJob(job: JobRecord) {
-  if (!(await acquireJobLock(job))) {
-    await addLog(job, "건너뜀: 다른 worker가 이미 이 job을 잠갔습니다");
-    return;
+export async function runJob(job: JobRecord, options: { lockHeld?: boolean } = {}) {
+  let lockHeld = Boolean(options.lockHeld);
+  if (!lockHeld) {
+    lockHeld = await acquireJobLock(job);
+    if (!lockHeld) {
+      await addLog(job, "건너뜀: 다른 worker가 이미 이 job을 잠갔습니다");
+      return;
+    }
   }
   job.startedAt = job.startedAt ?? nowIso();
   job.attempts = (job.attempts ?? 0) + 1;
@@ -120,7 +124,7 @@ export async function runJob(job: JobRecord) {
       await updateJobStatus(job, "failed", `실패: ${err.message}`);
     }
   } finally {
-    await releaseJobLock(job);
+    if (lockHeld) await releaseJobLock(job);
   }
 }
 
@@ -993,10 +997,11 @@ async function appendExternalReport(
     path.join(dir, "report.md"),
     `${withQuick.trimEnd()}${marker}${report.replace(/^# 실제 외부 도구 검증 보고서\n+/, "")}`,
   );
-  const externalValidated = Boolean((scale?.ok && (scale.totalCycles ?? 0) > 0) || (iree?.ok && (iree.vmfbBytes ?? 0) > 0));
+  const externalValidated = Boolean((scale?.ok && (scale.totalCycles ?? 0) > 0) && (iree?.ok && (iree.vmfbBytes ?? 0) > 0));
   const confidence = assessConfidence(res, {
     externalValidated,
     calibrationSamples: res.request.calibration?.samples?.length ?? 0,
+    externalCycleRatio: scale?.cycleRatio,
   });
   await atomicWriteFile(path.join(dir, "confidence.md"), confidenceMarkdown(confidence));
   job.artifacts = [

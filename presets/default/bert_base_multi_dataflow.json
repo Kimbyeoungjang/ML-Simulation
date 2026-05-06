@@ -1,0 +1,18 @@
+{
+  "name": "bert_base_multi_dataflow",
+  "source": "default",
+  "savedAt": "2026-05-06T00:00:00.000Z",
+  "hardware": { "name": "TPUv2-like 128x128", "arrayRows": 128, "arrayCols": 128, "frequencyMHz": 700, "sramKB": 8192, "dataflow": "WS", "bytesPerElement": 2, "memoryBandwidthGBs": 600 },
+  "dataflowModes": ["WS", "OS", "IS"],
+  "shapes": [
+    { "id": "bert_qkv", "model": "bert_base", "opName": "qkv_projection", "m": 384, "n": 2304, "k": 768, "dtypeBytes": 2, "source": "import" },
+    { "id": "bert_attn", "model": "bert_base", "opName": "attention_score", "m": 384, "n": 384, "k": 64, "dtypeBytes": 2, "source": "import" },
+    { "id": "bert_ffn1", "model": "bert_base", "opName": "ffn_expand", "m": 384, "n": 3072, "k": 768, "dtypeBytes": 2, "source": "import" },
+    { "id": "bert_ffn2", "model": "bert_base", "opName": "ffn_project", "m": 384, "n": 768, "k": 3072, "dtypeBytes": 2, "source": "import" }
+  ],
+  "objective": "balanced",
+  "tileM": "16, 32, 64, 128",
+  "tileN": "32, 64, 128, 256",
+  "tileK": "32, 64, 128, 256",
+  "scaleSim": { "runName": "tileforge_generated", "bandwidth": 128, "interfaceBandwidth": "USER", "useLayout": true }
+}

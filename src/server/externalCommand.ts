@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { TextDecoder } from "node:util";
 import { mkdir, writeFile } from "node:fs/promises";
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -14,13 +15,37 @@ export function splitCommand(command: string): { exe: string; args: string[] } {
   return { exe: tokens[0], args: tokens.slice(1) };
 }
 
+
+function decodeExternalBuffer(chunk: Buffer): string {
+  // Python/SCALE-Sim on Windows can still emit CP949/EUC-KR bytes even when the
+  // parent process is UTF-8. Decode with UTF-8 first, then fall back to EUC-KR
+  // before replacement characters are introduced.
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(chunk);
+  } catch {
+    try {
+      return new TextDecoder("euc-kr").decode(chunk);
+    } catch {
+      return chunk.toString("utf8");
+    }
+  }
+}
+
 function safeEnv(extra?: ExternalCommandEnv): NodeJS.ProcessEnv {
   const allow = ["PATH", "Path", "PATHEXT", "HOME", "USER", "USERNAME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "PROGRAMDATA", "TEMP", "TMP", "TMPDIR", "SYSTEMROOT", "SystemRoot", "ComSpec", "PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV"];
   const extraAllow = new Set(["PATH", "Path", "PATHEXT", "PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "TEMP", "TMP", "TMPDIR", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "PROGRAMDATA"]);
   const nodeEnv = process.env.NODE_ENV === "production" || process.env.NODE_ENV === "test" || process.env.NODE_ENV === "development"
     ? process.env.NODE_ENV
     : "development";
-  const env: NodeJS.ProcessEnv = { NODE_ENV: nodeEnv };
+  const env: NodeJS.ProcessEnv = {
+    NODE_ENV: nodeEnv,
+    // Keep Python and tqdm output UTF-8 where possible. This prevents Korean
+    // Windows messages in SCALE-Sim/IREE logs from turning into mojibake.
+    PYTHONUTF8: process.env.PYTHONUTF8 ?? "1",
+    PYTHONIOENCODING: process.env.PYTHONIOENCODING ?? "utf-8",
+    LANG: process.env.LANG ?? "C.UTF-8",
+    LC_ALL: process.env.LC_ALL ?? "C.UTF-8",
+  };
   for (const k of allow) if (process.env[k]) env[k] = process.env[k];
   for (const [k, v] of Object.entries(extra ?? {})) {
     if (typeof v !== "string") continue;
@@ -67,7 +92,7 @@ export async function runExternalCommand(command: string, args: string[], option
     const timer = setTimeout(killTree, timeoutMs);
     let stderrHeaderWritten = false;
     const append = (kind: "stdout" | "stderr", chunk: Buffer) => {
-      const text = chunk.toString();
+      const text = decodeExternalBuffer(chunk);
       if (kind === "stdout") {
         stdout = (stdout + text).slice(-maxOutputBytes);
         appendLiveLog(resolvedLogPath, text);

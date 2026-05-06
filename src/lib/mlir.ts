@@ -95,7 +95,7 @@ export function generateScaleSimConfig(res: SearchResponse): string {
     `FilterOffset = ${Math.max(0, Math.floor(sc.filterOffset ?? 10000000))}`,
     `OfmapOffset = ${Math.max(0, Math.floor(sc.ofmapOffset ?? 20000000))}`,
     `Dataflow = ${String(sc.dataflow ?? h.dataflow).toLowerCase()}`,
-    `Bandwidth = ${sc.bandwidth ?? 128}`,
+    `Bandwidth = ${sc.dramBandwidth ?? sc.bandwidth ?? 128}`,
     "[run_presets]",
     `InterfaceBandwidth = ${sc.interfaceBandwidth ?? "USER"}`,
   ];
@@ -131,7 +131,12 @@ export function generateScaleSimTopology(res: SearchResponse): string {
 }
 export function generateScaleSimLayout(res: SearchResponse): string {
   const header = "Layer name,IFMAP Height Intraline Factor,IFMAP Width Intraline Factor,Filter Height Intraline Factor,Filter Width Intraline Factor,Channel Intraline Factor,Num Filter Intraline Factor,IFMAP Height Intraline Order,IFMAP Width Intraline Order,Channel Intraline Order,IFMAP Height Interline Order,IFMAP Width Interline Order,Channel Interline Order,Num Filter Intraline Order,Channel Intraline Order,Filter Height Intraline Order,Filter Width Intraline Order,Num Filter Interline Order,Channel Interline Order,Filter Height Interline Order,Filter Width Interline Order,";
-  const defaultRow = "1,1,1,1,1,1,1,2,3,1,2,3,1,2,3,4,1,2,3,4,";
+  // SCALE-Sim custom-layout code transposes a 6D IFMAP tensor using
+  // (interline[0..2], intraline[0..2]). Therefore the two order groups
+  // must be disjoint axes. Use 1-based axes here because SCALE-Sim converts
+  // them to zero-based internally. The old 1,2,3 + 1,2,3 pattern caused
+  // "ValueError: repeated axis in transpose" when custom layout was enabled.
+  const defaultRow = "1,1,1,1,1,1,4,5,6,1,2,3,5,6,7,8,1,2,3,4,";
   const rows = [header];
   for (const r of res.results) rows.push(`${sanitize(r.shape.opName)},${defaultRow}`);
   return rows.join("\n") + "\n";

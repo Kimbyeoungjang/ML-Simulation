@@ -1,5 +1,5 @@
 import "../src/server/env";
-import { findQueued, maxParallelJobs, recoverStaleRunningJobs } from "../src/server/jobStore";
+import { claimQueuedJob, maxParallelJobs, recoverStaleRunningJobs } from "../src/server/jobStore";
 import { runJob } from "../src/server/workerRunner";
 
 const once = process.argv.includes("--once");
@@ -11,12 +11,13 @@ async function startAvailableJobs() {
   const limit = maxParallelJobs();
   let started = 0;
   while (active.size < limit) {
-    const job = await findQueued([...active]);
+    const job = await claimQueuedJob([...active]);
     if (!job) break;
+    if (active.has(job.id)) continue;
     active.add(job.id);
     started++;
     console.log(`[tileforge-worker] start job ${job.id} (${active.size}/${limit})`);
-    void runJob(job)
+    void runJob(job, { lockHeld: true })
       .catch((error) => console.error(`[tileforge-worker] job ${job.id} failed`, error))
       .finally(() => {
         active.delete(job.id);

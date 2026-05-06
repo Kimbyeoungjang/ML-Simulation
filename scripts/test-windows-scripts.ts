@@ -4,8 +4,10 @@ const pkg = JSON.parse(readFileSync("package.json", "utf8"));
 const scripts = pkg.scripts ?? {};
 const failures: string[] = [];
 
-for (const key of ["test:integration:mock", "test:integration:file-store"]) {
-  if (!String(scripts[key] ?? "").includes("cross-env")) failures.push(`${key} should use cross-env for Windows-safe env vars`);
+for (const key of ["validate:external:mock"]) {
+  const script = String(scripts[key] ?? "");
+  if (!script) failures.push(`${key} should exist`);
+  else if (!script.includes("cross-env")) failures.push(`${key} should use cross-env for Windows-safe env vars`);
 }
 if (!pkg.engines?.node) failures.push("package.json should declare engines.node");
 if (!pkg.packageManager) failures.push("package.json should declare packageManager");

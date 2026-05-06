@@ -1,0 +1,38 @@
+{
+  "kind": "workload",
+  "name": "preset",
+  "shapes": [
+    {
+      "id": "vit_attn_qkv",
+      "model": "vit-s",
+      "opName": "attention_qkv",
+      "m": 197,
+      "n": 2304,
+      "k": 384,
+      "dtypeBytes": 2,
+      "source": "manual"
+    },
+    {
+      "id": "vit_mlp_fc1",
+      "model": "vit-s",
+      "opName": "mlp_fc1",
+      "m": 197,
+      "n": 1536,
+      "k": 384,
+      "dtypeBytes": 2,
+      "source": "manual"
+    },
+    {
+      "id": "vit_mlp_fc2",
+      "model": "vit-s",
+      "opName": "mlp_fc2",
+      "m": 197,
+      "n": 384,
+      "k": 1536,
+      "dtypeBytes": 2,
+      "source": "manual"
+    }
+  ],
+  "savedAt": "2026-05-06T16:36:01.451Z",
+  "source": "workload"
+}

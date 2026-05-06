@@ -4,6 +4,8 @@ export type Objective = "balanced" | "cycles" | "utilization" | "hardware-design
 export interface ScaleSimOverrides {
   runName?: string;
   bandwidth?: number;
+  /** Alias/preferred UI name for SCALE-Sim Bandwidth: DRAM/global memory interface bandwidth. */
+  dramBandwidth?: number;
   interfaceBandwidth?: "USER" | "CALC" | string;
   ifmapSramKB?: number;
   filterSramKB?: number;

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -7,22 +7,38 @@ import { createJob, readJob } from "@/server/jobStore";
 import { runJob } from "@/server/workerRunner";
 
 describe("worker integration", () => {
-  it("runs a full pipeline without real external tools and reports warnings", async () => {
+  it("runs a full pipeline with mock external tools and records summaries", async () => {
     const oldRoot = process.env.TILEFORGE_JOB_ROOT;
-    process.env.TILEFORGE_JOB_ROOT = await mkdtemp(path.join(os.tmpdir(), "tileforge-it-"));
-    delete process.env.TILEFORGE_SCALE_SIM_CMD;
-    delete process.env.TILEFORGE_IREE_COMPILE_CMD;
+    const oldScale = process.env.TILEFORGE_SCALE_SIM_CMD;
+    const oldIree = process.env.TILEFORGE_IREE_COMPILE_CMD;
+    const root = await mkdtemp(path.join(os.tmpdir(), "tileforge-it-"));
+    process.env.TILEFORGE_JOB_ROOT = root;
+    const scaleMock = path.join(root, "mock-scalesim.sh");
+    const ireeMock = path.join(root, "mock-iree.sh");
+    await writeFile(scaleMock, "#!/bin/sh\ncat > COMPUTE_REPORT.csv <<'CSV'\nLayer Name,Cycles\nmock_layer,1234\nCSV\n", "utf8");
+    await writeFile(ireeMock, "#!/bin/sh\nout=''\nwhile [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = '-o' ]; then shift; out=\"$1\"; fi\n  shift || true\ndone\nif [ -z \"$out\" ]; then out='model.vmfb'; fi\nprintf 'mock-vmfb' > \"$out\"\n", "utf8");
+    await chmod(scaleMock, 0o755);
+    await chmod(ireeMock, 0o755);
+    process.env.TILEFORGE_SCALE_SIM_CMD = scaleMock;
+    process.env.TILEFORGE_IREE_COMPILE_CMD = ireeMock;
     try {
       const job = await createJob("full-pipeline", { hardware: defaultHardware, shapes: defaultShapes.slice(0, 1), candidates: defaultCandidates, objective: "balanced" });
       await runJob(job);
       const saved = await readJob(job.id);
-      expect(saved.status).toBe("succeeded_with_warnings");
+      expect(saved.status).toBe("succeeded");
       expect(saved.artifacts).toContain("result.json");
-      expect(saved.artifacts).toContain("scalesim_skipped.txt");
-      expect(await readFile(path.join(process.env.TILEFORGE_JOB_ROOT!, job.id, "report.md"), "utf8")).toContain("TileForge");
+      expect(saved.artifacts).toContain("scalesim_summary.json");
+      expect(saved.artifacts).toContain("iree_summary.json");
+      const scaleSummary = JSON.parse(await readFile(path.join(root, job.id, "scalesim_summary.json"), "utf8"));
+      const ireeSummary = JSON.parse(await readFile(path.join(root, job.id, "iree_summary.json"), "utf8"));
+      expect(scaleSummary.totalCycles).toBe(1234);
+      expect(ireeSummary.vmfbBytes).toBeGreaterThan(0);
+      expect(await readFile(path.join(root, job.id, "report.md"), "utf8")).toContain("TileForge");
     } finally {
-      if (process.env.TILEFORGE_JOB_ROOT) await rm(process.env.TILEFORGE_JOB_ROOT, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true });
       if (oldRoot === undefined) delete process.env.TILEFORGE_JOB_ROOT; else process.env.TILEFORGE_JOB_ROOT = oldRoot;
+      if (oldScale === undefined) delete process.env.TILEFORGE_SCALE_SIM_CMD; else process.env.TILEFORGE_SCALE_SIM_CMD = oldScale;
+      if (oldIree === undefined) delete process.env.TILEFORGE_IREE_COMPILE_CMD; else process.env.TILEFORGE_IREE_COMPILE_CMD = oldIree;
     }
   });
 });

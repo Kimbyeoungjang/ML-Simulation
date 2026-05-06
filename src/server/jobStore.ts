@@ -67,11 +67,27 @@ export async function createJob(kind: JobKind, request: SearchRequest, requested
   return rec;
 }
 
+const jobSaveQueues = new Map<string, Promise<void>>();
+
 export async function saveJob(job: JobRecord) {
   job.updatedAt = nowIso();
-  await mkdir(jobDir(job.id), { recursive: true });
-  await atomicWriteFile(path.join(jobDir(job.id), "job.json"), JSON.stringify(job, null, 2));
-  saveJobSqlite(job);
+  const id = job.id;
+  const previous = jobSaveQueues.get(id) ?? Promise.resolve();
+  const next = previous.catch(() => undefined).then(async () => {
+    await mkdir(jobDir(id), { recursive: true });
+    await atomicWriteFile(path.join(jobDir(id), "job.json"), JSON.stringify(job, null, 2));
+    try {
+      saveJobSqlite(job);
+    } catch (error) {
+      console.warn(`[tileforge] sqlite mirror save failed for job ${id}:`, error);
+    }
+  });
+  jobSaveQueues.set(id, next);
+  try {
+    await next;
+  } finally {
+    if (jobSaveQueues.get(id) === next) jobSaveQueues.delete(id);
+  }
 }
 
 export async function readJob(id: string): Promise<JobRecord> {
@@ -109,6 +125,25 @@ export async function findQueued(excludeIds: string[] = []): Promise<JobRecord |
   if (running >= maxParallelJobs()) return undefined;
   const excluded = new Set(excludeIds);
   return jobs.reverse().find(j => j.status === "queued" && !excluded.has(j.id));
+}
+
+export async function claimQueuedJob(excludeIds: string[] = []): Promise<JobRecord | undefined> {
+  const jobs = await listJobs();
+  const running = jobs.filter(j => j.status === "running").length;
+  if (running >= maxParallelJobs()) return undefined;
+  const excluded = new Set(excludeIds);
+  const candidates = jobs.reverse().filter(j => j.status === "queued" && !excluded.has(j.id));
+  for (const job of candidates) {
+    const locked = await acquireJobLock(job);
+    if (!locked) continue;
+    job.status = "running";
+    job.stage = "queued";
+    job.startedAt = job.startedAt ?? nowIso();
+    appendLogSync(job, "worker가 job을 큐에서 가져와 실행 슬롯을 예약했습니다.");
+    await saveJob(job);
+    return job;
+  }
+  return undefined;
 }
 
 

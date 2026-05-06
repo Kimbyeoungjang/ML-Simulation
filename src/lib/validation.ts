@@ -67,6 +67,7 @@ export const CalibrationSampleSchema = z.object({
 export const ScaleSimOverridesSchema = z.object({
   runName: z.string().min(1).optional(),
   bandwidth: positiveNum.optional(),
+  dramBandwidth: positiveNum.optional(),
   interfaceBandwidth: z.string().min(1).optional(),
   ifmapSramKB: positiveNum.optional(),
   filterSramKB: positiveNum.optional(),

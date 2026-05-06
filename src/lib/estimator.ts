@@ -113,14 +113,23 @@ export function estimateTile(hw: HardwareConfig, shape: MatmulShape, tileM: numb
   const paddingRatio = paddedOps / usefulOps - 1;
   const activeRows = Math.min(tileM, hw.arrayRows), activeCols = Math.min(tileN, hw.arrayCols);
   const spatialUtil = (activeRows * activeCols) / (hw.arrayRows * hw.arrayCols);
-  const boundaryUtil = usefulOps / paddedOps;
-  const dataflowFactor = hw.dataflow === "WS" ? 1.0 : hw.dataflow === "OS" ? 1.06 : 1.12;
-  const startup = hw.arrayRows + hw.arrayCols + tileK;
-  const tileCompute = Math.ceil((tileM * tileN * tileK) / Math.max(1, activeRows * activeCols));
-  const tileCycles = Math.ceil((tileCompute + startup) * dataflowFactor);
-  const cycles = Math.ceil(mTiles * nTiles * kTiles * tileCycles);
-  const utilization = clamp(spatialUtil * boundaryUtil * (tileK / Math.max(tileK, startup * 0.25)), 0, 1);
   const sramBytes = (tileM * tileK + tileK * tileN + tileM * tileN) * bytes;
+  const boundaryUtil = usefulOps / paddedOps;
+  const dataflowFactor = hw.dataflow === "WS" ? 1.0 : hw.dataflow === "OS" ? 1.05 : 1.10;
+  // SCALE-Sim-style first-order model:
+  // - tileCompute models useful MAC issue time over the active PE rectangle.
+  // - fillDrain models array wavefront fill/drain. A full tile pays roughly rows+cols+0.5K.
+  // - skinnyPenalty accounts for tiles that occupy only part of the array, which SCALE-Sim still pays
+  //   as SRAM/prefetch and array scheduling overhead. This substantially improves conv/im2col cases
+  //   where N is smaller than arrayCols.
+  const tileCompute = Math.ceil((tileM * tileN * tileK) / Math.max(1, activeRows * activeCols));
+  const fillDrain = hw.arrayRows + hw.arrayCols + Math.ceil(tileK * 0.5);
+  const skinnyPenalty = Math.max(0, hw.arrayCols - activeCols) * 4 + Math.max(0, hw.arrayRows - activeRows) * 2;
+  const memoryPressure = sramBytes / Math.max(1, hw.sramKB * 1024);
+  const memoryPenalty = memoryPressure > 0.75 ? Math.ceil((memoryPressure - 0.75) * 32) : 0;
+  const tileCycles = Math.ceil((tileCompute + fillDrain + skinnyPenalty + memoryPenalty) * dataflowFactor);
+  const cycles = Math.ceil(mTiles * nTiles * kTiles * tileCycles);
+  const utilization = clamp(spatialUtil * boundaryUtil * (tileK / Math.max(tileK, fillDrain * 0.20)) / (1 + skinnyPenalty / Math.max(1, fillDrain + tileCompute)), 0, 1);
   const sramLimit = hw.sramKB * 1024;
   const boundaryPenalty = (mTiles * nTiles * kTiles) * (1 - boundaryUtil) + Math.max(0, sramBytes - sramLimit) / Math.max(1, sramLimit) * 10;
   const normalizedCycles = cycles / 1e6;
