@@ -1,0 +1,8 @@
+[
+  { "id": "small_matmul", "model": "regression", "opName": "small_matmul", "m": 32, "n": 32, "k": 64, "dtypeBytes": 2, "source": "manual" },
+  { "id": "boundary_case", "model": "regression", "opName": "boundary_case", "m": 197, "n": 768, "k": 768, "dtypeBytes": 2, "source": "manual" },
+  { "id": "ffn_expand", "model": "regression", "opName": "ffn_expand", "m": 197, "n": 3072, "k": 768, "dtypeBytes": 2, "source": "manual" },
+  { "id": "ffn_project", "model": "regression", "opName": "ffn_project", "m": 197, "n": 768, "k": 3072, "dtypeBytes": 2, "source": "manual" },
+  { "id": "large_square", "model": "regression", "opName": "large_square", "m": 4096, "n": 4096, "k": 4096, "dtypeBytes": 2, "source": "manual" },
+  { "id": "tiny_batch", "model": "regression", "opName": "tiny_batch", "m": 1, "n": 768, "k": 768, "dtypeBytes": 2, "source": "manual" }
+]

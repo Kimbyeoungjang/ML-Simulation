@@ -1,0 +1,6 @@
+{
+  "hardware": { "name": "TPUv2-like", "arrayRows": 128, "arrayCols": 128, "frequencyMHz": 700, "sramKB": 8192, "dataflow": "WS", "bytesPerElement": 2 },
+  "shapes": [{ "id": "vit197", "model": "vit", "opName": "qkv", "m": 197, "n": 768, "k": 768, "dtypeBytes": 2 }],
+  "candidates": { "tileM": [32,64,96,128], "tileN": [64,128,256], "tileK": [32,64,128] },
+  "objective": "balanced"
+}

@@ -1,0 +1,6 @@
+id,model,op_name,m,n,k,dtype_bytes
+vit_attn_qkv,vit-s,attention_qkv,197,2304,384,2
+vit_mlp_fc1,vit-s,mlp_fc1,197,1536,384,2
+vit_mlp_fc2,vit-s,mlp_fc2,197,384,1536,2
+bert_ffn1,bert-base,ffn_1,384,3072,768,2
+bert_ffn2,bert-base,ffn_2,384,768,3072,2

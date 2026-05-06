@@ -1,0 +1,12 @@
+{
+  "elapsedMs": 58.912125,
+  "ops": 500,
+  "totalCycles": 14208768,
+  "heap": {
+    "rss": 132644864,
+    "heapTotal": 49348608,
+    "heapUsed": 22281000,
+    "external": 3437236,
+    "arrayBuffers": 1073655
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "hardware": { "name": "tiny", "arrayRows": 4, "arrayCols": 4, "frequencyMHz": 1000, "sramKB": 64, "dataflow": "WS", "bytesPerElement": 2 },
+  "shapes": [{ "id": "tiny", "model": "oracle", "opName": "mm", "m": 8, "n": 8, "k": 8, "dtypeBytes": 2 }],
+  "candidates": { "tileM": [2,4,8], "tileN": [2,4,8], "tileK": [2,4,8] },
+  "objective": "cycles"
+}

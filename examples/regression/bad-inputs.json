@@ -1,0 +1,5 @@
+[
+  { "case": "zero_m", "shape": { "id": "bad", "model": "bad", "opName": "zero_m", "m": 0, "n": 32, "k": 32, "dtypeBytes": 2 } },
+  { "case": "empty_tiles", "candidates": { "tileM": [], "tileN": [32], "tileK": [32] } },
+  { "case": "negative_sram", "hardwarePatch": { "sramKB": -1 } }
+]

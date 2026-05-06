@@ -1,0 +1,5 @@
+model,op_name,predicted_cycles,measured_cycles,scalesim_cycles
+vit_s,qkv,1020000,1120000,1140000
+vit_s,attn_out,780000,850000,860000
+vit_s,ffn_expand,4200000,4550000,4500000
+vit_s,ffn_project,3900000,4180000,4250000

@@ -1,0 +1,20 @@
+{
+  "version": "tileforge.project.v1",
+  "name": "Minimal MatMul",
+  "createdAt": "2026-05-06T00:00:00.000Z",
+  "hardware": {
+    "name": "Academic-64x64",
+    "arrayRows": 64,
+    "arrayCols": 64,
+    "frequencyMHz": 700,
+    "sramKB": 512,
+    "dataflow": "WS",
+    "bytesPerElement": 2
+  },
+  "shapes": [
+    { "id": "mm0", "model": "minimal", "opName": "matmul", "m": 128, "n": 128, "k": 256, "dtypeBytes": 2, "source": "manual" }
+  ],
+  "candidates": { "tileM": [32, 64], "tileN": [32, 64], "tileK": [32, 64] },
+  "objective": "balanced",
+  "notes": "Small deterministic project for docs and smoke tests."
+}

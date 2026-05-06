@@ -1,0 +1,4 @@
+model,op_name,array,dataflow,predicted_cycles,measured_cycles
+vit_s,qkv_projection,128x128,WS,1200000,1340000
+vit_s,ffn_expand,128x128,WS,4200000,4750000
+bert_base,ffn_project,256x256,WS,2600000,3010000

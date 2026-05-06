@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "tileforge.manifest.v1",
+  "type": "object",
+  "required": ["schemaVersion", "toolVersion", "createdAt"],
+  "properties": {
+    "schemaVersion": { "type": "string" },
+    "toolVersion": { "type": "string" },
+    "createdAt": { "type": "string" },
+    "hardware": { "type": "object" },
+    "shapes": { "type": "array" }
+  }
+}

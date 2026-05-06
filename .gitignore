@@ -1,0 +1,34 @@
+# dependencies
+node_modules/
+
+# Next.js / build outputs
+.next/
+out/
+dist/
+coverage/
+
+# local environment
+.env
+.env.*
+!.env.example
+
+# TileForge runtime artifacts
+.tileforge/
+.tileforge_jobs/
+release/
+external/
+
+# generated external-tool outputs
+COMPUTE_REPORT.csv
+*.vmfb
+*.log
+
+# TypeScript / tooling cache
+tsconfig.tsbuildinfo
+*.tsbuildinfo
+
+# OS / editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

@@ -1,0 +1,6 @@
+{
+  "schemaVersion": "tileforge.errorBudget.v1",
+  "maxMapePct": 1000,
+  "minTop3Recall": 0.5,
+  "maxMedianRegret": 2.0
+}

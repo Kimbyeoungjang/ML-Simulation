@@ -1,0 +1,7 @@
+{
+  "schemaVersion": "tileforge.benchmarkBaseline.v1",
+  "small": { "maxMs": 200 },
+  "medium": { "maxMs": 2500 },
+  "large": { "maxMs": 20000 },
+  "memory": { "maxHeapGrowthMB": 200 }
+}

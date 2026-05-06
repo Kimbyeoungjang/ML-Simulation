@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "tileforge.result.v1",
+  "type": "object",
+  "required": ["schemaVersion", "toolVersion", "createdAt", "response"],
+  "properties": {
+    "schemaVersion": { "const": "tileforge.result.v1" },
+    "toolVersion": { "type": "string" },
+    "createdAt": { "type": "string" },
+    "response": { "type": "object" }
+  }
+}

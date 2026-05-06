@@ -1,0 +1,272 @@
+import "./env";
+import { readProjectDotEnv } from "./env";
+import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import path from "node:path";
+import type { JobKind, JobRecord, JobStatus, JobStage } from "@/types/job";
+import type { SearchRequest } from "@/types/domain";
+import { hashObject } from "@/lib/hash";
+import { ensureJobRoot, getJobRoot, jobDir } from "./workspace";
+import { nowIso, stableId } from "@/lib/determinism";
+import { deleteJobSqlite, listJobsSqlite, markStageSqlite, mirrorLog, readJobSqlite, saveJobSqlite, sqlitePrimary } from "./sqliteStore";
+import { atomicWriteFile } from "./atomic";
+import { appendJobEvent } from "./eventsLog";
+import { assertTransition, isTerminalStatus } from "@/lib/stateMachine";
+
+const DEFAULT_TIMEOUT_MS = Number(process.env.TILEFORGE_JOB_TIMEOUT_MS ?? 10 * 60 * 1000);
+const DEFAULT_MAX_ATTEMPTS = Number(process.env.TILEFORGE_JOB_MAX_ATTEMPTS ?? 1);
+export function maxParallelJobs(): number {
+  // Read .env on every check so the UI can change TILEFORGE_MAX_PARALLEL_JOBS
+  // without restarting the long-running worker process. the .env value wins so changes saved from the UI are picked up
+  // by both the web server and the separate worker process without restart.
+  const envFile = readProjectDotEnv();
+  const value = envFile.TILEFORGE_MAX_PARALLEL_JOBS
+    ?? process.env.TILEFORGE_MAX_PARALLEL_JOBS
+    ?? envFile.TILEFORGE_JOB_PARALLELISM
+    ?? process.env.TILEFORGE_JOB_PARALLELISM
+    ?? 2;
+  const parsed = Number(value);
+  return Math.max(1, Math.min(Number.isFinite(parsed) ? Math.floor(parsed) : 2, 32));
+}
+export function requestCacheKey(kind: JobKind, request: SearchRequest): string {
+  return hashObject({ jobKind: kind, request });
+}
+
+function timestampSuffix(date = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}${pad(date.getMonth()+1)}${pad(date.getDate())}_${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+}
+
+function safeJobName(name: string): string {
+  return name.trim().replace(/[^A-Za-z0-9가-힣_.-]+/g, "_").replace(/^_+|_+$/g, "") || "job";
+}
+
+async function uniqueJobName(base: string): Promise<string> {
+  const safe = safeJobName(base);
+  const jobs = await listJobs().catch(() => []);
+  const used = new Set(jobs.map(j => j.name).filter(Boolean) as string[]);
+  if (!used.has(safe)) return safe;
+  let candidate = `${safe}_${timestampSuffix()}`;
+  let i = 2;
+  while (used.has(candidate)) candidate = `${safe}_${timestampSuffix()}_${i++}`;
+  return candidate;
+}
+
+export async function createJob(kind: JobKind, request: SearchRequest, requestedName?: string): Promise<JobRecord> {
+  await ensureJobRoot();
+  await enforceJobQuota();
+  const id = stableId("job");
+  const now = nowIso();
+  const rec: JobRecord = {
+    id, kind, name: await uniqueJobName(requestedName || request.hardware?.name || kind), requestHash: requestCacheKey(kind, request), status: "queued", stage: "queued", progress: 0, cancelRequested: false,
+    createdAt: now, updatedAt: now, request, logs: [], artifacts: [], warnings: [],
+    attempts: 0, maxAttempts: DEFAULT_MAX_ATTEMPTS, timeoutMs: DEFAULT_TIMEOUT_MS,
+    stageHistory: [{ stage: "queued", status: "done", at: now, detail: "created" }]
+  };
+  await mkdir(jobDir(id), { recursive: true });
+  await saveJob(rec);
+  return rec;
+}
+
+export async function saveJob(job: JobRecord) {
+  job.updatedAt = nowIso();
+  await mkdir(jobDir(job.id), { recursive: true });
+  await atomicWriteFile(path.join(jobDir(job.id), "job.json"), JSON.stringify(job, null, 2));
+  saveJobSqlite(job);
+}
+
+export async function readJob(id: string): Promise<JobRecord> {
+  const fromDb = sqlitePrimary() ? readJobSqlite(id) : undefined;
+  if (fromDb) return fromDb;
+  return JSON.parse(await readFile(path.join(jobDir(id), "job.json"), "utf8"));
+}
+
+export async function listJobs(): Promise<JobRecord[]> {
+  await ensureJobRoot();
+  const merged = new Map<string, JobRecord>();
+  const dbJobs = sqlitePrimary() ? listJobsSqlite() : undefined;
+  for (const j of dbJobs ?? []) merged.set(j.id, j);
+  const dirs = await readdir(getJobRoot(), { withFileTypes: true });
+  for (const d of dirs) if (d.isDirectory()) {
+    try {
+      const fileJob = JSON.parse(await readFile(path.join(jobDir(d.name), "job.json"), "utf8"));
+      if (!merged.has(fileJob.id)) merged.set(fileJob.id, fileJob);
+    } catch {}
+  }
+  return [...merged.values()].sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
+}
+
+export async function hasRunningJob(): Promise<boolean> {
+  return (await listJobs()).some(j => j.status === "running");
+}
+
+export async function runningJobCount(): Promise<number> {
+  return (await listJobs()).filter(j => j.status === "running").length;
+}
+
+export async function findQueued(excludeIds: string[] = []): Promise<JobRecord | undefined> {
+  const jobs = await listJobs();
+  const running = jobs.filter(j => j.status === "running").length;
+  if (running >= maxParallelJobs()) return undefined;
+  const excluded = new Set(excludeIds);
+  return jobs.reverse().find(j => j.status === "queued" && !excluded.has(j.id));
+}
+
+
+export async function recoverStaleRunningJobs(): Promise<number> {
+  const jobs = await listJobs();
+  const now = Date.now();
+  let recovered = 0;
+  for (const job of jobs) {
+    if (job.status !== "running") continue;
+    const ageMs = now - Date.parse(job.updatedAt || job.createdAt || new Date(0).toISOString());
+    const staleMs = Math.max(Number(job.timeoutMs ?? DEFAULT_TIMEOUT_MS) + 30_000, 90_000);
+    if (!Number.isFinite(ageMs) || ageMs < staleMs) continue;
+    job.status = "failed";
+    job.stage = "failed" as any;
+    job.progress = Math.max(job.progress ?? 0, 95);
+    job.finishedAt = nowIso();
+    job.error = JSON.stringify({
+      code: "STALE_RUNNING_JOB",
+      message: `worker가 종료되었거나 응답하지 않아 ${Math.round(ageMs / 1000)}초 동안 갱신되지 않은 running job을 실패 처리했습니다.`,
+    }, null, 2);
+    appendLogSync(job, "오래 갱신되지 않은 running job을 실패 처리하고 큐를 계속 진행합니다.");
+    await saveJob(job);
+    recovered++;
+  }
+  return recovered;
+}
+
+export async function updateJobStatus(job: JobRecord, status: JobStatus, log?: string) {
+  assertTransition(job.status, status);
+  job.status = status;
+  if (isTerminalStatus(status)) job.finishedAt = nowIso();
+  void appendJobEvent(job.id, { level: status === "failed" ? "error" : "info", stage: job.stage, code: `STATUS_${status.toUpperCase()}`, message: log ?? `status=${status}` });
+  if (log) appendLogSync(job, log);
+  await saveJob(job);
+}
+
+function appendLogSync(job: JobRecord, log: string) {
+  const at = nowIso();
+  const line = `[${at}] ${log}`;
+  job.logs.push(line);
+  mirrorLog(job.id, line, at);
+  void appendJobEvent(job.id, { level: log.startsWith("WARNING") ? "warn" : "info", stage: job.stage, message: log });
+}
+
+export async function addLog(job: JobRecord, log: string) { appendLogSync(job, log); await saveJob(job); }
+export async function addWarning(job: JobRecord, warning: string) { job.warnings = [...(job.warnings ?? []), warning]; await addLog(job, `WARNING: ${warning}`); }
+
+export async function requestCancel(id: string) {
+  const job = await readJob(id);
+  job.cancelRequested = true;
+  if (job.status === "queued") { job.status = "cancelled"; job.stage = "cancelled"; job.progress = 100; job.finishedAt = nowIso(); }
+  appendLogSync(job, "Cancellation requested");
+  await saveJob(job);
+  return job;
+}
+
+export async function updateProgress(job: JobRecord, stage: JobStage, progress: number, log?: string) {
+  job.stage = stage; job.progress = progress;
+  const at = nowIso();
+  job.stageHistory = [...(job.stageHistory ?? []), { stage, status: progress >= 100 ? "done" : "running", at, detail: log }];
+  markStageSqlite(job.id, stage, progress >= 100 ? "done" : "running", at, log);
+  void appendJobEvent(job.id, { level: "info", stage, code: "STAGE_PROGRESS", message: log ?? `progress=${progress}`, data: { progress } });
+  if (log) appendLogSync(job, log);
+  await saveJob(job);
+}
+
+export async function markStageDone(job: JobRecord, stage: JobStage, detail?: string) {
+  const at = nowIso();
+  job.stageHistory = [...(job.stageHistory ?? []), { stage, status: "done", at, detail }];
+  markStageSqlite(job.id, stage, "done", at, detail);
+  await saveJob(job);
+}
+
+export async function acquireJobLock(job: JobRecord): Promise<boolean> {
+  const lock = path.join(jobDir(job.id), "job.lock");
+  try {
+    await writeFile(lock, JSON.stringify({ pid: process.pid, acquiredAt: nowIso() }), { flag: "wx" });
+    return true;
+  } catch {
+    try {
+      const s = await stat(lock);
+      const ageMs = Date.now() - s.mtimeMs;
+      if (ageMs > Math.max(job.timeoutMs ?? DEFAULT_TIMEOUT_MS, 60_000)) {
+        await rm(lock, { force: true });
+        await writeFile(lock, JSON.stringify({ pid: process.pid, acquiredAt: nowIso(), recoveredStale: true }), { flag: "wx" });
+        await addLog(job, "Recovered stale job lock");
+        return true;
+      }
+    } catch {}
+    return false;
+  }
+}
+export async function releaseJobLock(job: JobRecord) { await rm(path.join(jobDir(job.id), "job.lock"), { force: true }); }
+
+
+function isNoisyPythonNotFoundLine(line: string): boolean {
+  const lower = line.toLowerCase();
+  return lower.includes("python3") && (
+    lower.includes("9009") ||
+    lower.includes("not recognized") ||
+    lower.includes("not found") ||
+    lower.includes("command not found") ||
+    lower.includes("python was not found")
+  );
+}
+
+function sanitizeTextForDisplay(text: string): string {
+  const lines = text.split(/\r?\n/);
+  const kept = lines.filter(line => !isNoisyPythonNotFoundLine(line));
+  const hidden = lines.length - kept.length;
+  if (hidden > 0) kept.push(`(${hidden}개 Windows python3 명령 미탐색 오류는 작업 현황에서 숨겼습니다.)`);
+  return kept.join("\n");
+}
+
+function sanitizeErrorForDisplay(error: string): string {
+  try {
+    const parsed = JSON.parse(error);
+    const message = typeof parsed?.message === "string" ? sanitizeTextForDisplay(parsed.message) : undefined;
+    const next = { ...parsed };
+    if (message !== undefined) next.message = message;
+    if (typeof parsed?.hint === "string") next.hint = sanitizeTextForDisplay(parsed.hint);
+    return JSON.stringify(next, null, 2);
+  } catch {
+    return sanitizeTextForDisplay(error);
+  }
+}
+
+function sanitizeJobForDisplay(job: JobRecord): JobRecord {
+  return {
+    ...job,
+    logs: (job.logs ?? []).map(sanitizeTextForDisplay).filter(line => line.trim().length > 0),
+    error: job.error ? sanitizeErrorForDisplay(job.error) : job.error
+  };
+}
+
+export interface ListJobsOptions { limit?: number; cursor?: string; status?: JobStatus; since?: string; }
+export async function listJobsPaged(options: ListJobsOptions = {}): Promise<{ jobs: JobRecord[]; nextCursor?: string; total: number }> {
+  const all = (await listJobs()).filter(job => {
+    if (options.status && job.status !== options.status) return false;
+    if (options.since && job.createdAt < options.since) return false;
+    return true;
+  });
+  const start = options.cursor ? Math.max(0, all.findIndex(j => j.id === options.cursor) + 1) : 0;
+  const limit = Math.max(1, Math.min(options.limit ?? 50, 500));
+  const jobs = all.slice(start, start + limit).map(sanitizeJobForDisplay);
+  const nextCursor = start + limit < all.length ? jobs.at(-1)?.id : undefined;
+  return { jobs, nextCursor, total: all.length };
+}
+
+export async function deleteJob(id: string): Promise<void> {
+  await rm(jobDir(id), { recursive: true, force: true });
+  deleteJobSqlite(id);
+}
+
+export async function enforceJobQuota() {
+  const { quotaConfig } = await import("@/lib/quotas");
+  const quota = quotaConfig();
+  const jobs = await listJobs();
+  const queued = jobs.filter(j => j.status === "queued").length;
+  if (queued >= quota.maxQueuedJobs) throw new Error(`JOB_QUOTA_EXCEEDED: queued jobs ${queued} >= ${quota.maxQueuedJobs}`);
+}

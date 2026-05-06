@@ -1,0 +1,12 @@
+{
+  "version": "tileforge.project.v1",
+  "name": "ViT-S Boundary Example",
+  "createdAt": "2026-05-06T00:00:00.000Z",
+  "hardware": { "name": "TPUv2-like", "arrayRows": 128, "arrayCols": 128, "frequencyMHz": 700, "sramKB": 4096, "dataflow": "WS", "bytesPerElement": 2 },
+  "shapes": [
+    { "id": "qkv", "model": "vit_s", "opName": "qkv_proj", "m": 197, "n": 768, "k": 768, "dtypeBytes": 2, "source": "manual" },
+    { "id": "ffn", "model": "vit_s", "opName": "ffn_expand", "m": 197, "n": 3072, "k": 768, "dtypeBytes": 2, "source": "manual" }
+  ],
+  "candidates": { "tileM": [32, 64, 128], "tileN": [64, 128, 256], "tileK": [32, 64, 128] },
+  "objective": "balanced"
+}

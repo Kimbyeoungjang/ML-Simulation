@@ -1,0 +1,7 @@
+{
+  "version": "0.5.0",
+  "name": "TPUv2-like ViT-S workbench demo",
+  "hardwarePreset": "TPUv2-like",
+  "workloadPreset": "ViT-S sample",
+  "notes": "Example project for bottleneck, roofline, energy, IREE command and paper export views."
+}

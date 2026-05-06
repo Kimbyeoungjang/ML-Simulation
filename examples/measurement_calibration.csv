@@ -1,0 +1,3 @@
+model,op_name,array,dataflow,predicted_cycles,measured_cycles
+vit_s,qkv,128x128,WS,1000000,1120000
+vit_s,ffn,128x128,WS,4000000,4520000

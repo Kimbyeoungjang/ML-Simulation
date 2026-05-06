@@ -1,0 +1,88 @@
+import path from "node:path";
+import { mkdir } from "node:fs/promises";
+import { runExternalCommand } from "@/server/externalCommand";
+import { commandLabel, ireeCompileCommandCandidates, scaleSimCommandCandidates, withPrependedPythonPath } from "@/server/externalToolCandidates";
+import { upsertProjectDotEnv } from "@/server/env";
+
+async function firstWorkingCommand(
+  label: string,
+  commands: string[],
+  args: string[],
+  options?: { env?: Record<string, string | undefined>; timeoutMs?: number; cwd?: string }
+): Promise<{ command?: string; failures: string[] }> {
+  const failures: string[] = [];
+  const cwd = options?.cwd ?? process.cwd();
+  await mkdir(cwd, { recursive: true });
+  for (const command of commands) {
+    try {
+      await runExternalCommand(command, args, {
+        cwd,
+        timeoutMs: options?.timeoutMs ?? 10_000,
+        maxOutputBytes: 30_000,
+        env: options?.env
+      });
+      return { command: commandLabel(command), failures };
+    } catch (error) {
+      failures.push(`${commandLabel(command)}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  console.warn(`WARNING: ${label} working command not found.`);
+  for (const f of failures.slice(0, 5)) console.warn(`  - ${f}`);
+  if (failures.length > 5) console.warn(`  ... ${failures.length - 5} more failures omitted`);
+  return { failures };
+}
+
+function unique(values: string[]): string[] {
+  return Array.from(new Set(values.filter(v => v.trim()).map(v => v.trim())));
+}
+
+async function main() {
+  const values: Record<string, string> = {};
+
+  // Probe SCALE-Sim from a non-root cwd. Older SCALE-Sim versions write
+  // COMPUTE_REPORT.csv to cwd, and TileForge intentionally runs SCALE-Sim from
+  // an output directory. A relative source path like external\\SCALE-Sim\\... may
+  // pass a root-level `-h` probe but fail in the real worker; probing from here
+  // catches that and replaces it with a cwd-independent module command or an
+  // absolute source-script command.
+  const scaleProbeCwd = path.resolve(".tileforge", "env-probe", "scalesim");
+  const configuredScale = process.env.TILEFORGE_SCALE_SIM_CMD?.trim();
+  const scaleCommands = unique([
+    ...(configuredScale ? [configuredScale] : []),
+    ...scaleSimCommandCandidates(undefined, { ignoreEnv: true })
+  ]);
+  const scale = await firstWorkingCommand(
+    "SCALE-Sim",
+    scaleCommands,
+    ["-h"],
+    { env: withPrependedPythonPath(path.resolve("external/SCALE-Sim")), timeoutMs: 10_000, cwd: scaleProbeCwd }
+  );
+  if (scale.command && scale.command !== configuredScale) values.TILEFORGE_SCALE_SIM_CMD = scale.command;
+
+  const configuredIree = process.env.TILEFORGE_IREE_COMPILE_CMD?.trim();
+  const ireeCommands = unique([
+    ...(configuredIree ? [configuredIree] : []),
+    ...ireeCompileCommandCandidates(undefined, { ignoreEnv: true })
+  ]);
+  const iree = await firstWorkingCommand("IREE compiler", ireeCommands, ["--version"], { timeoutMs: 10_000 });
+  if (iree.command && iree.command !== configuredIree) values.TILEFORGE_IREE_COMPILE_CMD = iree.command;
+
+
+  if (!process.env.TILEFORGE_MAX_PARALLEL_JOBS?.trim()) {
+    values.TILEFORGE_MAX_PARALLEL_JOBS = "2";
+  }
+
+  const result = upsertProjectDotEnv(values, process.cwd(), { overwrite: true });
+  if (result.created) console.log(`created .env: ${result.path}`);
+  if (result.writtenKeys.length) {
+    console.log(`updated .env keys: ${result.writtenKeys.join(", ")}`);
+    for (const key of result.writtenKeys) console.log(`${key}=${values[key]}`);
+  } else {
+    console.log(`.env already contains working external tool commands: ${result.path}`);
+  }
+}
+
+main().catch(error => {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+});

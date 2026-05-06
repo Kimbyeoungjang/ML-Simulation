@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "tileforge.project.v1",
+  "type": "object",
+  "required": ["version", "name", "hardware", "shapes", "candidates", "objective"],
+  "properties": {
+    "version": { "type": "string" },
+    "name": { "type": "string" },
+    "hardware": { "type": "object" },
+    "shapes": { "type": "array" },
+    "candidates": { "type": "object" },
+    "objective": { "type": "string" }
+  }
+}

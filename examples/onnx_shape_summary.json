@@ -1,0 +1,4 @@
+[
+  {"model":"bert-base","opName":"MatMul_Q","m":384,"n":768,"k":768,"dtypeBytes":2},
+  {"model":"bert-base","opName":"MatMul_FFN1","m":384,"n":3072,"k":768,"dtypeBytes":2}
+]

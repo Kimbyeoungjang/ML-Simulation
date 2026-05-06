@@ -1,0 +1,11 @@
+{
+  "hardware": { "name": "TPUv2-like", "arrayRows": 128, "arrayCols": 128, "frequencyMHz": 700, "sramKB": 8192, "dataflow": "WS", "memoryBandwidthGBps": 900 },
+  "shapes": [
+    { "id": "qkv", "model": "vit_s", "opName": "qkv", "m": 197, "n": 768, "k": 768, "dtypeBytes": 2 },
+    { "id": "attn_out", "model": "vit_s", "opName": "attn_out", "m": 197, "n": 768, "k": 768, "dtypeBytes": 2 },
+    { "id": "ffn_expand", "model": "vit_s", "opName": "ffn_expand", "m": 197, "n": 3072, "k": 768, "dtypeBytes": 2 },
+    { "id": "ffn_project", "model": "vit_s", "opName": "ffn_project", "m": 197, "n": 768, "k": 3072, "dtypeBytes": 2 }
+  ],
+  "candidates": { "tileM": [32, 64, 128], "tileN": [64, 128, 256], "tileK": [32, 64, 128] },
+  "objective": "balanced"
+}

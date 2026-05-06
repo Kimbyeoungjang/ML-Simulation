@@ -1,0 +1,12 @@
+services:
+  tileforge:
+    build: .
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./.tileforge_jobs:/app/.tileforge_jobs
+      - ./.tileforge:/app/.tileforge
+    environment:
+      - TILEFORGE_SCALE_SIM_CMD=${TILEFORGE_SCALE_SIM_CMD:-}
+      - TILEFORGE_IREE_COMPILE_CMD=${TILEFORGE_IREE_COMPILE_CMD:-}
+      - TILEFORGE_MLIR_OPT_CMD=${TILEFORGE_MLIR_OPT_CMD:-}
