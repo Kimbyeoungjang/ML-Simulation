@@ -28,10 +28,14 @@ describe("worker integration", () => {
       expect(saved.status).toBe("succeeded");
       expect(saved.artifacts).toContain("result.json");
       expect(saved.artifacts).toContain("scalesim_summary.json");
+      expect(saved.artifacts).toContain("scalesim_top3_summary.json");
       expect(saved.artifacts).toContain("iree_summary.json");
       const scaleSummary = JSON.parse(await readFile(path.join(root, job.id, "scalesim_summary.json"), "utf8"));
+      const scaleTop3Summary = JSON.parse(await readFile(path.join(root, job.id, "scalesim_top3_summary.json"), "utf8"));
       const ireeSummary = JSON.parse(await readFile(path.join(root, job.id, "iree_summary.json"), "utf8"));
       expect(scaleSummary.totalCycles).toBe(1234);
+      expect(scaleSummary.candidateLayers.length).toBeGreaterThan(0);
+      expect(scaleTop3Summary.layers.length).toBeGreaterThan(0);
       expect(ireeSummary.vmfbBytes).toBeGreaterThan(0);
       expect(await readFile(path.join(root, job.id, "report.md"), "utf8")).toContain("TileForge");
     } finally {

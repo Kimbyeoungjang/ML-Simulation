@@ -53,6 +53,8 @@ function emptyArtifacts(): SearchResponse["artifacts"] {
     scaleSimConfig: "",
     scaleSimTopology: "",
     scaleSimLayout: "",
+    scaleSimTopkTopology: "",
+    scaleSimTopkLayout: "",
     projectJson: "{}"
   };
 }
@@ -116,11 +118,10 @@ export function estimateTile(hw: HardwareConfig, shape: MatmulShape, tileM: numb
   const sramBytes = (tileM * tileK + tileK * tileN + tileM * tileN) * bytes;
   const boundaryUtil = usefulOps / paddedOps;
   const scaleCycles = estimateScaleSimLikeCycles(hw, shape, tileM, tileN, tileK, scaleSim);
-  const skinnyPenalty = Math.max(0, hw.arrayCols - activeCols) * 4 + Math.max(0, hw.arrayRows - activeRows) * 2;
   const memoryPressure = sramBytes / Math.max(1, hw.sramKB * 1024);
   const memoryPenalty = memoryPressure > 0.75 ? Math.ceil((memoryPressure - 0.75) * 32) : 0;
-  const cycles = Math.ceil(scaleCycles.cycles + (skinnyPenalty + memoryPenalty) * Math.max(1, mTiles * nTiles));
-  const utilization = clamp(spatialUtil * boundaryUtil * scaleCycles.computeUtil / (1 + skinnyPenalty / Math.max(1, scaleCycles.computeCycles)), 0, 1);
+  const cycles = Math.ceil(scaleCycles.cycles + memoryPenalty * Math.max(1, mTiles * nTiles));
+  const utilization = clamp(spatialUtil * boundaryUtil * scaleCycles.computeUtil, 0, 1);
   const sramLimit = hw.sramKB * 1024;
   const boundaryPenalty = (mTiles * nTiles * kTiles) * (1 - boundaryUtil) + Math.max(0, sramBytes - sramLimit) / Math.max(1, sramLimit) * 10;
   const normalizedCycles = cycles / 1e6;
@@ -148,39 +149,46 @@ function scaleSimBandwidths(hw: HardwareConfig, scaleSim?: ScaleSimOverrides) {
 function estimateScaleSimLikeCycles(hw: HardwareConfig, shape: MatmulShape, tileM: number, tileN: number, tileK: number, scaleSim?: ScaleSimOverrides) {
   const ar = Math.max(1, hw.arrayRows);
   const ac = Math.max(1, hw.arrayCols);
-  const mSpatial = Math.max(1, tileM);
-  const nSpatial = Math.max(1, tileN);
-  const kSpatial = Math.max(1, Math.min(tileK, ar));
+  const tm = Math.max(1, tileM);
+  const tn = Math.max(1, tileN);
+  const tk = Math.max(1, tileK);
+  const mTiles = ceilDiv(shape.m, tm);
+  const nTiles = ceilDiv(shape.n, tn);
+  const kTiles = ceilDiv(shape.k, tk);
+  const tileRepeats = Math.max(1, mTiles * nTiles * kTiles);
   const bw = scaleSimBandwidths(hw, scaleSim);
   let computeCycles = 0;
   let stallCycles = 0;
   let computeUtil = 1;
   if (hw.dataflow === "OS") {
-    const folds = ceilDiv(shape.m, mSpatial) * ceilDiv(shape.n, nSpatial);
-    const perFold = shape.k + ar + ac - 2;
-    computeCycles = folds * perFold;
-    const filterTraffic = shape.k * shape.n;
-    const ifmapTraffic = shape.m * shape.k;
-    stallCycles = 0.45 * filterTraffic / bw.filter + 0.05 * ifmapTraffic / bw.ifmap;
-    computeUtil = (Math.min(mSpatial, ar) * Math.min(nSpatial, ac) * shape.k) / Math.max(1, ar * ac * perFold);
+    const rowFolds = ceilDiv(tm, ar);
+    const colFolds = ceilDiv(tn, ac);
+    const perFold = tk + ar + ac - 2;
+    computeCycles = tileRepeats * rowFolds * colFolds * perFold;
+    stallCycles = 0;
+    computeUtil = (Math.min(tm, ar) * Math.min(tn, ac) * tk) / Math.max(1, ar * ac * perFold);
   } else if (hw.dataflow === "IS") {
-    const rowFolds = ceilDiv(shape.k, kSpatial);
-    const colFolds = ceilDiv(shape.m, mSpatial);
-    const perFold = shape.n + 2 * ar + ac - 3;
-    computeCycles = rowFolds * colFolds * perFold;
-    const smallLayer = shape.k * shape.n <= ar * ac * 2;
-    const filterTraffic = shape.k * shape.n * colFolds;
-    stallCycles = smallLayer ? 0 : 1.45 * filterTraffic / bw.filter;
-    computeUtil = (Math.min(kSpatial, ar) * Math.min(mSpatial, ac) * shape.n) / Math.max(1, ar * ac * perFold);
+    const rowFolds = ceilDiv(tk, ar);
+    const colFolds = ceilDiv(tm, ac);
+    const perFold = tn + 2 * ar + ac - 3;
+    computeCycles = tileRepeats * rowFolds * colFolds * perFold;
+    const smallTile = tk * tn <= ar * ac * 2;
+    const ifmapTraffic = tileRepeats * tm * tk;
+    const filterTraffic = tileRepeats * tk * tn;
+    const ofmapTraffic = tileRepeats * tm * tn;
+    stallCycles = smallTile ? 0 : 1.20 * filterTraffic / bw.filter + 0.10 * ifmapTraffic / bw.ifmap + 0.08 * ofmapTraffic / bw.ofmap;
+    computeUtil = (Math.min(tk, ar) * Math.min(tm, ac) * tn) / Math.max(1, ar * ac * perFold);
   } else {
-    const rowFolds = ceilDiv(shape.k, kSpatial);
-    const colFolds = ceilDiv(shape.n, nSpatial);
-    const perFold = shape.m + 2 * ar + ac - 3;
-    computeCycles = rowFolds * colFolds * perFold;
-    const smallLayer = shape.k * shape.n <= ar * ac * 2;
-    const filterTraffic = shape.k * shape.n;
-    stallCycles = smallLayer ? 0 : 0.42 * filterTraffic / bw.filter;
-    computeUtil = (Math.min(kSpatial, ar) * Math.min(nSpatial, ac) * shape.m) / Math.max(1, ar * ac * perFold);
+    const rowFolds = ceilDiv(tk, ar);
+    const colFolds = ceilDiv(tn, ac);
+    const perFold = tm + 2 * ar + ac - 3;
+    computeCycles = tileRepeats * rowFolds * colFolds * perFold;
+    const smallTile = tk * tn <= ar * ac * 2;
+    const ifmapTraffic = tileRepeats * tm * tk;
+    const filterTraffic = Math.max(1, nTiles * kTiles) * tk * tn;
+    const ofmapTraffic = tileRepeats * tm * tn;
+    stallCycles = smallTile ? 0 : 0.45 * filterTraffic / bw.filter + 0.08 * ifmapTraffic / bw.ifmap + 0.05 * ofmapTraffic / bw.ofmap;
+    computeUtil = (Math.min(tk, ar) * Math.min(tn, ac) * tm) / Math.max(1, ar * ac * perFold);
   }
   const prefetchOverlap = Math.min(stallCycles * 0.12, computeCycles * 0.08);
   const cycles = Math.max(1, Math.ceil(computeCycles + Math.max(0, stallCycles - prefetchOverlap)));

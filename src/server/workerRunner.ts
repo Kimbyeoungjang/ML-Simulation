@@ -2,6 +2,7 @@ import path from "node:path";
 import { mkdir, readFile, readdir, stat } from "node:fs/promises";
 import type { JobRecord } from "@/types/job";
 import { estimateAll } from "@/lib/estimator";
+import { scaleSimTopkCandidates } from "@/lib/mlir";
 import { estimateMaybeThreaded } from "./threadedEstimate";
 import { responseToPolicyEntries } from "@/lib/policyDb";
 import {
@@ -286,6 +287,8 @@ async function writeArtifacts(
     "scalesim.cfg": res.artifacts.scaleSimConfig,
     "topology.csv": res.artifacts.scaleSimTopology,
     "layout.csv": res.artifacts.scaleSimLayout ?? "",
+    "topology_top3.csv": res.artifacts.scaleSimTopkTopology ?? "",
+    "layout_top3.csv": res.artifacts.scaleSimTopkLayout ?? "",
     "project.json": res.artifacts.projectJson,
     "manifest.json": res.artifacts.manifestJson ?? "{}",
     "iree-command.sh": res.artifacts.ireeCommand ?? "",
@@ -366,7 +369,33 @@ type ExternalRunSummary = {
   cycleRatio?: number;
   vmfb?: string;
   vmfbBytes?: number;
-  layers?: Array<{ name: string; cycles: number }>;
+  layers?: ScaleSimLayerSummary[];
+  candidateLayers?: ScaleSimLayerSummary[];
+};
+
+type ScaleSimLayerSummary = {
+  name: string;
+  opName?: string;
+  shapeId?: string;
+  rank?: number;
+  tileM?: number;
+  tileN?: number;
+  tileK?: number;
+  tileCount?: number;
+  cycles: number;
+  cyclesPerTile?: number;
+  predictedCycles?: number;
+  predictedTimeUs?: number;
+  predictedUtilization?: number;
+  predictedPaddingRatio?: number;
+  predictedSramBytes?: number;
+  totalCyclesInclPrefetch?: number;
+  stallCycles?: number;
+  overallUtil?: number;
+  mappingEfficiency?: number;
+  computeUtil?: number;
+  sramAccesses?: number;
+  dramAccesses?: number;
 };
 
 async function fileSize(file: string): Promise<number> {
@@ -434,6 +463,72 @@ function numberFromRow(
     if (Number.isFinite(n)) return n;
   }
   return undefined;
+}
+
+const cycleColumnNames = [
+  "Cycles",
+  "Total Cycles",
+  "Total cycles",
+  "Compute cycles",
+  "Compute Cycles",
+  "Total_compute_cycles",
+];
+
+async function readCsvRowsIfExists(file: string): Promise<Array<Record<string, string>>> {
+  try {
+    return csvRows(await readFile(file, "utf8"));
+  } catch {
+    return [];
+  }
+}
+
+async function parseScaleSimLayerReports(
+  computeReport: string,
+  metadata: Array<Partial<ScaleSimLayerSummary>> = [],
+): Promise<ScaleSimLayerSummary[]> {
+  const reportDir = path.dirname(computeReport);
+  const computeRows = await readCsvRowsIfExists(computeReport);
+  const bandwidthRows = await readCsvRowsIfExists(path.join(reportDir, "BANDWIDTH_REPORT.csv"));
+  const detailRows = await readCsvRowsIfExists(path.join(reportDir, "DETAILED_ACCESS_REPORT.csv"));
+  return computeRows.map((row, index) => {
+    const meta = metadata[index] ?? {};
+    const cyclesPerTile = numberFromRow(row, cycleColumnNames) ?? 0;
+    const tileCount = meta.tileCount && meta.tileCount > 0 ? meta.tileCount : undefined;
+    const detail = detailRows[index] ?? {};
+    const sramAccesses =
+      (numberFromRow(detail, ["SRAM IFMAP Reads"]) ?? 0) +
+      (numberFromRow(detail, ["SRAM Filter Reads"]) ?? 0) +
+      (numberFromRow(detail, ["SRAM OFMAP Writes"]) ?? 0);
+    const dramAccesses =
+      (numberFromRow(detail, ["DRAM IFMAP Reads"]) ?? 0) +
+      (numberFromRow(detail, ["DRAM Filter Reads"]) ?? 0) +
+      (numberFromRow(detail, ["DRAM OFMAP Writes"]) ?? 0);
+    const bandwidth = bandwidthRows[index] ?? {};
+    return {
+      ...meta,
+      name:
+        meta.name ??
+        stringFromRow(row, ["Layer Name", "Layer name", "Layer", "layer", "Name", "name"]) ??
+        `layer_${index + 1}`,
+      cycles: tileCount ? cyclesPerTile * tileCount : cyclesPerTile,
+      cyclesPerTile: tileCount ? cyclesPerTile : undefined,
+      totalCyclesInclPrefetch: numberFromRow(row, ["Total Cycles (incl. prefetch)", "Total Cycles incl. prefetch"]),
+      stallCycles: numberFromRow(row, ["Stall Cycles"]),
+      overallUtil: numberFromRow(row, ["Overall Util %"]),
+      mappingEfficiency: numberFromRow(row, ["Mapping Efficiency %"]),
+      computeUtil: numberFromRow(row, ["Compute Util %"]),
+      sramAccesses,
+      dramAccesses,
+      ...Object.fromEntries(Object.entries({
+        avgIfmapSramBw: numberFromRow(bandwidth, ["Avg IFMAP SRAM BW"]),
+        avgFilterSramBw: numberFromRow(bandwidth, ["Avg FILTER SRAM BW"]),
+        avgOfmapSramBw: numberFromRow(bandwidth, ["Avg OFMAP SRAM BW"]),
+        avgIfmapDramBw: numberFromRow(bandwidth, ["Avg IFMAP DRAM BW"]),
+        avgFilterDramBw: numberFromRow(bandwidth, ["Avg FILTER DRAM BW"]),
+        avgOfmapDramBw: numberFromRow(bandwidth, ["Avg OFMAP DRAM BW"]),
+      }).filter(([, value]) => value !== undefined)),
+    };
+  });
 }
 
 async function findFirstExistingFile(
@@ -543,33 +638,23 @@ async function runScaleSimForJob(
       throw new Error(
         "SCALE-Sim 실행은 성공했지만 COMPUTE_REPORT.csv를 찾지 못했습니다",
       );
-    const rows = csvRows(await readFile(computeReport, "utf8"));
-    const cycleColumnNames = [
-      "Cycles",
-      "Total Cycles",
-      "Total cycles",
-      "Compute cycles",
-      "Compute Cycles",
-      "Total_compute_cycles",
-    ];
-    const totalCycles = rows.reduce(
-      (sum, row) => sum + (numberFromRow(row, cycleColumnNames) ?? 0),
-      0,
-    );
-    const layers = rows
-      .map((row, index) => ({
-        name:
-          stringFromRow(row, [
-            "Layer Name",
-            "Layer name",
-            "Layer",
-            "layer",
-            "Name",
-            "name",
-          ]) ?? `layer_${index + 1}`,
-        cycles: numberFromRow(row, cycleColumnNames) ?? 0,
-      }))
+    const layerMetadata = res.results.map((r) => ({
+      name: r.shape.opName,
+      opName: r.shape.opName,
+      shapeId: r.shape.id,
+      predictedCycles: r.best.cycles,
+      predictedTimeUs: r.best.timeUs,
+      predictedUtilization: r.best.utilization,
+      predictedPaddingRatio: r.best.paddingRatio,
+      predictedSramBytes: r.best.sramBytes,
+      tileM: r.best.tileM,
+      tileN: r.best.tileN,
+      tileK: r.best.tileK,
+    }));
+    const layers = (await parseScaleSimLayerReports(computeReport, layerMetadata))
       .filter((layer) => layer.cycles > 0);
+    const totalCycles = layers.reduce((sum, layer) => sum + layer.cycles, 0);
+    const candidateLayers = await runScaleSimTopkForJob(job, res, commands);
     const summary: ExternalRunSummary = {
       ok: true,
       skipped: false,
@@ -579,9 +664,10 @@ async function runScaleSimForJob(
       elapsedMs: Date.now() - startedAt,
       logPath: path.relative(dir, run.logPath),
       computeReport: path.relative(dir, computeReport),
-      layerCount: rows.length,
+      layerCount: layers.length,
       totalCycles,
       layers,
+      candidateLayers,
       cycleRatio:
         res.summary.totalCycles > 0
           ? totalCycles / res.summary.totalCycles
@@ -598,6 +684,7 @@ async function runScaleSimForJob(
           "scalesim_summary.json",
           summary.logPath,
           summary.computeReport,
+          "scalesim_top3_summary.json",
         ].filter(Boolean) as string[],
       ),
     ];
@@ -639,6 +726,78 @@ async function runScaleSimForJob(
     await saveJob(job);
     throw new Error(message);
   }
+}
+
+async function runScaleSimTopkForJob(
+  job: JobRecord,
+  res: ReturnType<typeof estimateAll>,
+  commands: string[],
+): Promise<ScaleSimLayerSummary[]> {
+  const dir = jobDir(job.id);
+  const metadata = scaleSimTopkCandidates(res).map((c) => ({
+    name: c.layerName,
+    ...c,
+  }));
+  if (!metadata.length) return [];
+  const outDir = path.join(dir, "scalesim-top3-output");
+  await mkdir(outDir, { recursive: true });
+  const topology = path.join(dir, "topology_top3.csv");
+  const layout = path.join(dir, "layout_top3.csv");
+  const args = scaleSimArgs({
+    config: path.join(dir, "scalesim.cfg"),
+    topology,
+    layout,
+    outDir,
+    useLayout: res.request.scaleSim?.useLayout !== false,
+  });
+  const startedAt = Date.now();
+  const run = await runCommandCandidates(
+    commands,
+    args,
+    outDir,
+    job.timeoutMs ??
+      Number(process.env.TILEFORGE_JOB_TIMEOUT_MS ?? 10 * 60 * 1000),
+    "scalesim-top3",
+    withPrependedPythonPath(path.resolve("external/SCALE-Sim"), {
+      TILEFORGE_MOCK_OUTPUT_DIR: outDir,
+    }),
+  );
+  const computeReport = await findFirstExistingFile(outDir, "COMPUTE_REPORT.csv");
+  if (!computeReport) {
+    throw new Error("SCALE-Sim top3 실행은 성공했지만 COMPUTE_REPORT.csv를 찾지 못했습니다");
+  }
+  const layers = (await parseScaleSimLayerReports(computeReport, metadata))
+    .filter((layer) => layer.cycles > 0);
+  const summary = {
+    ok: true,
+    tool: "scalesim-top3",
+    command: commandLabel(run.command),
+    elapsedMs: Date.now() - startedAt,
+    logPath: path.relative(dir, run.logPath),
+    computeReport: path.relative(dir, computeReport),
+    layerCount: layers.length,
+    layers,
+  };
+  await atomicWriteFile(
+    path.join(dir, "scalesim_top3_summary.json"),
+    JSON.stringify(summary, null, 2),
+  );
+  job.artifacts = [
+    ...new Set(
+      [
+        ...(job.artifacts ?? []),
+        "scalesim_top3_summary.json",
+        summary.logPath,
+        summary.computeReport,
+      ].filter(Boolean) as string[],
+    ),
+  ];
+  await saveJob(job);
+  await addLog(
+    job,
+    `SCALE-Sim top3 완료: ${summary.computeReport}, 후보 ${layers.length}개`,
+  );
+  return layers;
 }
 
 
@@ -853,6 +1012,21 @@ function externalComparisonMarkdown(
       lines.push(
         `| ${index + 1} | ${item.shape.model}.${item.shape.opName} | ${item.best.cycles.toLocaleString()} | ${((item.best.cycles / predictedTotal) * 100).toFixed(1)}% |`,
       );
+    }
+    if (scale.candidateLayers?.length) {
+      lines.push(
+        "",
+        "### SCALE-Sim top3 tile 후보 검증",
+        "| 연산 | rank | tile | TileForge cycle | SCALE-Sim extrapolated cycle | 차이 | SCALE-Sim util |",
+        "|---|---:|---|---:|---:|---:|---:|",
+      );
+      for (const layer of scale.candidateLayers.slice(0, 12)) {
+        const predicted = layer.predictedCycles ?? 0;
+        const delta = predicted > 0 ? ((layer.cycles - predicted) / predicted) * 100 : 0;
+        lines.push(
+          `| ${layer.opName ?? layer.name} | ${layer.rank ?? "-"} | ${layer.tileM}x${layer.tileN}x${layer.tileK} | ${predicted.toLocaleString()} | ${Math.round(layer.cycles).toLocaleString()} | ${predicted > 0 ? `${delta >= 0 ? "+" : ""}${delta.toFixed(1)}%` : "해당 없음"} | ${layer.overallUtil !== undefined ? `${layer.overallUtil.toFixed(1)}%` : "해당 없음"} |`,
+        );
+      }
     }
   }
   lines.push("");

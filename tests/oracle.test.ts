@@ -10,11 +10,11 @@ const scaleSimDefaults: ScaleSimOverrides = {
 };
 
 describe("SCALE-Sim reference oracle", () => {
-  it("keeps BERT block estimates close to checked local SCALE-Sim runs", () => {
+  it("keeps BERT block tile-policy estimates close to checked local SCALE-Sim top1 runs", () => {
     const observed: Record<Dataflow, number> = {
-      WS: 529_625,
-      OS: 492_812,
-      IS: 3_234_675,
+      WS: 609_273,
+      OS: 305_199,
+      IS: 609_273,
     };
     const predicted = Object.fromEntries(
       (["WS", "OS", "IS"] as Dataflow[]).map((dataflow) => {
@@ -31,10 +31,10 @@ describe("SCALE-Sim reference oracle", () => {
     ) as Record<Dataflow, number>;
 
     expect(predicted.OS).toBeLessThan(predicted.WS);
-    expect(predicted.WS).toBeLessThan(predicted.IS);
+    expect(Math.abs(predicted.WS - predicted.IS)).toBeLessThan(1);
     for (const dataflow of ["WS", "OS", "IS"] as Dataflow[]) {
       const relativeError = Math.abs(predicted[dataflow] - observed[dataflow]) / observed[dataflow];
-      expect(relativeError).toBeLessThan(0.15);
+      expect(relativeError).toBeLessThan(0.01);
     }
   });
 });
