@@ -1,4 +1,4 @@
-import type { ArraySweepRequest, ArraySweepResult, HardwareConfig, HeatmapPoint, MatmulShape, Objective, OpSearchResult, SearchRequest, SearchResponse, TileCandidateResult, TileCandidates } from "@/types/domain";
+import type { ArraySweepRequest, ArraySweepResult, HardwareConfig, HeatmapPoint, MatmulShape, Objective, OpSearchResult, ScaleSimOverrides, SearchRequest, SearchResponse, TileCandidateResult, TileCandidates } from "@/types/domain";
 import { ceilDiv, clamp, mean } from "./math";
 import { generateArtifacts } from "./mlir";
 import { generateReportMarkdown } from "./report";
@@ -14,10 +14,10 @@ import { assertSearchResponseInvariant, assertTileCandidateInvariant, runInvaria
 export function estimateAll(req: SearchRequest, options: { includeArtifacts?: boolean } = {}): SearchResponse {
   const cache = new Map<string, OpSearchResult>();
   const results = req.shapes.map(shape => {
-    const key = hashObject({ shape: { m: shape.m, n: shape.n, k: shape.k, dtypeBytes: shape.dtypeBytes }, hardware: req.hardware, candidates: req.candidates, objective: req.objective, max: req.maxResultsPerOp ?? 32, calibration: req.calibration });
+    const key = hashObject({ shape: { m: shape.m, n: shape.n, k: shape.k, dtypeBytes: shape.dtypeBytes }, hardware: req.hardware, candidates: req.candidates, objective: req.objective, max: req.maxResultsPerOp ?? 32, calibration: req.calibration, scaleSim: req.scaleSim });
     const hit = cache.get(key);
     if (hit) return { ...hit, shape, best: { ...hit.best, shapeId: shape.id, model: shape.model, opName: shape.opName }, candidates: hit.candidates.map(c => ({ ...c, shapeId: shape.id, model: shape.model, opName: shape.opName })) };
-    const out = estimateForShape(req.hardware, shape, req.candidates, req.objective, req.maxResultsPerOp ?? 32, req.calibration);
+    const out = estimateForShape(req.hardware, shape, req.candidates, req.objective, req.maxResultsPerOp ?? 32, req.calibration, req.scaleSim);
     cache.set(key, out);
     return out;
   });
@@ -57,7 +57,7 @@ function emptyArtifacts(): SearchResponse["artifacts"] {
   };
 }
 
-export function estimateForShape(hw: HardwareConfig, shape: MatmulShape, cand: TileCandidates, objective: Objective, maxResults: number, calibration = undefined as SearchRequest["calibration"]): OpSearchResult {
+export function estimateForShape(hw: HardwareConfig, shape: MatmulShape, cand: TileCandidates, objective: Objective, maxResults: number, calibration = undefined as SearchRequest["calibration"], scaleSim?: ScaleSimOverrides): OpSearchResult {
   const factor = calibrationFactor(calibration, hw, shape);
   const maxKeep = Math.max(1, maxResults);
   const top = new TopK<TileCandidateResult>(maxKeep, compareCandidates);
@@ -77,7 +77,7 @@ export function estimateForShape(hw: HardwareConfig, shape: MatmulShape, cand: T
 
   for (const kept of pruned.kept) {
     const tm = kept.tileM, tn = kept.tileN, tk = kept.tileK;
-    const estimated = applyCalibration(estimateTile(hw, shape, tm, tn, tk, objective), factor);
+    const estimated = applyCalibration(estimateTile(hw, shape, tm, tn, tk, objective, scaleSim), factor);
     runInvariant("tile candidate", () => assertTileCandidateInvariant(estimated));
     top.push(estimated);
     paretoPool.push(estimated);
@@ -104,7 +104,7 @@ function compareCandidates(a: TileCandidateResult, b: TileCandidateResult): numb
 }
 
 
-export function estimateTile(hw: HardwareConfig, shape: MatmulShape, tileM: number, tileN: number, tileK: number, objective: Objective): TileCandidateResult {
+export function estimateTile(hw: HardwareConfig, shape: MatmulShape, tileM: number, tileN: number, tileK: number, objective: Objective, scaleSim?: ScaleSimOverrides): TileCandidateResult {
   const bytes = shape.dtypeBytes || hw.bytesPerElement || 2;
   const mTiles = ceilDiv(shape.m, tileM), nTiles = ceilDiv(shape.n, tileN), kTiles = ceilDiv(shape.k, tileK);
   const paddedM = mTiles * tileM, paddedN = nTiles * tileN, paddedK = kTiles * tileK;
@@ -115,21 +115,12 @@ export function estimateTile(hw: HardwareConfig, shape: MatmulShape, tileM: numb
   const spatialUtil = (activeRows * activeCols) / (hw.arrayRows * hw.arrayCols);
   const sramBytes = (tileM * tileK + tileK * tileN + tileM * tileN) * bytes;
   const boundaryUtil = usefulOps / paddedOps;
-  const dataflowFactor = hw.dataflow === "WS" ? 1.0 : hw.dataflow === "OS" ? 1.05 : 1.10;
-  // SCALE-Sim-style first-order model:
-  // - tileCompute models useful MAC issue time over the active PE rectangle.
-  // - fillDrain models array wavefront fill/drain. A full tile pays roughly rows+cols+0.5K.
-  // - skinnyPenalty accounts for tiles that occupy only part of the array, which SCALE-Sim still pays
-  //   as SRAM/prefetch and array scheduling overhead. This substantially improves conv/im2col cases
-  //   where N is smaller than arrayCols.
-  const tileCompute = Math.ceil((tileM * tileN * tileK) / Math.max(1, activeRows * activeCols));
-  const fillDrain = hw.arrayRows + hw.arrayCols + Math.ceil(tileK * 0.5);
+  const scaleCycles = estimateScaleSimLikeCycles(hw, shape, tileM, tileN, tileK, scaleSim);
   const skinnyPenalty = Math.max(0, hw.arrayCols - activeCols) * 4 + Math.max(0, hw.arrayRows - activeRows) * 2;
   const memoryPressure = sramBytes / Math.max(1, hw.sramKB * 1024);
   const memoryPenalty = memoryPressure > 0.75 ? Math.ceil((memoryPressure - 0.75) * 32) : 0;
-  const tileCycles = Math.ceil((tileCompute + fillDrain + skinnyPenalty + memoryPenalty) * dataflowFactor);
-  const cycles = Math.ceil(mTiles * nTiles * kTiles * tileCycles);
-  const utilization = clamp(spatialUtil * boundaryUtil * (tileK / Math.max(tileK, fillDrain * 0.20)) / (1 + skinnyPenalty / Math.max(1, fillDrain + tileCompute)), 0, 1);
+  const cycles = Math.ceil(scaleCycles.cycles + (skinnyPenalty + memoryPenalty) * Math.max(1, mTiles * nTiles));
+  const utilization = clamp(spatialUtil * boundaryUtil * scaleCycles.computeUtil / (1 + skinnyPenalty / Math.max(1, scaleCycles.computeCycles)), 0, 1);
   const sramLimit = hw.sramKB * 1024;
   const boundaryPenalty = (mTiles * nTiles * kTiles) * (1 - boundaryUtil) + Math.max(0, sramBytes - sramLimit) / Math.max(1, sramLimit) * 10;
   const normalizedCycles = cycles / 1e6;
@@ -142,6 +133,58 @@ export function estimateTile(hw: HardwareConfig, shape: MatmulShape, tileM: numb
   if (paddingRatio > 0.4) warnings.push("패딩 오버헤드 높음");
   const timeUs = cycles / Math.max(1, hw.frequencyMHz);
   return { shapeId: shape.id, model: shape.model, opName: shape.opName, tileM, tileN, tileK, cycles, timeUs, utilization, paddingRatio, sramBytes, boundaryPenalty, score, isPareto: false, warnings, explanation: explainTile(hw, shape, tileM, tileN, tileK, utilization, paddingRatio, sramBytes, cycles, warnings) };
+}
+function scaleSimBandwidths(hw: HardwareConfig, scaleSim?: ScaleSimOverrides) {
+  const bytes = Math.max(1, hw.bytesPerElement || 2);
+  const hwElementsPerCycle = hw.memoryBandwidthGBs
+    ? Math.max(1, (hw.memoryBandwidthGBs * 1000) / Math.max(1, hw.frequencyMHz) / bytes)
+    : 128;
+  const ifmap = scaleSim?.ifmapSRAMBankBandwidth ?? 10;
+  const filter = scaleSim?.filterSRAMBankBandwidth ?? 10;
+  const ofmap = scaleSim?.dramBandwidth ?? scaleSim?.bandwidth ?? hwElementsPerCycle;
+  return { ifmap: Math.max(1, ifmap), filter: Math.max(1, filter), ofmap: Math.max(1, ofmap) };
+}
+
+function estimateScaleSimLikeCycles(hw: HardwareConfig, shape: MatmulShape, tileM: number, tileN: number, tileK: number, scaleSim?: ScaleSimOverrides) {
+  const ar = Math.max(1, hw.arrayRows);
+  const ac = Math.max(1, hw.arrayCols);
+  const mSpatial = Math.max(1, tileM);
+  const nSpatial = Math.max(1, tileN);
+  const kSpatial = Math.max(1, Math.min(tileK, ar));
+  const bw = scaleSimBandwidths(hw, scaleSim);
+  let computeCycles = 0;
+  let stallCycles = 0;
+  let computeUtil = 1;
+  if (hw.dataflow === "OS") {
+    const folds = ceilDiv(shape.m, mSpatial) * ceilDiv(shape.n, nSpatial);
+    const perFold = shape.k + ar + ac - 2;
+    computeCycles = folds * perFold;
+    const filterTraffic = shape.k * shape.n;
+    const ifmapTraffic = shape.m * shape.k;
+    stallCycles = 0.45 * filterTraffic / bw.filter + 0.05 * ifmapTraffic / bw.ifmap;
+    computeUtil = (Math.min(mSpatial, ar) * Math.min(nSpatial, ac) * shape.k) / Math.max(1, ar * ac * perFold);
+  } else if (hw.dataflow === "IS") {
+    const rowFolds = ceilDiv(shape.k, kSpatial);
+    const colFolds = ceilDiv(shape.m, mSpatial);
+    const perFold = shape.n + 2 * ar + ac - 3;
+    computeCycles = rowFolds * colFolds * perFold;
+    const smallLayer = shape.k * shape.n <= ar * ac * 2;
+    const filterTraffic = shape.k * shape.n * colFolds;
+    stallCycles = smallLayer ? 0 : 1.45 * filterTraffic / bw.filter;
+    computeUtil = (Math.min(kSpatial, ar) * Math.min(mSpatial, ac) * shape.n) / Math.max(1, ar * ac * perFold);
+  } else {
+    const rowFolds = ceilDiv(shape.k, kSpatial);
+    const colFolds = ceilDiv(shape.n, nSpatial);
+    const perFold = shape.m + 2 * ar + ac - 3;
+    computeCycles = rowFolds * colFolds * perFold;
+    const smallLayer = shape.k * shape.n <= ar * ac * 2;
+    const filterTraffic = shape.k * shape.n;
+    stallCycles = smallLayer ? 0 : 0.42 * filterTraffic / bw.filter;
+    computeUtil = (Math.min(kSpatial, ar) * Math.min(nSpatial, ac) * shape.m) / Math.max(1, ar * ac * perFold);
+  }
+  const prefetchOverlap = Math.min(stallCycles * 0.12, computeCycles * 0.08);
+  const cycles = Math.max(1, Math.ceil(computeCycles + Math.max(0, stallCycles - prefetchOverlap)));
+  return { cycles, computeCycles: Math.max(1, computeCycles), computeUtil: clamp(computeUtil, 0.02, 1) };
 }
 function candidatesPreference(tm:number, tn:number, tk:number, hw: HardwareConfig) { return Math.abs(tm-hw.arrayRows)/hw.arrayRows*0.04 + Math.abs(tn-hw.arrayCols)/hw.arrayCols*0.04 + (tk<32?0.03:0); }
 function scoreFor(obj: Objective, cycles: number, utilPenalty: number, pad: number, sram: number, boundary: number, pref: number): number {
