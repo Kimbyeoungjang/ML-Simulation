@@ -371,6 +371,11 @@ type ExternalRunSummary = {
   vmfbBytes?: number;
   layers?: ScaleSimLayerSummary[];
   candidateLayers?: ScaleSimLayerSummary[];
+  candidateMapePct?: number;
+  candidateP50ErrorPct?: number;
+  candidateP90ErrorPct?: number;
+  candidateBestRankAgreementPct?: number;
+  tileValidationCycleRatio?: number;
 };
 
 type ScaleSimLayerSummary = {
@@ -389,6 +394,10 @@ type ScaleSimLayerSummary = {
   predictedUtilization?: number;
   predictedPaddingRatio?: number;
   predictedSramBytes?: number;
+  predictedSramAccessBytes?: number;
+  predictedDramAccessBytes?: number;
+  sramPressure?: number;
+  memoryBoundRatio?: number;
   totalCyclesInclPrefetch?: number;
   stallCycles?: number;
   overallUtil?: number;
@@ -466,6 +475,10 @@ function numberFromRow(
 }
 
 const cycleColumnNames = [
+  "Total Cycles (incl. prefetch)",
+  "Total cycles (incl. prefetch)",
+  "Total Cycles incl. prefetch",
+  "Total Cycles Incl Prefetch",
   "Cycles",
   "Total Cycles",
   "Total cycles",
@@ -495,15 +508,21 @@ async function parseScaleSimLayerReports(
     const cyclesPerTile = numberFromRow(row, cycleColumnNames) ?? 0;
     const tileCount = meta.tileCount && meta.tileCount > 0 ? meta.tileCount : undefined;
     const detail = detailRows[index] ?? {};
-    const sramAccesses =
+    const sramAccessesPerTile =
       (numberFromRow(detail, ["SRAM IFMAP Reads"]) ?? 0) +
       (numberFromRow(detail, ["SRAM Filter Reads"]) ?? 0) +
       (numberFromRow(detail, ["SRAM OFMAP Writes"]) ?? 0);
-    const dramAccesses =
+    const dramAccessesPerTile =
       (numberFromRow(detail, ["DRAM IFMAP Reads"]) ?? 0) +
       (numberFromRow(detail, ["DRAM Filter Reads"]) ?? 0) +
       (numberFromRow(detail, ["DRAM OFMAP Writes"]) ?? 0);
     const bandwidth = bandwidthRows[index] ?? {};
+    const fallbackSramAccessBytes = meta.predictedSramAccessBytes ?? (
+      meta.tileM && meta.tileN && meta.tileK && tileCount
+        ? (meta.tileM * meta.tileK + meta.tileK * meta.tileN + meta.tileM * meta.tileN) * tileCount * 2
+        : undefined
+    );
+    const fallbackDramAccessBytes = meta.predictedDramAccessBytes ?? fallbackSramAccessBytes;
     return {
       ...meta,
       name:
@@ -512,13 +531,15 @@ async function parseScaleSimLayerReports(
         `layer_${index + 1}`,
       cycles: tileCount ? cyclesPerTile * tileCount : cyclesPerTile,
       cyclesPerTile: tileCount ? cyclesPerTile : undefined,
+      predictedSramAccessBytes: fallbackSramAccessBytes,
+      predictedDramAccessBytes: fallbackDramAccessBytes,
       totalCyclesInclPrefetch: numberFromRow(row, ["Total Cycles (incl. prefetch)", "Total Cycles incl. prefetch"]),
       stallCycles: numberFromRow(row, ["Stall Cycles"]),
       overallUtil: numberFromRow(row, ["Overall Util %"]),
       mappingEfficiency: numberFromRow(row, ["Mapping Efficiency %"]),
       computeUtil: numberFromRow(row, ["Compute Util %"]),
-      sramAccesses,
-      dramAccesses,
+      sramAccesses: tileCount ? sramAccessesPerTile * tileCount : sramAccessesPerTile,
+      dramAccesses: tileCount ? dramAccessesPerTile * tileCount : dramAccessesPerTile,
       ...Object.fromEntries(Object.entries({
         avgIfmapSramBw: numberFromRow(bandwidth, ["Avg IFMAP SRAM BW"]),
         avgFilterSramBw: numberFromRow(bandwidth, ["Avg FILTER SRAM BW"]),
@@ -529,6 +550,43 @@ async function parseScaleSimLayerReports(
       }).filter(([, value]) => value !== undefined)),
     };
   });
+}
+
+function percentile(xs: number[], q: number): number | undefined {
+  const ys = xs.filter(Number.isFinite).sort((a,b)=>a-b);
+  if (!ys.length) return undefined;
+  const pos = Math.min(ys.length - 1, Math.max(0, Math.ceil(q * ys.length) - 1));
+  return ys[pos];
+}
+
+function enrichCandidateValidation(summary: ExternalRunSummary, candidateLayers: ScaleSimLayerSummary[]): ExternalRunSummary {
+  const comparable = candidateLayers.filter((layer) => (layer.predictedCycles ?? 0) > 0 && layer.cycles > 0);
+  if (!comparable.length) return { ...summary, candidateLayers };
+  const absErrors = comparable.map((layer) => Math.abs((layer.cycles - (layer.predictedCycles ?? 1)) / Math.max(1, layer.cycles)) * 100);
+  const predictedTotal = comparable.reduce((sum, layer) => sum + (layer.predictedCycles ?? 0), 0);
+  const measuredTotal = comparable.reduce((sum, layer) => sum + layer.cycles, 0);
+  const byOp = new Map<string, ScaleSimLayerSummary[]>();
+  for (const layer of comparable) {
+    const key = layer.shapeId ?? layer.opName ?? layer.name;
+    const bucket = byOp.get(key) ?? [];
+    bucket.push(layer);
+    byOp.set(key, bucket);
+  }
+  let rankAgree = 0;
+  for (const layers of byOp.values()) {
+    const predBest = layers.slice().sort((a,b)=>(a.predictedCycles ?? Number.MAX_SAFE_INTEGER)-(b.predictedCycles ?? Number.MAX_SAFE_INTEGER))[0];
+    const actualBest = layers.slice().sort((a,b)=>a.cycles-b.cycles)[0];
+    if (predBest && actualBest && predBest.rank === actualBest.rank) rankAgree += 1;
+  }
+  return {
+    ...summary,
+    candidateLayers,
+    candidateMapePct: absErrors.reduce((a,b)=>a+b,0) / absErrors.length,
+    candidateP50ErrorPct: percentile(absErrors, 0.50),
+    candidateP90ErrorPct: percentile(absErrors, 0.90),
+    candidateBestRankAgreementPct: byOp.size ? (rankAgree / byOp.size) * 100 : undefined,
+    tileValidationCycleRatio: predictedTotal > 0 ? measuredTotal / predictedTotal : undefined,
+  };
 }
 
 async function findFirstExistingFile(
@@ -647,6 +705,10 @@ async function runScaleSimForJob(
       predictedUtilization: r.best.utilization,
       predictedPaddingRatio: r.best.paddingRatio,
       predictedSramBytes: r.best.sramBytes,
+      predictedSramAccessBytes: r.best.predictedSramAccessBytes,
+      predictedDramAccessBytes: r.best.predictedDramAccessBytes,
+      sramPressure: r.best.sramPressure,
+      memoryBoundRatio: r.best.memoryBoundRatio,
       tileM: r.best.tileM,
       tileN: r.best.tileN,
       tileK: r.best.tileK,
@@ -655,7 +717,7 @@ async function runScaleSimForJob(
       .filter((layer) => layer.cycles > 0);
     const totalCycles = layers.reduce((sum, layer) => sum + layer.cycles, 0);
     const candidateLayers = await runScaleSimTopkForJob(job, res, commands);
-    const summary: ExternalRunSummary = {
+    const summary: ExternalRunSummary = enrichCandidateValidation({
       ok: true,
       skipped: false,
       tool: "scalesim",
@@ -667,12 +729,14 @@ async function runScaleSimForJob(
       layerCount: layers.length,
       totalCycles,
       layers,
-      candidateLayers,
+      // Full-layer SCALE-Sim and TileForge tiled estimates are not identical
+      // denominators. This legacy ratio is kept for coarse sanity; top-K tile
+      // validation metrics above are the estimator quality signal.
       cycleRatio:
         res.summary.totalCycles > 0
           ? totalCycles / res.summary.totalCycles
           : undefined,
-    };
+    }, candidateLayers);
     await atomicWriteFile(
       path.join(dir, "scalesim_summary.json"),
       JSON.stringify(summary, null, 2),
@@ -1017,14 +1081,21 @@ function externalComparisonMarkdown(
       lines.push(
         "",
         "### SCALE-Sim top3 tile 후보 검증",
-        "| 연산 | rank | tile | TileForge cycle | SCALE-Sim extrapolated cycle | 차이 | SCALE-Sim util |",
-        "|---|---:|---|---:|---:|---:|---:|",
+        `- Tile 후보 MAPE: ${scale.candidateMapePct !== undefined ? `${scale.candidateMapePct.toFixed(2)}%` : "해당 없음"}`,
+        `- Tile 후보 P50/P90 오차: ${scale.candidateP50ErrorPct !== undefined ? `${scale.candidateP50ErrorPct.toFixed(2)}%` : "해당 없음"} / ${scale.candidateP90ErrorPct !== undefined ? `${scale.candidateP90ErrorPct.toFixed(2)}%` : "해당 없음"}`,
+        `- Best-rank agreement: ${scale.candidateBestRankAgreementPct !== undefined ? `${scale.candidateBestRankAgreementPct.toFixed(1)}%` : "해당 없음"}`,
+        `- Tile validation cycle ratio(SCALE-Sim/TileForge): ${scale.tileValidationCycleRatio !== undefined ? scale.tileValidationCycleRatio.toFixed(3) : "해당 없음"}`,
+        "",
+        "| 연산 | rank | tile | TileForge cycle | SCALE-Sim extrapolated cycle | 차이 | SRAM access 예측 KiB/실제 element | SCALE-Sim util |",
+        "|---|---:|---|---:|---:|---:|---:|---:|",
       );
       for (const layer of scale.candidateLayers.slice(0, 12)) {
         const predicted = layer.predictedCycles ?? 0;
         const delta = predicted > 0 ? ((layer.cycles - predicted) / predicted) * 100 : 0;
+        const sramPredKiB = layer.predictedSramAccessBytes !== undefined ? (layer.predictedSramAccessBytes / 1024).toFixed(1) : "-";
+        const sramActualElements = layer.sramAccesses !== undefined ? Math.round(layer.sramAccesses).toLocaleString() : "-";
         lines.push(
-          `| ${layer.opName ?? layer.name} | ${layer.rank ?? "-"} | ${layer.tileM}x${layer.tileN}x${layer.tileK} | ${predicted.toLocaleString()} | ${Math.round(layer.cycles).toLocaleString()} | ${predicted > 0 ? `${delta >= 0 ? "+" : ""}${delta.toFixed(1)}%` : "해당 없음"} | ${layer.overallUtil !== undefined ? `${layer.overallUtil.toFixed(1)}%` : "해당 없음"} |`,
+          `| ${layer.opName ?? layer.name} | ${layer.rank ?? "-"} | ${layer.tileM}x${layer.tileN}x${layer.tileK} | ${predicted.toLocaleString()} | ${Math.round(layer.cycles).toLocaleString()} | ${predicted > 0 ? `${delta >= 0 ? "+" : ""}${delta.toFixed(1)}%` : "해당 없음"} | ${sramPredKiB} KiB / ${sramActualElements} | ${layer.overallUtil !== undefined ? `${layer.overallUtil.toFixed(1)}%` : "해당 없음"} |`,
         );
       }
     }

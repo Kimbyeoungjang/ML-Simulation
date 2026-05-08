@@ -224,6 +224,8 @@ export default function Home() {
   const [hardwarePresetName, setHardwarePresetName] = useState("");
   const [workloadPresetName, setWorkloadPresetName] = useState("");
   const [analysisJobId, setAnalysisJobId] = useState("");
+  const analysisJobIdRef = useRef("");
+  const serverReportJobIdRef = useRef("");
   const [selectedJobIds, setSelectedJobIds] = useState<string[]>([]);
   const liveEventSource = useRef<EventSource | null>(null);
   const [calibrationCsv, setCalibrationCsv] = useState(
@@ -313,6 +315,14 @@ export default function Home() {
   );
 
   useEffect(() => {
+    analysisJobIdRef.current = analysisJobId;
+  }, [analysisJobId]);
+
+  useEffect(() => {
+    serverReportJobIdRef.current = serverReportJobId;
+  }, [serverReportJobId]);
+
+  useEffect(() => {
     void refreshPresets();
   }, []);
 
@@ -348,8 +358,11 @@ export default function Home() {
   }, [autoRefreshEnabled]);
 
   useEffect(() => {
-    setServerReportMarkdown("");
-    setServerReportJobId("");
+    if (!analysisJobIdRef.current) {
+      setServerReportMarkdown("");
+      setServerReportJobId("");
+      serverReportJobIdRef.current = "";
+    }
   }, [JSON.stringify(request)]);
 
   function startLiveJob(id: string) {
@@ -467,24 +480,39 @@ export default function Home() {
     }
     const names = created.map((j) => j.name ?? j.id).filter(Boolean).join(", ");
     setServerMessage(`${kind} 작업 ${created.length}개 생성 완료: ${names}`);
+    if (created[0]?.id) {
+      analysisJobIdRef.current = created[0].id;
+      setAnalysisJobId(created[0].id);
+      void fetchJobReport(created[0].id);
+    }
     await refreshJobs({ switchTab: true, updateReport: true });
     if (created[0]?.id && autoAttachNewJob) startLiveJob(created[0].id);
   }
   async function fetchJobReport(id: string) {
-    if (!id) return;
+    if (!id) {
+      setServerReportMarkdown("");
+      setServerReportJobId("");
+      serverReportJobIdRef.current = "";
+      return;
+    }
     try {
-      const r = await fetch(`/api/jobs/${id}/artifacts/report.md`, {
+      const r = await fetch(`/api/jobs/${id}/artifact?path=${encodeURIComponent("report.md")}`, {
         cache: "no-store",
       });
-      if (!r.ok) return;
+      if (!r.ok) {
+        setServerReportMarkdown("");
+        setServerReportJobId("");
+        return;
+      }
       const text = await r.text();
       if (text.trim()) {
         setServerReportMarkdown(text);
         setServerReportJobId(id);
-        setAnalysisJobId(id);
+        serverReportJobIdRef.current = id;
       }
     } catch {
-      // report.md may not exist until the job reaches the report stage.
+      setServerReportMarkdown("");
+      setServerReportJobId("");
     }
   }
 
@@ -500,16 +528,25 @@ export default function Home() {
   }
 
   async function refreshJobs(
-    options: { switchTab?: boolean; updateReport?: boolean } = {},
+    options: { switchTab?: boolean; updateReport?: boolean; autoSelectReport?: boolean } = {},
   ) {
-    const { switchTab = true, updateReport = false } = options;
+    const { switchTab = true, updateReport = false, autoSelectReport = false } = options;
     const r = await fetch("/api/jobs?limit=50", { cache: "no-store" });
     const payload = await r.json();
     setJobsPayload(payload);
     setJobsJson(JSON.stringify(payload, null, 2));
     if (updateReport) {
-      const id = latestCompletedJobId(payload);
-      if (id && id !== serverReportJobId) void fetchJobReport(id);
+      const selectedId = analysisJobIdRef.current;
+      if (selectedId) {
+        if (serverReportJobIdRef.current !== selectedId) void fetchJobReport(selectedId);
+      } else if (autoSelectReport) {
+        const id = latestCompletedJobId(payload);
+        if (id && id !== serverReportJobIdRef.current) {
+          analysisJobIdRef.current = id;
+          setAnalysisJobId(id);
+          void fetchJobReport(id);
+        }
+      }
     }
     if (switchTab) setTab("jobs");
   }
@@ -522,8 +559,12 @@ export default function Home() {
     if (serverReportJobId === id) {
       setServerReportMarkdown("");
       setServerReportJobId("");
+      serverReportJobIdRef.current = "";
     }
-    if (analysisJobId === id) setAnalysisJobId("");
+    if (analysisJobId === id) {
+      analysisJobIdRef.current = "";
+      setAnalysisJobId("");
+    }
     setSelectedJobIds((prev) => prev.filter((x) => x !== id));
     if (liveJobId === id) stopLiveJob();
     await refreshJobs({ switchTab: false, updateReport: true });
@@ -545,8 +586,12 @@ export default function Home() {
     if (unique.includes(serverReportJobId)) {
       setServerReportMarkdown("");
       setServerReportJobId("");
+      serverReportJobIdRef.current = "";
     }
-    if (unique.includes(analysisJobId)) setAnalysisJobId("");
+    if (unique.includes(analysisJobId)) {
+      analysisJobIdRef.current = "";
+      setAnalysisJobId("");
+    }
     if (unique.includes(liveJobId)) stopLiveJob();
     setServerMessage(`선택 작업 삭제 완료: ${ok}/${unique.length}`);
     await refreshJobs({ switchTab: false, updateReport: true });
@@ -1120,25 +1165,6 @@ export default function Home() {
                 </div>
                 <div className="row">
                   <div>
-                    <FieldLabel tip="데이터가 systolic array 안에서 어느 방향으로 오래 머무는지 정의합니다. WS는 weight-stationary, OS는 output-stationary, IS는 input-stationary입니다. 여러 개를 선택하면 full-pipeline 작업을 데이터플로우별로 큐에 나누어 넣어 비교합니다. 혼합 비교는 동일 workload를 여러 dataflow 조건으로 실행하는 방식입니다.">
-                      데이터플로우 비교
-                    </FieldLabel>
-                    <div className="dataflow-grid" title="여러 데이터플로우를 선택하면 선택한 조건별로 job을 큐에 넣어 비교합니다.">
-                      {([
-                        ["WS", "Weight stationary", "weight/filter를 PE 근처에 오래 두어 재사용합니다. Conv/GEMM weight 재사용이 큰 경우 자주 씁니다."],
-                        ["OS", "Output stationary", "partial sum/output을 고정해 누산 write-back을 줄입니다. output 재사용과 누산 비용을 볼 때 유용합니다."],
-                        ["IS", "Input stationary", "input activation을 오래 유지해 입력 재사용을 강조합니다. activation reuse가 큰 모델을 비교할 때 사용합니다."],
-                      ] as [Dataflow, string, string][]).map(([mode, title, desc]) => (
-                        <label className={`dataflow-card dataflow-card-compact ${dataflowModes.includes(mode) ? "selected" : ""}`} key={mode} title={`${mode} (${title}): ${desc}`}>
-                          <input type="checkbox" checked={dataflowModes.includes(mode)} onChange={() => toggleDataflowMode(mode)} />
-                          <span className="dataflow-code">{mode}</span>
-                          <span className="dataflow-title">{title}</span>
-                        </label>
-                      ))}
-                    </div>
-                    <p className="small">대표 표시값: {hardware.dataflow}. 여러 개 선택 시 동일 입력을 dataflow별 작업으로 나누어 큐에 추가합니다.</p>
-                  </div>
-                  <div>
                     <FieldLabel tip="연산 데이터 하나가 차지하는 byte 수입니다. fp16/bfloat16/int16은 보통 2, fp32는 4, int8은 1입니다. 이 값은 SRAM 사용량과 메모리 traffic 추정에 직접 반영됩니다.">
                       원소당 byte
                     </FieldLabel>
@@ -1151,6 +1177,25 @@ export default function Home() {
                       }
                     />
                   </div>
+                </div>
+                <div className="dataflow-below-bytes">
+                  <FieldLabel tip="데이터가 systolic array 안에서 어느 방향으로 오래 머무는지 정의합니다. WS는 weight-stationary, OS는 output-stationary, IS는 input-stationary입니다. 여러 개를 선택하면 full-pipeline 작업을 데이터플로우별로 큐에 나누어 넣어 비교합니다. 혼합 비교는 동일 workload를 여러 dataflow 조건으로 실행하는 방식입니다.">
+                    데이터플로우 비교
+                  </FieldLabel>
+                  <div className="dataflow-grid dataflow-grid-below" title="여러 데이터플로우를 선택하면 선택한 조건별로 job을 큐에 넣어 비교합니다.">
+                    {([
+                      ["WS", "Weight stationary", "weight/filter를 PE 근처에 오래 두어 재사용합니다. Conv/GEMM weight 재사용이 큰 경우 자주 씁니다."],
+                      ["OS", "Output stationary", "partial sum/output을 고정해 누산 write-back을 줄입니다. output 재사용과 누산 비용을 볼 때 유용합니다."],
+                      ["IS", "Input stationary", "input activation을 오래 유지해 입력 재사용을 강조합니다. activation reuse가 큰 모델을 비교할 때 사용합니다."],
+                    ] as [Dataflow, string, string][]).map(([mode, title, desc]) => (
+                      <label className={`dataflow-card dataflow-card-compact ${dataflowModes.includes(mode) ? "selected" : ""}`} key={mode} title={`${mode} (${title}): ${desc}`}>
+                        <input type="checkbox" checked={dataflowModes.includes(mode)} onChange={() => toggleDataflowMode(mode)} />
+                        <span className="dataflow-code">{mode}</span>
+                        <span className="dataflow-title">{title}</span>
+                      </label>
+                    ))}
+                  </div>
+                  <p className="small">대표 표시값: {hardware.dataflow}. 여러 개 선택 시 동일 입력을 dataflow별 작업으로 나누어 큐에 추가합니다.</p>
                 </div>
                 <div className="row">
                   <div>
@@ -1632,7 +1677,11 @@ export default function Home() {
             <ResultContextBar
               jobsPayload={jobsPayload}
               selectedJobId={analysisJobId}
-              onSelect={(id) => { setAnalysisJobId(id); if (id) void fetchJobReport(id); }}
+              onSelect={(id) => {
+                analysisJobIdRef.current = id;
+                setAnalysisJobId(id);
+                void fetchJobReport(id);
+              }}
             />
             <div className="tabs">
               {(
@@ -1686,13 +1735,13 @@ export default function Home() {
             {tab === "graphs" && <Graphs result={result} download={download} jobId={analysisJobId} jobsPayload={jobsPayload} />}
             {tab === "report" && (
               <ReportTab
-                report={serverReportMarkdown || result.artifacts.reportMarkdown}
-                sourceJobId={serverReportJobId}
-                fallback={!serverReportMarkdown}
+                report={(serverReportJobId === analysisJobId ? serverReportMarkdown : "") || result.artifacts.reportMarkdown}
+                sourceJobId={analysisJobId}
+                fallback={!serverReportMarkdown || serverReportJobId !== analysisJobId}
                 download={download}
                 confidence={confidence}
                 jobsPayload={jobsPayload}
-                onSelectJobReport={(id) => { setAnalysisJobId(id); void fetchJobReport(id); }}
+                onSelectJobReport={(id) => { analysisJobIdRef.current = id; setAnalysisJobId(id); void fetchJobReport(id); }}
                 onDeleteJob={(id) => void deleteJobById(id)}
               />
             )}
@@ -2017,7 +2066,8 @@ function Policy({ result, download, jobId, jobsPayload }: { result: any; downloa
             <th title="타일 경계 때문에 추가되는 padding 비율입니다.">
               Padding
             </th>
-            <th title="선택 타일의 SRAM 요구량입니다.">SRAM</th>
+            <th title="선택 타일의 SRAM 작업 영역입니다.">SRAM 영역</th>
+            <th title="전체 타일 반복을 고려한 SRAM access traffic 추정입니다.">SRAM access</th>
             <th title="SRAM 초과, 낮은 활용률 등 주의 사항입니다.">경고</th>
           </tr>
         </thead>
@@ -2042,6 +2092,7 @@ function Policy({ result, download, jobId, jobsPayload }: { result: any; downloa
               <td>{(r.best.utilization * 100).toFixed(1)}%</td>
               <td>{(r.best.paddingRatio * 100).toFixed(1)}%</td>
               <td>{(r.best.sramBytes / 1024).toFixed(1)} KiB</td>
+              <td>{((r.best.predictedSramAccessBytes ?? 0) / 1024).toFixed(1)} KiB</td>
               <td>{r.best.warnings.join(", ")}</td>
             </tr>
           ))}
@@ -2388,6 +2439,7 @@ function Exports({ result, download, jobId, jobsPayload }: { result: any; downlo
 function Graphs({ result, download, jobId, jobsPayload }: { result: any; download: DownloadFn; jobId?: string; jobsPayload?: any | null }) {
   const [jobResult, setJobResult] = useState<any | null>(null);
   const [scaleSummary, setScaleSummary] = useState<any | null>(null);
+  const [scaleTop3Summary, setScaleTop3Summary] = useState<any | null>(null);
   const [selectedOp, setSelectedOp] = useState(0);
   const [metric, setMetric] = useState("cycles");
   const [error, setError] = useState("");
@@ -2398,19 +2450,24 @@ function Graphs({ result, download, jobId, jobsPayload }: { result: any; downloa
       setError("");
       setJobResult(null);
       setScaleSummary(null);
+      setScaleTop3Summary(null);
       if (!jobId) return;
       try {
-        const [r, sr] = await Promise.all([
+        const [r, sr, top3r] = await Promise.all([
           fetch(`/api/jobs/${jobId}/artifact?path=${encodeURIComponent("result.json")}`, { cache: "no-store" }),
           fetch(`/api/jobs/${jobId}/artifact?path=${encodeURIComponent("scalesim_summary.json")}`, { cache: "no-store" }),
+          fetch(`/api/jobs/${jobId}/artifact?path=${encodeURIComponent("scalesim_top3_summary.json")}`, { cache: "no-store" }),
         ]);
         if (!r.ok) throw new Error(await r.text());
-        const text = await r.text();
-        const parsed = JSON.parse(text);
+        const parsed = JSON.parse(await r.text());
         if (!cancelled) setJobResult(parsed?.payload?.response ?? parsed?.response ?? parsed);
         if (sr.ok) {
           const st = await sr.text();
           if (!cancelled) setScaleSummary(JSON.parse(st));
+        }
+        if (top3r.ok) {
+          const t3 = await top3r.text();
+          if (!cancelled) setScaleTop3Summary(JSON.parse(t3));
         }
       } catch (e: any) {
         if (!cancelled) setError(e?.message ?? String(e));
@@ -2424,21 +2481,50 @@ function Graphs({ result, download, jobId, jobsPayload }: { result: any; downloa
   const rows = Array.isArray(source?.results) ? source.results : [];
   const opIndex = Math.min(selectedOp, Math.max(0, rows.length - 1));
   const op = rows[opIndex];
-  const heat = Array.isArray(op?.heatmap) ? [...op.heatmap] : [];
   const hw = source?.request?.hardware ?? result?.request?.hardware ?? { frequencyMHz: 700 };
   const shape = op?.shape ?? {};
   const dtype = Number(shape.dtypeBytes || hw.bytesPerElement || 2);
   const dramBytes = Math.max(1, (Number(shape.m) * Number(shape.k) + Number(shape.k) * Number(shape.n) + 2 * Number(shape.m) * Number(shape.n)) * dtype);
+  const estimatedSramAccessKiB = (p: any) => {
+    const direct = Number(p.predictedSramAccessBytes);
+    if (Number.isFinite(direct) && direct > 0) return direct / 1024;
+    const tm = Number(p.tileM || 1), tn = Number(p.tileN || 1), tk = Number(p.tileK || 1);
+    const mTiles = Math.ceil(Number(shape.m || 1) / Math.max(1, tm));
+    const nTiles = Math.ceil(Number(shape.n || 1) / Math.max(1, tn));
+    const kTiles = Math.ceil(Number(shape.k || 1) / Math.max(1, tk));
+    const tileRepeats = Math.max(1, mTiles * nTiles * kTiles);
+    const ifmap = tileRepeats * tm * tk;
+    const filter = tileRepeats * tk * tn;
+    const ofmap = tileRepeats * tm * tn;
+    const partial = Math.max(0, kTiles - 1) * mTiles * nTiles * tm * tn;
+    return ((ifmap + filter + ofmap + partial) * dtype) / 1024;
+  };
+  const estimatedDramAccessKiB = (p: any) => {
+    const direct = Number(p.predictedDramAccessBytes);
+    if (Number.isFinite(direct) && direct > 0) return direct / 1024;
+    return dramBytes / 1024;
+  };
   const tileKey = (p: any) => `${Number(p.tileM)}x${Number(p.tileN)}x${Number(p.tileK)}`;
-  const externalCandidates = Array.isArray(scaleSummary?.candidateLayers) ? scaleSummary.candidateLayers : [];
+  const externalCandidates = [
+    ...(Array.isArray(scaleSummary?.candidateLayers) ? scaleSummary.candidateLayers : []),
+    ...(Array.isArray(scaleTop3Summary?.layers) ? scaleTop3Summary.layers : []),
+  ];
   const mainActual = scaleSummary?.layers?.[opIndex];
+  const candidateActualByRank = new Map<number, any>();
   const candidateActualByTile = new Map<string, any>();
   for (const c of externalCandidates) {
     if ((c.shapeId && c.shapeId === shape.id) || (!c.shapeId && c.opName === shape.opName)) {
       candidateActualByTile.set(tileKey(c), c);
+      const rank = Number(c.rank);
+      if (Number.isFinite(rank) && rank > 0) candidateActualByRank.set(rank, c);
     }
   }
-  const actualFor = (p: any, index: number) => candidateActualByTile.get(tileKey(p)) ?? (index === 0 ? mainActual : undefined);
+  const top = (Array.isArray(op?.candidates) ? op.candidates.slice(0, 3) : []).map((p: any, index: number) => ({
+    ...p,
+    __rank: index + 1,
+    __actual: candidateActualByRank.get(index + 1) ?? candidateActualByTile.get(tileKey(p)) ?? (index === 0 ? mainActual : undefined),
+  }));
+  const actualFor = (p: any, index: number) => p.__actual ?? candidateActualByRank.get(index + 1) ?? candidateActualByTile.get(tileKey(p)) ?? (index === 0 ? mainActual : undefined);
   const actualAccessKiB = (a: any, key: "sramAccesses" | "dramAccesses") => {
     const accesses = Number(a?.[key]);
     return Number.isFinite(accesses) && accesses > 0 ? accesses * dtype / 1024 : undefined;
@@ -2447,35 +2533,68 @@ function Graphs({ result, download, jobId, jobsPayload }: { result: any; downloa
     cycles: { label: "Cycle", unit: "cyc", lowerBetter: true, value: (p) => Number(p.cycles) || 0, actualValue: (a) => Number(a?.cycles) || undefined, format: (v) => Math.round(v).toLocaleString(), description: "TileForge estimator cycle과 SCALE-Sim top3 tile 실행값을 비교합니다." },
     timeUs: { label: "실행 시간", unit: "us", lowerBetter: true, value: (p) => (Number(p.cycles) || 0) / Math.max(1, Number(hw.frequencyMHz || 700)), actualValue: (a) => Number(a?.cycles) ? Number(a.cycles) / Math.max(1, Number(hw.frequencyMHz || 700)) : undefined, format: (v) => v.toFixed(3), description: "cycle을 주파수로 나눈 예상/실제 실행 시간입니다." },
     utilization: { label: "PE 사용률", unit: "%", lowerBetter: false, value: (p) => (Number(p.utilization) || 0) * 100, actualValue: (a) => Number(a?.overallUtil ?? a?.computeUtil) || undefined, format: (v) => `${v.toFixed(1)}%`, description: "예측 PE 사용률과 SCALE-Sim Overall/Compute Util을 비교합니다." },
-    padding: { label: "패딩 비율", unit: "%", lowerBetter: true, value: (p) => (Number(p.paddingRatio) || 0) * 100, format: (v) => `${v.toFixed(1)}%`, description: "타일 경계에서 낭비되는 계산 비율입니다. SCALE-Sim에는 직접 대응되는 단일 지표가 없습니다." },
-    sram: { label: "SRAM 작업/접근", unit: "KiB", lowerBetter: true, value: (p) => (Number(p.sramBytes) || 0) / 1024, actualValue: (a) => actualAccessKiB(a, "sramAccesses"), format: (v) => `${v.toFixed(1)} KiB`, description: "파란색은 예측 작업 영역, 주황색은 SCALE-Sim SRAM access 총량입니다." },
-    dram: { label: "DRAM traffic", unit: "KiB", lowerBetter: true, value: () => dramBytes / 1024, actualValue: (a) => actualAccessKiB(a, "dramAccesses"), format: (v) => `${v.toFixed(1)} KiB`, description: "A/B/C 기준 추정 DRAM traffic과 SCALE-Sim DRAM access 총량입니다." },
-    score: { label: "종합 점수", unit: "score", lowerBetter: true, value: (p) => Number(p.score ?? p.cycles) || 0, format: (v) => v.toFixed(3), description: "objective에 따른 내부 ranking 점수입니다. 외부 도구의 직접 대응값은 없습니다." },
+    padding: { label: "패딩 비율", unit: "%", lowerBetter: true, value: (p) => (Number(p.paddingRatio) || 0) * 100, format: (v) => `${v.toFixed(1)}%`, description: "타일 경계에서 낭비되는 계산 비율입니다." },
+    sram: { label: "SRAM 작업 영역", unit: "KiB", lowerBetter: true, value: (p) => (Number(p.sramBytes) || 0) / 1024, format: (v) => `${v.toFixed(1)} KiB`, description: "타일 하나가 동시에 필요로 하는 IFMAP/FILTER/OFMAP 로컬 SRAM 작업 영역입니다." },
+    sramAccess: { label: "SRAM access traffic", unit: "KiB", lowerBetter: true, value: (p) => estimatedSramAccessKiB(p), actualValue: (a) => actualAccessKiB(a, "sramAccesses"), format: (v) => `${v.toFixed(1)} KiB`, description: "예측 SRAM 접근량과 SCALE-Sim SRAM access를 비교합니다." },
+    dram: { label: "DRAM access traffic", unit: "KiB", lowerBetter: true, value: (p) => estimatedDramAccessKiB(p), actualValue: (a) => actualAccessKiB(a, "dramAccesses"), format: (v) => `${v.toFixed(1)} KiB`, description: "예측 DRAM 접근량과 SCALE-Sim DRAM access 총량입니다." },
+    score: { label: "종합 점수", unit: "score", lowerBetter: true, value: (p) => Number(p.score ?? p.cycles) || 0, format: (v) => v.toFixed(3), description: "objective에 따른 내부 ranking 점수입니다." },
   };
   const info = metricInfo[metric] ?? metricInfo.cycles;
-  const sorted = heat.sort((a: any, b: any) => info.lowerBetter ? info.value(a) - info.value(b) : info.value(b) - info.value(a));
-  const top = sorted.slice(0, 24);
   const actualMetricValues = top.map((p: any, i: number) => info.actualValue?.(actualFor(p, i))).map((v) => Number.isFinite(v) && v! > 0 ? v : undefined);
   const hasActualMetric = actualMetricValues.some((v) => v !== undefined);
   const maxValue = Math.max(1e-9, ...actualMetricValues.map((v) => v ? Math.abs(v) : 0), ...top.map((p: any) => Math.abs(info.value(p)) || 0));
   const best = top[0];
   const svgWidth = 980;
-  const rowH = hasActualMetric ? 34 : 26;
-  const svgHeight = 76 + top.length * rowH;
+  const rowH = hasActualMetric ? 44 : 34;
+  const svgHeight = 86 + Math.max(1, top.length) * rowH;
   const safeTitle = `${info.label} comparison${op?.shape ? ` - ${op.shape.model}.${op.shape.opName}` : ""}`;
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${svgWidth}" height="${svgHeight}" viewBox="0 0 ${svgWidth} ${svgHeight}">
   <rect width="100%" height="100%" fill="#0b1020"/>
   <text x="20" y="30" fill="#eaf0ff" font-family="Arial" font-size="18">${safeTitle}</text>
-  <text x="20" y="52" fill="#9fb0d0" font-family="Arial" font-size="12">${info.description}</text>
+  <text x="20" y="52" fill="#9fb0d0" font-family="Arial" font-size="12">Top-3 tile 후보만 표시합니다. ${info.description}</text>
   ${top.map((p: any, i: number) => {
-    const y = 80 + i * rowH;
+    const y = 86 + i * rowH;
     const v = info.value(p);
     const w = Math.max(2, Math.round((Math.abs(v) / maxValue) * 600));
-    const label = `${p.tileM}x${p.tileN}x${p.tileK}`;
+    const label = `#${p.__rank ?? i + 1} ${p.tileM}x${p.tileN}x${p.tileK}`;
     const actualMetricValue = actualMetricValues[i];
     const actualW = actualMetricValue ? Math.max(2, Math.round((Math.abs(actualMetricValue) / maxValue) * 600)) : 0;
-    const actualPart = actualW ? `<rect x="170" y="${y + 17}" width="${actualW}" height="6" rx="3" fill="#ffb86b"/><text x="${180 + actualW}" y="${y + 23}" fill="#ffdfb0" font-family="Consolas, monospace" font-size="10">SCALE-Sim ${info.format(actualMetricValue!)}</text>` : "";
+    const actualPart = actualW ? `<rect x="170" y="${y + 20}" width="${actualW}" height="6" rx="3" fill="#ffb86b"/><text x="${180 + actualW}" y="${y + 26}" fill="#ffdfb0" font-family="Consolas, monospace" font-size="10">SCALE-Sim ${info.format(actualMetricValue!)}</text>` : "";
     return `<text x="20" y="${y + 15}" fill="#cfe0ff" font-family="Consolas, monospace" font-size="12">${label}</text><rect x="170" y="${y}" width="${w}" height="16" rx="4" fill="#8db3ff"/><text x="${180 + w}" y="${y + 13}" fill="#eaf0ff" font-family="Consolas, monospace" font-size="12">예측 ${info.format(v)} · util ${((Number(p.utilization) || 0) * 100).toFixed(1)}% · SRAM ${((Number(p.sramBytes)||0)/1024).toFixed(1)} KiB</text>${actualPart}`;
+  }).join("\n  ")}
+</svg>`;
+
+  const overviewMetrics = ["cycles", "utilization", "sramAccess", "dram"].map((key) => ({ key, info: metricInfo[key] }));
+  const metricMax = new Map<string, number>();
+  for (const item of overviewMetrics) {
+    const values = top.flatMap((p: any, i: number) => {
+      const predicted = Math.abs(item.info.value(p)) || 0;
+      const actual = item.info.actualValue?.(actualFor(p, i));
+      return [predicted, Number.isFinite(actual) && actual! > 0 ? Math.abs(actual!) : 0];
+    });
+    metricMax.set(item.key, Math.max(1e-9, ...values));
+  }
+  const overviewRowH = 90;
+  const overviewHeight = 74 + Math.max(1, top.length) * overviewRowH;
+  const overviewSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="${svgWidth}" height="${overviewHeight}" viewBox="0 0 ${svgWidth} ${overviewHeight}">
+  <rect width="100%" height="100%" fill="#0b1020"/>
+  <text x="20" y="30" fill="#eaf0ff" font-family="Arial" font-size="18">Top-3 multi-metric overview</text>
+  <text x="20" y="52" fill="#9fb0d0" font-family="Arial" font-size="12">각 타일의 cycle, PE 사용률, SRAM/DRAM access를 한 번에 비교합니다. 파란색=예측, 주황색=SCALE-Sim.</text>
+  ${top.map((p: any, i: number) => {
+    const baseY = 78 + i * overviewRowH;
+    const label = `#${p.__rank ?? i + 1} ${p.tileM}x${p.tileN}x${p.tileK}`;
+    const actual = actualFor(p, i);
+    const bars = overviewMetrics.map((item, j) => {
+      const y = baseY + 18 + j * 16;
+      const predicted = item.info.value(p);
+      const actualValue = item.info.actualValue?.(actual);
+      const max = metricMax.get(item.key) ?? 1;
+      const pw = Math.max(2, Math.round((Math.abs(predicted) / max) * 250));
+      const aw = Number.isFinite(actualValue) && actualValue! > 0 ? Math.max(2, Math.round((Math.abs(actualValue!) / max) * 250)) : 0;
+      const actualText = aw ? ` / 실제 ${item.info.format(actualValue!)}` : "";
+      return `<text x="170" y="${y + 9}" fill="#9fb0d0" font-family="Arial" font-size="10">${item.info.label}</text><rect x="285" y="${y}" width="${pw}" height="6" rx="3" fill="#8db3ff"/><rect x="285" y="${y + 8}" width="${aw}" height="6" rx="3" fill="#ffb86b"/><text x="545" y="${y + 10}" fill="#eaf0ff" font-family="Consolas, monospace" font-size="10">예측 ${item.info.format(predicted)}${actualText}</text>`;
+    }).join("");
+    return `<text x="20" y="${baseY + 16}" fill="#cfe0ff" font-family="Consolas, monospace" font-size="12">${label}</text>${bars}`;
   }).join("\n  ")}
 </svg>`;
 
@@ -2483,7 +2602,7 @@ function Graphs({ result, download, jobId, jobsPayload }: { result: any; downloa
     <section className="graphs-panel">
       <JobSourceNotice jobId={jobId ?? ""} jobsPayload={jobsPayload} tabName="그래프" />
       <h3>타일 후보 성능 비교</h3>
-      <p className="small">파란색은 TileForge 예측, 주황색은 SCALE-Sim top3 tile 실행값입니다. padding/score처럼 SCALE-Sim 직접 대응 지표가 없는 항목은 예측값만 표시됩니다.</p>
+      <p className="small">상위 3개 tile 후보만 고정해서 표시합니다. 첫 번째 그래프는 선택한 지표, 두 번째 그래프는 cycle/PE/SRAM/DRAM을 한 번에 보여줍니다.</p>
       {error && <p className="small warn">선택 작업 result.json을 읽지 못해 현재 입력 미리보기를 사용합니다: {error}</p>}
       <div className="row graph-controls">
         <div>
@@ -2499,35 +2618,37 @@ function Graphs({ result, download, jobId, jobsPayload }: { result: any; downloa
             <option value="timeUs">예상 실행 시간</option>
             <option value="utilization">PE 사용률</option>
             <option value="padding">패딩 비율</option>
-            <option value="sram">SRAM/cache 작업 영역</option>
-            <option value="dram">DRAM traffic 추정</option>
+            <option value="sram">SRAM 작업 영역</option>
+            <option value="sramAccess">SRAM access traffic</option>
+            <option value="dram">DRAM access traffic</option>
             <option value="score">종합 점수</option>
           </select>
         </div>
       </div>
       <div className="graph-actions">
-        <ActionButton tip="현재 그래프를 SVG 파일로 다운로드합니다." onClick={() => download(`tile-candidate-${metric}.svg`, svg, "image/svg+xml")}>그래프 SVG 다운로드</ActionButton>
+        <ActionButton tip="현재 선택 지표 그래프를 SVG 파일로 다운로드합니다." onClick={() => download(`tile-candidate-top3-${metric}.svg`, svg, "image/svg+xml")}>선택 지표 SVG 다운로드</ActionButton>
+        <ActionButton tip="Top-3 전체 지표 요약 그래프를 SVG 파일로 다운로드합니다." onClick={() => download("tile-candidate-top3-overview.svg", overviewSvg, "image/svg+xml")}>전체 지표 SVG 다운로드</ActionButton>
       </div>
       {best && (
         <div className="cards graph-summary-cards">
           <Metric title={info.lowerBetter ? `최저 ${info.label}` : `최고 ${info.label}`} value={info.format(info.value(best))} tip="현재 선택한 지표 기준 최상위 타일 후보입니다." />
-          <Metric title="선택 기준 최적 타일" value={`${best.tileM}×${best.tileN}×${best.tileK}`} tip="현재 그래프 지표 기준 상위 후보입니다." />
+          <Metric title="Top-1 타일" value={`${best.tileM}×${best.tileN}×${best.tileK}`} tip="estimator가 선택한 상위 1번 후보입니다." />
           <Metric title="PE 사용률" value={`${((best.utilization ?? 0) * 100).toFixed(1)}%`} tip="선택 후보의 PE 사용률입니다." />
-          <Metric title="SRAM/cache" value={`${((best.sramBytes ?? 0) / 1024).toFixed(1)} KiB`} tip="선택 후보의 로컬 SRAM/cache 작업 영역입니다." />
+          <Metric title="SRAM 작업 영역" value={`${((best.sramBytes ?? 0) / 1024).toFixed(1)} KiB`} tip="선택 후보의 로컬 SRAM/cache 작업 영역입니다." />
+          <Metric title="SRAM 접근량" value={`${estimatedSramAccessKiB(best).toFixed(1)} KiB`} tip="선택 후보의 전체 SRAM access traffic 추정입니다." />
         </div>
       )}
-      <div className="chart-scroll">
-        <div className="chart-svg" dangerouslySetInnerHTML={{ __html: svg }} />
-      </div>
-      <h3>상위 타일 후보</h3>
+      <div className="chart-scroll"><div className="chart-svg" dangerouslySetInnerHTML={{ __html: svg }} /></div>
+      <div className="chart-scroll"><div className="chart-svg" dangerouslySetInnerHTML={{ __html: overviewSvg }} /></div>
+      <h3>상위 3개 타일 후보</h3>
       <table className="compact-table">
-        <thead><tr><th>순위</th><th>타일</th><th>{info.label} 예측</th><th>{info.label} 실제</th><th>예측 cycle</th><th>SCALE-Sim cycle</th><th>시간 us</th><th>사용률</th><th>패딩</th><th>SRAM</th><th>DRAM</th></tr></thead>
+        <thead><tr><th>순위</th><th>타일</th><th>{info.label} 예측</th><th>{info.label} 실제</th><th>예측 cycle</th><th>SCALE-Sim cycle</th><th>시간 us</th><th>사용률</th><th>패딩</th><th>SRAM 영역</th><th>SRAM access</th><th>DRAM access</th></tr></thead>
         <tbody>{top.map((p: any, i: number) => {
           const actual = actualFor(p, i);
           const actualMetricValue = actualMetricValues[i];
           return (
             <tr key={`${p.tileM}-${p.tileN}-${p.tileK}-${i}`}>
-              <td>{i + 1}</td><td>{p.tileM}×{p.tileN}×{p.tileK}</td><td>{info.format(info.value(p))}</td><td>{actualMetricValue ? info.format(actualMetricValue) : "-"}</td><td>{Math.round(p.cycles).toLocaleString()}</td><td>{actual?.cycles ? Math.round(actual.cycles).toLocaleString() : "-"}</td><td>{((Number(p.cycles)||0)/Math.max(1, Number(hw.frequencyMHz||700))).toFixed(3)}</td><td>{((p.utilization ?? 0) * 100).toFixed(1)}% / {actual?.overallUtil ? `${Number(actual.overallUtil).toFixed(1)}%` : "-"}</td><td>{((p.paddingRatio ?? 0) * 100).toFixed(1)}%</td><td>{((p.sramBytes ?? 0) / 1024).toFixed(1)} KiB / {actualAccessKiB(actual, "sramAccesses")?.toFixed(1) ?? "-"} KiB</td><td>{(dramBytes/1024).toFixed(1)} KiB / {actualAccessKiB(actual, "dramAccesses")?.toFixed(1) ?? "-"} KiB</td>
+              <td>{i + 1}</td><td>{p.tileM}×{p.tileN}×{p.tileK}</td><td>{info.format(info.value(p))}</td><td>{actualMetricValue ? info.format(actualMetricValue) : "-"}</td><td>{Math.round(p.cycles).toLocaleString()}</td><td>{actual?.cycles ? Math.round(actual.cycles).toLocaleString() : "-"}</td><td>{((Number(p.cycles)||0)/Math.max(1, Number(hw.frequencyMHz||700))).toFixed(3)}</td><td>{((p.utilization ?? 0) * 100).toFixed(1)}% / {actual?.overallUtil ? `${Number(actual.overallUtil).toFixed(1)}%` : "-"}</td><td>{((p.paddingRatio ?? 0) * 100).toFixed(1)}%</td><td>{((p.sramBytes ?? 0) / 1024).toFixed(1)} KiB</td><td>{estimatedSramAccessKiB(p).toFixed(1)} KiB / {actualAccessKiB(actual, "sramAccesses")?.toFixed(1) ?? "-"} KiB</td><td>{estimatedDramAccessKiB(p).toFixed(1)} KiB / {actualAccessKiB(actual, "dramAccesses")?.toFixed(1) ?? "-"} KiB</td>
             </tr>
           );
         })}</tbody>
@@ -2693,10 +2814,10 @@ function ReportTab({
         <div className="report-picker-controls">
           <select
             value={sourceJobId}
-            onChange={(e) => e.target.value && onSelectJobReport(e.target.value)}
+            onChange={(e) => onSelectJobReport(e.target.value)}
             title="보고서를 볼 작업을 선택합니다."
           >
-            <option value="">Estimator 미리보기 / 최신 자동 선택</option>
+            <option value="">Estimator 미리보기</option>
             {reportJobs.map((j: any) => (
               <option key={j.id} value={j.id}>
                 {jobDisplayName(j)} · {j.status} · {j.createdAt ? new Date(j.createdAt).toLocaleString() : ""}
@@ -2730,6 +2851,8 @@ function ReportTab({
 function JobExternalLogs({ jobId, live }: { jobId: string; live?: boolean }) {
   const [logs, setLogs] = useState<Array<{ path: string; text: string; bytes?: number; updatedAt?: string }>>([]);
   const [open, setOpen] = useState(true);
+  const [autoScroll, setAutoScroll] = useState(true);
+  const bodyRefs = useRef<Record<string, HTMLPreElement | null>>({});
   useEffect(() => {
     let cancelled = false;
     let timer: number | undefined;
@@ -2747,7 +2870,14 @@ function JobExternalLogs({ jobId, live }: { jobId: string; live?: boolean }) {
     void load();
     return () => { cancelled = true; if (timer) window.clearTimeout(timer); };
   }, [jobId, live]);
+  useEffect(() => {
+    if (!autoScroll) return;
+    for (const el of Object.values(bodyRefs.current) as Array<HTMLPreElement | null>) if (el) el.scrollTop = el.scrollHeight;
+  }, [logs, autoScroll, open]);
   if (!jobId) return null;
+  const scrollToBottom = () => {
+    for (const el of Object.values(bodyRefs.current) as Array<HTMLPreElement | null>) if (el) el.scrollTop = el.scrollHeight;
+  };
   return (
     <section className="external-log-panel" title="SCALE-Sim과 IREE가 실제로 출력한 stdout/stderr 로그입니다.">
       <div className="external-log-header">
@@ -2755,7 +2885,13 @@ function JobExternalLogs({ jobId, live }: { jobId: string; live?: boolean }) {
           <b>SCALE-Sim / IREE 실시간 원본 로그</b>
           <p className="small">TileForge 진행 로그와 별개로 외부 도구의 실제 명령, cwd, stdout, stderr를 계속 tail합니다.</p>
         </div>
-        <button className="secondary" onClick={() => setOpen((v) => !v)}>{open ? "접기" : "펼치기"}</button>
+        <div className="terminal-actions">
+          <label className="terminal-check" title="외부 도구 로그가 갱신될 때 각 로그 창을 맨 아래로 이동합니다.">
+            <input type="checkbox" checked={autoScroll} onChange={(e) => setAutoScroll(e.target.checked)} /> 자동 스크롤
+          </label>
+          <button className="secondary" onClick={scrollToBottom}>맨 아래로</button>
+          <button className="secondary" onClick={() => setOpen((v) => !v)}>{open ? "접기" : "펼치기"}</button>
+        </div>
       </div>
       {open && logs.length === 0 && <p className="small">아직 외부 도구 로그 파일이 생성되지 않았습니다. SCALE-Sim/IREE 단계에 진입하면 자동으로 표시됩니다.</p>}
       {open && logs.map((log) => {
@@ -2766,7 +2902,7 @@ function JobExternalLogs({ jobId, live }: { jobId: string; live?: boolean }) {
               {log.path} {log.bytes != null ? <span className="small">({fmtBytes(log.bytes)}, {log.updatedAt ? new Date(log.updatedAt).toLocaleTimeString() : ""})</span> : null}
               <span className={`badge ${status.className}`}>{status.label}</span>
             </summary>
-            <pre className={`terminal-body external-log-body ${status.className}`}>{log.text}</pre>
+            <pre ref={(el) => { bodyRefs.current[log.path] = el; }} className={`terminal-body external-log-body ${status.className}`}>{log.text}</pre>
           </details>
         );
       })}
@@ -3204,6 +3340,7 @@ function LiveTerminal({
             />{" "}
             자동 스크롤
           </label>
+          <button className="secondary" title="현재 콘솔을 맨 아래로 이동합니다." onClick={() => { const el = boxRef.current; if (el) el.scrollTop = el.scrollHeight; }}>맨 아래로</button>
           {connected && (
             <button
               className="secondary"

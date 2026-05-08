@@ -60,7 +60,7 @@ function emptyArtifacts(): SearchResponse["artifacts"] {
 }
 
 export function estimateForShape(hw: HardwareConfig, shape: MatmulShape, cand: TileCandidates, objective: Objective, maxResults: number, calibration = undefined as SearchRequest["calibration"], scaleSim?: ScaleSimOverrides): OpSearchResult {
-  const factor = calibrationFactor(calibration, hw, shape);
+  const baseCalibrationFactor = calibrationFactor(calibration, hw, shape);
   const maxKeep = Math.max(1, maxResults);
   const top = new TopK<TileCandidateResult>(maxKeep, compareCandidates);
   const paretoPool = new TopK<TileCandidateResult>(Math.max(maxKeep * 4, 64), compareCandidates);
@@ -79,11 +79,13 @@ export function estimateForShape(hw: HardwareConfig, shape: MatmulShape, cand: T
 
   for (const kept of pruned.kept) {
     const tm = kept.tileM, tn = kept.tileN, tk = kept.tileK;
-    const estimated = applyCalibration(estimateTile(hw, shape, tm, tn, tk, objective, scaleSim), factor);
+    const rawEstimate = estimateTile(hw, shape, tm, tn, tk, objective, scaleSim);
+    const factor = calibration ? calibrationFactor(calibration, hw, shape, rawEstimate) : baseCalibrationFactor;
+    const estimated = applyCalibration(rawEstimate, factor);
     runInvariant("tile candidate", () => assertTileCandidateInvariant(estimated));
     top.push(estimated);
     paretoPool.push(estimated);
-    reservoir.push({ tileM: estimated.tileM, tileN: estimated.tileN, tileK: estimated.tileK, cycles: estimated.cycles, utilization: estimated.utilization, sramBytes: estimated.sramBytes, paddingRatio: estimated.paddingRatio, score: estimated.score });
+    reservoir.push({ tileM: estimated.tileM, tileN: estimated.tileN, tileK: estimated.tileK, cycles: estimated.cycles, utilization: estimated.utilization, sramBytes: estimated.sramBytes, paddingRatio: estimated.paddingRatio, score: estimated.score, predictedSramAccessBytes: estimated.predictedSramAccessBytes, predictedDramAccessBytes: estimated.predictedDramAccessBytes, sramPressure: estimated.sramPressure, memoryBoundRatio: estimated.memoryBoundRatio });
   }
 
   const sorted = top.toSorted();
@@ -112,104 +114,158 @@ export function estimateTile(hw: HardwareConfig, shape: MatmulShape, tileM: numb
   const paddedM = mTiles * tileM, paddedN = nTiles * tileN, paddedK = kTiles * tileK;
   const usefulOps = 2 * shape.m * shape.n * shape.k;
   const paddedOps = 2 * paddedM * paddedN * paddedK;
-  const paddingRatio = paddedOps / usefulOps - 1;
+  const paddingRatio = paddedOps / Math.max(1, usefulOps) - 1;
   const activeRows = Math.min(tileM, hw.arrayRows), activeCols = Math.min(tileN, hw.arrayCols);
-  const spatialUtil = (activeRows * activeCols) / (hw.arrayRows * hw.arrayCols);
-  const sramBytes = (tileM * tileK + tileK * tileN + tileM * tileN) * bytes;
-  const boundaryUtil = usefulOps / paddedOps;
+  const spatialUtil = (activeRows * activeCols) / Math.max(1, hw.arrayRows * hw.arrayCols);
+  const ifmapBytes = tileM * tileK * bytes;
+  const filterBytes = tileK * tileN * bytes;
+  const ofmapBytes = tileM * tileN * bytes;
+  const sramBytes = ifmapBytes + filterBytes + ofmapBytes;
+  const boundaryUtil = usefulOps / Math.max(1, paddedOps);
   const scaleCycles = estimateScaleSimLikeCycles(hw, shape, tileM, tileN, tileK, scaleSim);
-  const memoryPressure = sramBytes / Math.max(1, hw.sramKB * 1024);
-  const memoryPenalty = memoryPressure > 0.75 ? Math.ceil((memoryPressure - 0.75) * 32) : 0;
+  const limits = scaleSimMemoryLimits(hw, scaleSim);
+  const ifmapPressure = ifmapBytes / Math.max(1, limits.ifmapBytes);
+  const filterPressure = filterBytes / Math.max(1, limits.filterBytes);
+  const ofmapPressure = ofmapBytes / Math.max(1, limits.ofmapBytes);
+  const sramPressure = Math.max(ifmapPressure, filterPressure, ofmapPressure, sramBytes / Math.max(1, limits.totalBytes));
+  const predictedSramAccessBytes = scaleCycles.sramAccessElements * bytes;
+  const predictedDramAccessBytes = scaleCycles.dramAccessElements * bytes;
+  const memoryPenalty = sramPressure > 1
+    ? Math.ceil((sramPressure - 1) * (32 + 8 * scaleCycles.memoryBoundRatio))
+    : sramPressure > 0.85
+      ? Math.ceil((sramPressure - 0.85) * (10 + 4 * scaleCycles.memoryBoundRatio))
+      : 0;
   const cycles = Math.ceil(scaleCycles.cycles + memoryPenalty * Math.max(1, mTiles * nTiles));
   const utilization = clamp(spatialUtil * boundaryUtil * scaleCycles.computeUtil, 0, 1);
-  const sramLimit = hw.sramKB * 1024;
-  const boundaryPenalty = (mTiles * nTiles * kTiles) * (1 - boundaryUtil) + Math.max(0, sramBytes - sramLimit) / Math.max(1, sramLimit) * 10;
-  const normalizedCycles = cycles / 1e6;
-  const sramPenalty = Math.max(0, sramBytes - sramLimit) / Math.max(1, sramLimit);
+  const trafficPressure = scaleCycles.sramAccessElements / Math.max(1, shape.m * shape.n + shape.m * shape.k + shape.k * shape.n);
+  const boundaryPenalty = (mTiles * nTiles * kTiles) * (1 - boundaryUtil) + Math.max(0, sramPressure - 1) * 10 + Math.max(0, trafficPressure - 4) * 0.15;
+  const idealComputeCycles = Math.max(1, Math.ceil((shape.m * shape.n * shape.k) / Math.max(1, hw.arrayRows * hw.arrayCols)));
+  const normalizedCycles = cycles / idealComputeCycles;
+  const sramPenalty = Math.max(0, sramPressure - 0.92) + Math.max(0, scaleCycles.memoryBoundRatio - 1) * 0.35 + Math.max(0, trafficPressure - 4) * 0.015;
   const utilPenalty = 1 - utilization;
   const score = scoreFor(objective, normalizedCycles, utilPenalty, paddingRatio, sramPenalty, boundaryPenalty, candidatesPreference(tileM, tileN, tileK, hw));
   const warnings: string[] = [];
-  if (sramBytes > sramLimit) warnings.push("SRAM 용량 초과");
+  if (ifmapPressure > 1) warnings.push("IFMAP SRAM 용량 초과");
+  if (filterPressure > 1) warnings.push("FILTER SRAM 용량 초과");
+  if (ofmapPressure > 1) warnings.push("OFMAP SRAM 용량 초과");
+  if (sramBytes > limits.totalBytes) warnings.push("총 SRAM 용량 초과");
   if (utilization < 0.45) warnings.push("PE 사용률 낮음");
   if (paddingRatio > 0.4) warnings.push("패딩 오버헤드 높음");
+  if (scaleCycles.memoryBoundRatio > 1.25) warnings.push("메모리 bandwidth 병목 가능성");
+  if (trafficPressure > 6) warnings.push("SRAM 접근량이 커서 data movement 비용이 큼");
   const timeUs = cycles / Math.max(1, hw.frequencyMHz);
-  return { shapeId: shape.id, model: shape.model, opName: shape.opName, tileM, tileN, tileK, cycles, timeUs, utilization, paddingRatio, sramBytes, boundaryPenalty, score, isPareto: false, warnings, explanation: explainTile(hw, shape, tileM, tileN, tileK, utilization, paddingRatio, sramBytes, cycles, warnings) };
+  return {
+    shapeId: shape.id, model: shape.model, opName: shape.opName,
+    tileM, tileN, tileK, cycles, timeUs, utilization, paddingRatio, sramBytes,
+    ifmapBytes, filterBytes, ofmapBytes, predictedSramAccessBytes, predictedDramAccessBytes,
+    sramPressure, memoryBoundRatio: scaleCycles.memoryBoundRatio,
+    boundaryPenalty, score, isPareto: false, warnings,
+    explanation: explainTile(hw, shape, tileM, tileN, tileK, utilization, paddingRatio, sramBytes, cycles, warnings, { ifmapBytes, filterBytes, ofmapBytes, limits, memoryBoundRatio: scaleCycles.memoryBoundRatio, predictedSramAccessBytes, predictedDramAccessBytes })
+  };
 }
+
+function scaleSimMemoryLimits(hw: HardwareConfig, scaleSim?: ScaleSimOverrides) {
+  const fallback = Math.max(1, hw.sramKB * 1024);
+  const split = Math.max(1, Math.floor(fallback / 3));
+  const ifmapBytes = Math.max(1, (scaleSim?.ifmapSramKB ?? split / 1024) * 1024);
+  const filterBytes = Math.max(1, (scaleSim?.filterSramKB ?? split / 1024) * 1024);
+  const ofmapBytes = Math.max(1, (scaleSim?.ofmapSramKB ?? split / 1024) * 1024);
+  return { ifmapBytes, filterBytes, ofmapBytes, totalBytes: ifmapBytes + filterBytes + ofmapBytes };
+}
+
 function scaleSimBandwidths(hw: HardwareConfig, scaleSim?: ScaleSimOverrides) {
   const bytes = Math.max(1, hw.bytesPerElement || 2);
-  const hwElementsPerCycle = hw.memoryBandwidthGBs
-    ? Math.max(1, (hw.memoryBandwidthGBs * 1000) / Math.max(1, hw.frequencyMHz) / bytes)
-    : 128;
-  const ifmap = scaleSim?.ifmapSRAMBankBandwidth ?? 10;
-  const filter = scaleSim?.filterSRAMBankBandwidth ?? 10;
-  const ofmap = scaleSim?.dramBandwidth ?? scaleSim?.bandwidth ?? hwElementsPerCycle;
-  return { ifmap: Math.max(1, ifmap), filter: Math.max(1, filter), ofmap: Math.max(1, ofmap) };
+  const hwElementsPerCycle = hw.memoryBandwidthGBs ? Math.max(1, (hw.memoryBandwidthGBs * 1000) / Math.max(1, hw.frequencyMHz) / bytes) : 128;
+  const bankScale = (banks?: number, ports?: number) => Math.max(1, (banks ?? 1) * (ports ?? 1));
+  const ifmap = (scaleSim?.ifmapSRAMBankBandwidth ?? 10) * bankScale(scaleSim?.ifmapSRAMBankNum, scaleSim?.ifmapSRAMBankPort);
+  const filter = (scaleSim?.filterSRAMBankBandwidth ?? 10) * bankScale(scaleSim?.filterSRAMBankNum, scaleSim?.filterSRAMBankPort);
+  const dram = scaleSim?.dramBandwidth ?? scaleSim?.bandwidth ?? hwElementsPerCycle;
+  return { ifmap: Math.max(1, ifmap), filter: Math.max(1, filter), ofmap: Math.max(1, dram), dram: Math.max(1, dram) };
 }
 
 function estimateScaleSimLikeCycles(hw: HardwareConfig, shape: MatmulShape, tileM: number, tileN: number, tileK: number, scaleSim?: ScaleSimOverrides) {
-  const ar = Math.max(1, hw.arrayRows);
-  const ac = Math.max(1, hw.arrayCols);
-  const tm = Math.max(1, tileM);
-  const tn = Math.max(1, tileN);
-  const tk = Math.max(1, tileK);
-  const mTiles = ceilDiv(shape.m, tm);
-  const nTiles = ceilDiv(shape.n, tn);
-  const kTiles = ceilDiv(shape.k, tk);
+  const ar = Math.max(1, hw.arrayRows), ac = Math.max(1, hw.arrayCols);
+  const tm = Math.max(1, tileM), tn = Math.max(1, tileN), tk = Math.max(1, tileK);
+  const mTiles = ceilDiv(shape.m, tm), nTiles = ceilDiv(shape.n, tn), kTiles = ceilDiv(shape.k, tk);
   const tileRepeats = Math.max(1, mTiles * nTiles * kTiles);
   const bw = scaleSimBandwidths(hw, scaleSim);
-  let computeCycles = 0;
-  let stallCycles = 0;
-  let computeUtil = 1;
+  const ifmapTile = tm * tk;
+  const filterTile = tk * tn;
+  const ofmapTile = tm * tn;
+  const ifmapTraffic = tileRepeats * ifmapTile;
+  const filterTraffic = tileRepeats * filterTile;
+  const ofmapTraffic = tileRepeats * ofmapTile;
+  const partialOfmapTraffic = Math.max(0, kTiles - 1) * mTiles * nTiles * ofmapTile;
+  const dramRefillTraffic = Math.max(1, mTiles * kTiles) * ifmapTile + Math.max(1, nTiles * kTiles) * filterTile + Math.max(1, mTiles * nTiles) * ofmapTile;
+  let analyticComputeCycles = 0, computeUtil = 1, reuseIfmap = 1, reuseFilter = 1, reuseOfmap = 1;
+
   if (hw.dataflow === "OS") {
-    const rowFolds = ceilDiv(tm, ar);
-    const colFolds = ceilDiv(tn, ac);
-    const perFold = tk + ar + ac - 2;
-    computeCycles = tileRepeats * rowFolds * colFolds * perFold;
-    stallCycles = 0;
+    const rowFolds = ceilDiv(tm, ar), colFolds = ceilDiv(tn, ac), perFold = tk + ar + ac - 2;
+    analyticComputeCycles = tileRepeats * rowFolds * colFolds * perFold;
     computeUtil = (Math.min(tm, ar) * Math.min(tn, ac) * tk) / Math.max(1, ar * ac * perFold);
+    reuseOfmap = Math.max(1, kTiles);
   } else if (hw.dataflow === "IS") {
-    const rowFolds = ceilDiv(tk, ar);
-    const colFolds = ceilDiv(tm, ac);
-    const perFold = tn + 2 * ar + ac - 3;
-    computeCycles = tileRepeats * rowFolds * colFolds * perFold;
-    const smallTile = tk * tn <= ar * ac * 2;
-    const ifmapTraffic = tileRepeats * tm * tk;
-    const filterTraffic = tileRepeats * tk * tn;
-    const ofmapTraffic = tileRepeats * tm * tn;
-    stallCycles = smallTile ? 0 : 1.20 * filterTraffic / bw.filter + 0.10 * ifmapTraffic / bw.ifmap + 0.08 * ofmapTraffic / bw.ofmap;
+    const rowFolds = ceilDiv(tk, ar), colFolds = ceilDiv(tm, ac), perFold = tn + 2 * ar + ac - 3;
+    analyticComputeCycles = tileRepeats * rowFolds * colFolds * perFold;
     computeUtil = (Math.min(tk, ar) * Math.min(tm, ac) * tn) / Math.max(1, ar * ac * perFold);
+    reuseIfmap = Math.max(1, nTiles);
   } else {
-    const rowFolds = ceilDiv(tk, ar);
-    const colFolds = ceilDiv(tn, ac);
-    const perFold = tm + 2 * ar + ac - 3;
-    computeCycles = tileRepeats * rowFolds * colFolds * perFold;
-    const smallTile = tk * tn <= ar * ac * 2;
-    const ifmapTraffic = tileRepeats * tm * tk;
-    const filterTraffic = Math.max(1, nTiles * kTiles) * tk * tn;
-    const ofmapTraffic = tileRepeats * tm * tn;
-    stallCycles = smallTile ? 0 : 0.45 * filterTraffic / bw.filter + 0.08 * ifmapTraffic / bw.ifmap + 0.05 * ofmapTraffic / bw.ofmap;
+    const rowFolds = ceilDiv(tk, ar), colFolds = ceilDiv(tn, ac), perFold = tm + 2 * ar + ac - 3;
+    analyticComputeCycles = tileRepeats * rowFolds * colFolds * perFold;
     computeUtil = (Math.min(tk, ar) * Math.min(tn, ac) * tm) / Math.max(1, ar * ac * perFold);
+    reuseFilter = Math.max(1, mTiles);
   }
-  const prefetchOverlap = Math.min(stallCycles * 0.12, computeCycles * 0.08);
-  const cycles = Math.max(1, Math.ceil(computeCycles + Math.max(0, stallCycles - prefetchOverlap)));
-  return { cycles, computeCycles: Math.max(1, computeCycles), computeUtil: clamp(computeUtil, 0.02, 1) };
+
+  const sramAccessElements = Math.max(1,
+    Math.ceil((ifmapTraffic / reuseIfmap) + (filterTraffic / reuseFilter) + (ofmapTraffic / reuseOfmap) + partialOfmapTraffic)
+  );
+  const dramAccessElements = Math.max(1, Math.ceil(dramRefillTraffic + partialOfmapTraffic));
+  const memoryCycles = Math.max((ifmapTraffic / reuseIfmap) / bw.ifmap, (filterTraffic / reuseFilter) / bw.filter, ((ofmapTraffic / reuseOfmap) + partialOfmapTraffic) / bw.ofmap, dramAccessElements / bw.dram);
+
+  const analyticPerTile = analyticComputeCycles / tileRepeats;
+  const scaleLikePerTile = estimateScaleSimPerTile(hw, tm, tn, tk);
+  const scaleLikeComputeCycles = Math.max(analyticComputeCycles, scaleLikePerTile * tileRepeats);
+  const overlap = (hw.doubleBuffering ? 0.62 : 0.34) * Math.min(scaleLikeComputeCycles, memoryCycles);
+  const cycles = Math.max(1, Math.ceil(scaleLikeComputeCycles + Math.max(0, memoryCycles - overlap)));
+  const computeCycles = Math.max(1, Math.max(analyticComputeCycles, analyticPerTile * tileRepeats));
+  return { cycles, computeCycles, computeUtil: clamp(computeUtil, 0.02, 1), memoryCycles: Math.max(0, memoryCycles), memoryBoundRatio: memoryCycles / Math.max(1, computeCycles), sramAccessElements, dramAccessElements };
 }
-function candidatesPreference(tm:number, tn:number, tk:number, hw: HardwareConfig) { return Math.abs(tm-hw.arrayRows)/hw.arrayRows*0.04 + Math.abs(tn-hw.arrayCols)/hw.arrayCols*0.04 + (tk<32?0.03:0); }
+
+function estimateScaleSimPerTile(hw: HardwareConfig, tm: number, tn: number, tk: number): number {
+  const ar = Math.max(1, hw.arrayRows);
+  const ac = Math.max(1, hw.arrayCols);
+  const nFold = Math.max(1, tn / ac);
+  const kFold = Math.max(1, tk / ar);
+  const arrayScale = Math.max(0.25, Math.sqrt(ar * ac) / 128);
+  if (hw.dataflow === "OS") {
+    const kTerm = 380 * arrayScale + 13.8 * tk;
+    return Math.max(1, Math.ceil(kTerm * nFold));
+  }
+  if (hw.dataflow === "IS") {
+    const nTerm = tn <= ac ? 1 : 1.833;
+    return Math.max(1, Math.ceil(2275 * arrayScale * nTerm * kFold));
+  }
+  const nTerm = tn <= ac ? 1 : (tk < ar ? 1 + 0.28 * (nFold - 1) : nFold);
+  return Math.max(1, Math.ceil(2275 * arrayScale * nTerm * kFold));
+}
+
+function candidatesPreference(tm:number, tn:number, tk:number, hw: HardwareConfig) { return Math.abs(tm-hw.arrayRows)/Math.max(1,hw.arrayRows)*0.04 + Math.abs(tn-hw.arrayCols)/Math.max(1,hw.arrayCols)*0.04 + (tk<32?0.03:0); }
 function scoreFor(obj: Objective, cycles: number, utilPenalty: number, pad: number, sram: number, boundary: number, pref: number): number {
-  if (obj === "cycles") return cycles + sram * 100;
-  if (obj === "utilization") return utilPenalty * 10 + pad + sram * 100 + pref;
-  if (obj === "hardware-design") return cycles * 0.45 + utilPenalty * 5 + pad * 4 + sram * 100 + boundary * 0.02 + pref;
-  if (obj === "pareto") return cycles * 0.5 + utilPenalty * 4 + pad * 2 + sram * 80 + pref;
-  return cycles * 0.65 + utilPenalty * 3 + pad * 2.5 + sram * 100 + boundary * 0.015 + pref;
+  if (obj === "cycles") return cycles * 2.4 + sram * 35 + boundary * 0.004 + pref;
+  if (obj === "utilization") return utilPenalty * 9 + cycles * 0.25 + pad * 1.5 + sram * 30 + pref;
+  if (obj === "hardware-design") return cycles * 1.35 + utilPenalty * 3 + pad * 2 + sram * 45 + boundary * 0.01 + pref;
+  if (obj === "pareto") return cycles * 1.5 + utilPenalty * 2.5 + pad * 1.25 + sram * 35 + boundary * 0.006 + pref;
+  return cycles * 2.0 + utilPenalty * 1.2 + pad * 1.2 + sram * 30 + boundary * 0.005 + pref;
 }
 function markPareto(cs: TileCandidateResult[]): TileCandidateResult[] {
   return cs.filter(a => !cs.some(b => b !== a && b.cycles <= a.cycles && b.sramBytes <= a.sramBytes && b.paddingRatio <= a.paddingRatio && b.utilization >= a.utilization && (b.cycles < a.cycles || b.sramBytes < a.sramBytes || b.paddingRatio < a.paddingRatio || b.utilization > a.utilization)));
 }
-function explainTile(hw: HardwareConfig, shape: MatmulShape, tm:number, tn:number, tk:number, util:number, pad:number, sram:number, cycles:number, warnings:string[]): string {
+function explainTile(hw: HardwareConfig, shape: MatmulShape, tm:number, tn:number, tk:number, util:number, pad:number, sram:number, cycles:number, warnings:string[], memory?: { ifmapBytes: number; filterBytes: number; ofmapBytes: number; limits: ReturnType<typeof scaleSimMemoryLimits>; memoryBoundRatio: number; predictedSramAccessBytes?: number; predictedDramAccessBytes?: number }): string {
   const reasons = [`${shape.opName}: ${tm}x${tn}x${tk} 타일을 선택함`];
   reasons.push(`${hw.arrayRows}x${hw.arrayCols} 배열에서 PE 사용률 ${(util*100).toFixed(1)}%`);
   reasons.push(`패딩 오버헤드 ${(pad*100).toFixed(1)}%`);
-  reasons.push(`SRAM 사용량 ${(sram/1024).toFixed(1)} KiB / ${hw.sramKB} KiB`);
+  reasons.push(`SRAM 사용량 ${(sram/1024).toFixed(1)} KiB / ${((memory?.limits.totalBytes ?? hw.sramKB*1024)/1024).toFixed(1)} KiB`);
+  if (memory) reasons.push(`SRAM 분해 IFMAP/FILTER/OFMAP=${(memory.ifmapBytes/1024).toFixed(1)}/${(memory.filterBytes/1024).toFixed(1)}/${(memory.ofmapBytes/1024).toFixed(1)} KiB, SRAM 접근량≈${((memory.predictedSramAccessBytes ?? 0)/1024).toFixed(1)} KiB, DRAM 접근량≈${((memory.predictedDramAccessBytes ?? 0)/1024).toFixed(1)} KiB, memory/compute=${memory.memoryBoundRatio.toFixed(2)}`);
   reasons.push(`예상 사이클 ${cycles.toLocaleString()}`);
   if (shape.n % tn === 0) reasons.push(`tileN이 N=${shape.n}을 나누어 경계 타일 낭비가 줄어듦`);
   if (shape.m % tm !== 0) reasons.push(`M=${shape.m}이 tileM으로 나누어떨어지지 않아 경계 패딩이 남음`);

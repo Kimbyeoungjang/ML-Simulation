@@ -10,11 +10,12 @@ export interface EstimateWorkerTask {
   objective: Objective;
   maxResultsPerOp: number;
   calibration?: SearchRequest["calibration"];
+  scaleSim?: SearchRequest["scaleSim"];
 }
 
 async function main() {
   const task = workerData as EstimateWorkerTask;
-  const result = estimateForShape(task.hardware, task.shape, task.candidates, task.objective, task.maxResultsPerOp, task.calibration);
+  const result = estimateForShape(task.hardware, task.shape, task.candidates, task.objective, task.maxResultsPerOp, task.calibration, task.scaleSim);
   parentPort?.postMessage({ taskId: task.taskId, ok: true, result });
 }
 

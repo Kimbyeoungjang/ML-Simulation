@@ -16,6 +16,7 @@ export interface ThreadPoolOptions {
   objective: Objective;
   maxResultsPerOp: number;
   calibration?: SearchRequest["calibration"];
+  scaleSim?: SearchRequest["scaleSim"];
   workers?: number;
 }
 
@@ -60,7 +61,8 @@ export async function estimateClustersWithWorkerThreads(tasks: EstimateTask[], o
             candidates: opts.candidates,
             objective: opts.objective,
             maxResultsPerOp: opts.maxResultsPerOp,
-            calibration: opts.calibration
+            calibration: opts.calibration,
+            scaleSim: opts.scaleSim
           },
           execArgv: ["--import", "tsx", "-r", "tsconfig-paths/register"]
         });
@@ -95,6 +97,6 @@ export async function estimateClustersWithWorkerThreads(tasks: EstimateTask[], o
 
 export function estimateClustersSynchronously(tasks: EstimateTask[], opts: ThreadPoolOptions): Map<number, OpSearchResult> {
   const out = new Map<number, OpSearchResult>();
-  for (const task of tasks) out.set(task.taskId, estimateForShape(opts.hardware, task.shape, opts.candidates, opts.objective, opts.maxResultsPerOp, opts.calibration));
+  for (const task of tasks) out.set(task.taskId, estimateForShape(opts.hardware, task.shape, opts.candidates, opts.objective, opts.maxResultsPerOp, opts.calibration, opts.scaleSim));
   return out;
 }

@@ -48,11 +48,11 @@ export function generateReportMarkdown(res: SearchResponse): string {
   lines.push(`- 주의: IREE compile 성공은 컴파일 가능성 검증이며 cycle 측정값은 SCALE-Sim 결과를 기준으로 비교합니다.`);
   lines.push("");
   lines.push(`## 3. 최적 타일 정책`);
-  lines.push(`| 모델 | 연산 | M | N | K | 타일 | 사이클 | PE 사용률 | 패딩 | SRAM KiB |`);
-  lines.push(`|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|`);
+  lines.push(`| 모델 | 연산 | M | N | K | 타일 | 사이클 | PE 사용률 | 패딩 | SRAM KiB | SRAM access KiB |`);
+  lines.push(`|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|`);
   for (const r of res.results) {
     const s = r.shape, b = r.best;
-    lines.push(`| ${s.model} | ${s.opName} | ${s.m} | ${s.n} | ${s.k} | ${b.tileM}x${b.tileN}x${b.tileK} | ${b.cycles.toLocaleString()} | ${(b.utilization*100).toFixed(1)}% | ${(b.paddingRatio*100).toFixed(1)}% | ${(b.sramBytes/1024).toFixed(1)} |`);
+    lines.push(`| ${s.model} | ${s.opName} | ${s.m} | ${s.n} | ${s.k} | ${b.tileM}x${b.tileN}x${b.tileK} | ${b.cycles.toLocaleString()} | ${(b.utilization*100).toFixed(1)}% | ${(b.paddingRatio*100).toFixed(1)}% | ${(b.sramBytes/1024).toFixed(1)} | ${(((b.predictedSramAccessBytes ?? 0)/1024)).toFixed(1)} |`);
   }
   lines.push("", bottleneckMarkdown(res.bottlenecks), "", rooflineMarkdown(res.roofline), "", energyMarkdown(res.energy), "");
   lines.push(`## 7. 타일 선택 이유`);
