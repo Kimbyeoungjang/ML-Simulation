@@ -10,7 +10,7 @@ export interface ConfidenceAssessment {
   validationMetrics?: RankingMetrics;
 }
 
-export function assessConfidence(response: SearchResponse, opts: { externalValidated?: boolean; calibrationSamples?: number; validationMetrics?: RankingMetrics } = {}): ConfidenceAssessment {
+export function assessConfidence(response: SearchResponse, opts: { externalValidated?: boolean; calibrationSamples?: number; validationMetrics?: RankingMetrics; externalCycleRatio?: number } = {}): ConfidenceAssessment {
   let score = 0.75;
   const reasons: string[] = [];
   const req: SearchRequest = response.request;
@@ -20,6 +20,14 @@ export function assessConfidence(response: SearchResponse, opts: { externalValid
 
   if (opts.externalValidated) { score += 0.12; reasons.push("SCALE-Sim/IREE 외부 검증 결과를 사용할 수 있습니다."); }
   else { score -= 0.12; reasons.push("아직 SCALE-Sim/IREE 외부 검증 결과가 반영되지 않아 estimator 단독 결과입니다."); }
+
+  if (opts.externalCycleRatio && Number.isFinite(opts.externalCycleRatio)) {
+    const ratio = opts.externalCycleRatio;
+    const err = Math.abs(ratio - 1);
+    if (err <= 0.15) { score += 0.10; reasons.push(`SCALE-Sim 대비 전체 cycle 오차가 낮습니다 (비율 ${ratio.toFixed(3)}배).`); }
+    else if (err <= 0.35) { score += 0.03; reasons.push(`SCALE-Sim 대비 전체 cycle 차이가 보통 수준입니다 (비율 ${ratio.toFixed(3)}배).`); }
+    else { score -= 0.12; reasons.push(`SCALE-Sim 대비 전체 cycle 차이가 큽니다 (비율 ${ratio.toFixed(3)}배). 보정 sample 추가를 권장합니다.`); }
+  }
 
   const metrics = opts.validationMetrics;
   if (metrics?.top3Recall != null) {
@@ -44,13 +52,14 @@ export function assessConfidence(response: SearchResponse, opts: { externalValid
 
   score = Math.max(0, Math.min(1, score));
   const level: ConfidenceLevel = score >= 0.78 ? "high" : score >= 0.52 ? "medium" : "low";
-  const uncertaintyPct = estimateUncertaintyPct(score, avgPadding, avgUtil, calibrationSamples, opts.externalValidated ?? false, metrics);
+  const uncertaintyPct = estimateUncertaintyPct(score, avgPadding, avgUtil, calibrationSamples, opts.externalValidated ?? false, metrics, opts.externalCycleRatio);
   return { level, score, reasons, uncertaintyPct, validationMetrics: metrics };
 }
 
-export function estimateUncertaintyPct(score: number, padding: number, util: number, calibrationSamples: number, externalValidated: boolean, metrics?: RankingMetrics): number {
+export function estimateUncertaintyPct(score: number, padding: number, util: number, calibrationSamples: number, externalValidated: boolean, metrics?: RankingMetrics, externalCycleRatio?: number): number {
   let pct = 8 + (1 - score) * 30 + Math.min(20, padding * 25) + Math.max(0, 0.55 - util) * 20;
   if (!externalValidated) pct += 8;
+  if (externalValidated && externalCycleRatio && Number.isFinite(externalCycleRatio)) pct += Math.min(18, Math.abs(externalCycleRatio - 1) * 28);
   if (calibrationSamples === 0) pct += 6;
   if (metrics?.medianRegret != null) pct += Math.max(0, metrics.medianRegret - 1.05) * 30;
   if (metrics?.top3Recall != null && metrics.top3Recall < 0.85) pct += (0.85 - metrics.top3Recall) * 20;

@@ -23,9 +23,24 @@ async function listLogFiles(root: string, maxDepth = 6): Promise<string[]> {
   return out.sort();
 }
 
+function sanitizeExternalToolLogForDisplay(text: string): string {
+  const lines = text.split(/\r?\n/);
+  const kept: string[] = [];
+  let hidden = 0;
+  for (const line of lines) {
+    // tqdm/terminal helpers in SCALE-Sim sometimes emit this Windows shell message even when exitCode=0.
+    // It is not a SCALE-Sim failure and only makes the live log look scary.
+    if (/^\s*명령 구문이 올바르지 않습니다[.]?\s*$/.test(line)) { hidden += 1; continue; }
+    kept.push(line);
+  }
+  if (hidden > 0) kept.push(`(${hidden}개 Windows 콘솔 보조 명령 메시지를 숨겼습니다.)`);
+  return kept.join("\n");
+}
+
 async function readTail(file: string, maxChars: number): Promise<{ text: string; bytes: number; updatedAt?: string }> {
   const s = await stat(file);
-  const text = await readFile(file, "utf8").catch(() => "");
+  const raw = await readFile(file, "utf8").catch(() => "");
+  const text = sanitizeExternalToolLogForDisplay(raw);
   return {
     text: text.length > maxChars ? text.slice(-maxChars) : text,
     bytes: s.size,

@@ -11,36 +11,11 @@ jobs:
         with:
           node-version: '22'
           cache: 'npm'
-      - run: npm install
-      - run: npm run test:windows-scripts
-      - run: npm run doctor
+      - run: npm ci
+      - run: npm run test:ci
         env:
           TILEFORGE_DISABLE_SQLITE: "1"
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm run test:property
-      - run: npm run test:metamorphic
-      - run: npm run test:oracle
-      - run: npm run test:contract
-      - run: npm run test:schema
-      - run: npm run test:integrity
-      - run: npm run test:reference
-      - run: npm run test:docs
-      - run: npm run test:sqlite-fallback
-      - run: npm run test:artifact-migration
-      - run: npm run test:examples
-      - run: npm run test:onnx
-      - run: npm run smoke
-      - run: npm run validate:reference
-      - run: npm run bench:suite
-      - run: npm run bench:threadpool
-      - run: npm run cache:stats
-      - run: npm run profile:estimator
       - run: npm run build
-      - run: npm run test:integration:file-store
-        env:
-          TILEFORGE_DETERMINISTIC: "1"
-          TILEFORGE_INVARIANTS: "throw"
   mock-external-tools:
     runs-on: ubuntu-latest
     steps:
@@ -49,12 +24,18 @@ jobs:
         with:
           node-version: '22'
           cache: 'npm'
-      - run: npm install
+      - run: npm ci
       - run: npm run test:windows-scripts
-      - run: npm run test:integration:mock
+      - name: Validate mock external tools
+        run: >
+          npx tsx -r tsconfig-paths/register scripts/validate-external.ts
+          --require-external
+          --scalesim-cmd "npx tsx $GITHUB_WORKSPACE/scripts/mock-scalesim.ts"
+          --iree-cmd "npx tsx $GITHUB_WORKSPACE/scripts/mock-iree-compile.ts"
         env:
-          TILEFORGE_SCALE_SIM_CMD: "npx tsx scripts/mock-scalesim.ts"
-          TILEFORGE_IREE_COMPILE_CMD: "npx tsx scripts/mock-iree-compile.ts"
+          TILEFORGE_DETERMINISTIC: "1"
+      - run: npm run test:advanced
+        env:
           TILEFORGE_DETERMINISTIC: "1"
   real-external-tools:
     runs-on: ubuntu-latest
@@ -67,16 +48,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: npm install
+      - run: npm ci
       - name: Install SCALE-Sim and IREE
         run: |
           npm run setup:external
           python3 -m pip list | grep -E 'scale|iree|numpy' || true
           which iree-compile || true
           iree-compile --version || python3 -m iree.compiler.tools.core --version
-      - run: npm run doctor:external -- --require-external
+      - run: npm run doctor:external
       - name: Validate external tools
-        run: npm run validate:external -- --require-external --timeout-ms 180000
+        run: npm run validate:external:required
       - name: Upload external validation diagnostics
         if: always()
         uses: actions/upload-artifact@v4

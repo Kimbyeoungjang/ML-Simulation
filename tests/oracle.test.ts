@@ -1,29 +1,40 @@
 import { describe, expect, it } from "vitest";
-import { estimateForShape } from "@/lib/estimator";
-import type { HardwareConfig, MatmulShape, TileCandidates } from "@/types/domain";
+import { estimateAll } from "@/lib/estimator";
+import { hardwarePresets, workloadPresets } from "@/lib/presets";
+import type { Dataflow, ScaleSimOverrides } from "@/types/domain";
 
-function independentTinyCycles(hw: HardwareConfig, shape: MatmulShape, tileM: number, tileN: number, tileK: number) {
-  const mTiles = Math.ceil(shape.m / tileM);
-  const nTiles = Math.ceil(shape.n / tileN);
-  const kTiles = Math.ceil(shape.k / tileK);
-  const activeRows = Math.min(tileM, hw.arrayRows);
-  const activeCols = Math.min(tileN, hw.arrayCols);
-  const startup = hw.arrayRows + hw.arrayCols + tileK;
-  const tileCompute = Math.ceil((tileM * tileN * tileK) / Math.max(1, activeRows * activeCols));
-  return Math.ceil(mTiles * nTiles * kTiles * (tileCompute + startup));
-}
+const scaleSimDefaults: ScaleSimOverrides = {
+  bandwidth: 128,
+  ifmapSRAMBankBandwidth: 10,
+  filterSRAMBankBandwidth: 10,
+};
 
-describe("independent tiny oracle", () => {
-  it("selects the same best tile as a separately implemented formula on tiny WS matmul", () => {
-    const hw: HardwareConfig = { name: "tiny", arrayRows: 4, arrayCols: 4, frequencyMHz: 1000, sramKB: 64, dataflow: "WS", bytesPerElement: 2 };
-    const shape: MatmulShape = { id: "s", model: "tiny", opName: "mm", m: 8, n: 8, k: 8, dtypeBytes: 2 };
-    const cand: TileCandidates = { tileM: [2,4,8], tileN: [2,4,8], tileK: [2,4,8] };
-    const result = estimateForShape(hw, shape, cand, "cycles", 8);
-    let best = { tileM: 0, tileN: 0, tileK: 0, cycles: Infinity };
-    for (const tileM of cand.tileM) for (const tileN of cand.tileN) for (const tileK of cand.tileK) {
-      const cycles = independentTinyCycles(hw, shape, tileM, tileN, tileK);
-      if (cycles < best.cycles) best = { tileM, tileN, tileK, cycles };
+describe("SCALE-Sim reference oracle", () => {
+  it("keeps BERT block tile-policy estimates close to checked local SCALE-Sim top1 runs", () => {
+    const observed: Record<Dataflow, number> = {
+      WS: 609_273,
+      OS: 305_199,
+      IS: 609_273,
+    };
+    const predicted = Object.fromEntries(
+      (["WS", "OS", "IS"] as Dataflow[]).map((dataflow) => {
+        const response = estimateAll({
+          hardware: { ...hardwarePresets[1], dataflow },
+          shapes: workloadPresets["BERT-base seq384 block"],
+          candidates: { tileM: [32, 64, 128], tileN: [64, 128], tileK: [32, 64, 128, 256] },
+          objective: "balanced",
+          maxResultsPerOp: 8,
+          scaleSim: scaleSimDefaults,
+        }, { includeArtifacts: false });
+        return [dataflow, response.summary.totalCycles];
+      }),
+    ) as Record<Dataflow, number>;
+
+    expect(predicted.OS).toBeLessThan(predicted.WS);
+    expect(Math.abs(predicted.WS - predicted.IS)).toBeLessThan(1);
+    for (const dataflow of ["WS", "OS", "IS"] as Dataflow[]) {
+      const relativeError = Math.abs(predicted[dataflow] - observed[dataflow]) / observed[dataflow];
+      expect(relativeError).toBeLessThan(0.01);
     }
-    expect([result.best.tileM, result.best.tileN, result.best.tileK]).toEqual([best.tileM, best.tileN, best.tileK]);
   });
 });

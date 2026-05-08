@@ -1,0 +1,37 @@
+{
+  "name": "vit-s_128x128_ws",
+  "source": "default",
+  "savedAt": "2026-05-06T00:00:00.000Z",
+  "hardware": {
+    "name": "TPUv2-like 128x128",
+    "arrayRows": 128,
+    "arrayCols": 128,
+    "frequencyMHz": 700,
+    "sramKB": 8192,
+    "dataflow": "WS",
+    "bytesPerElement": 2
+  },
+  "shapes": [
+    { "id": "vit_attn_qkv", "model": "vit-s", "opName": "attention_qkv", "m": 197, "n": 2304, "k": 384, "dtypeBytes": 2, "source": "manual" },
+    { "id": "vit_mlp_fc1", "model": "vit-s", "opName": "mlp_fc1", "m": 197, "n": 1536, "k": 384, "dtypeBytes": 2, "source": "manual" },
+    { "id": "vit_mlp_fc2", "model": "vit-s", "opName": "mlp_fc2", "m": 197, "n": 384, "k": 1536, "dtypeBytes": 2, "source": "manual" }
+  ],
+  "objective": "balanced",
+  "tileM": "16, 32, 64, 128",
+  "tileN": "32, 64, 128, 256",
+  "tileK": "32, 64, 128, 256",
+  "scaleSim": {
+    "runName": "tileforge_generated",
+    "bandwidth": 128,
+    "interfaceBandwidth": "USER",
+    "useLayout": true,
+    "ifmapCustomLayout": false,
+    "filterCustomLayout": false,
+    "ifmapSRAMBankBandwidth": 10,
+    "ifmapSRAMBankNum": 10,
+    "ifmapSRAMBankPort": 2,
+    "filterSRAMBankBandwidth": 10,
+    "filterSRAMBankNum": 10,
+    "filterSRAMBankPort": 2
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "name": "llama7b_128x128_ws",
+  "source": "default",
+  "savedAt": "2026-05-06T00:00:00.000Z",
+  "hardware": { "name": "TPUv2-like 128x128", "arrayRows": 128, "arrayCols": 128, "frequencyMHz": 700, "sramKB": 8192, "dataflow": "WS", "bytesPerElement": 2, "memoryBandwidthGBs": 600 },
+  "dataflowModes": ["WS"],
+  "shapes": [
+    { "id": "llama7b_qkv", "model": "llama7b", "opName": "qkv_projection", "m": 128, "n": 12288, "k": 4096, "dtypeBytes": 2, "source": "import" },
+    { "id": "llama7b_o", "model": "llama7b", "opName": "out_projection", "m": 128, "n": 4096, "k": 4096, "dtypeBytes": 2, "source": "import" },
+    { "id": "llama7b_gate_up", "model": "llama7b", "opName": "gate_up_projection", "m": 128, "n": 22016, "k": 4096, "dtypeBytes": 2, "source": "import" },
+    { "id": "llama7b_down", "model": "llama7b", "opName": "down_projection", "m": 128, "n": 4096, "k": 11008, "dtypeBytes": 2, "source": "import" }
+  ],
+  "objective": "balanced",
+  "tileM": "16, 32, 64, 128",
+  "tileN": "64, 128, 256",
+  "tileK": "64, 128, 256",
+  "scaleSim": { "runName": "tileforge_generated", "bandwidth": 128, "interfaceBandwidth": "USER", "useLayout": true }
+}

@@ -6,7 +6,7 @@ describe("workbench analyses", () => {
   it("produces bottleneck, roofline, energy, and paper artifacts", () => {
     const res = estimateAll({
       hardware: hardwarePresets[1],
-      shapes: workloadPresets["ViT-S sample"],
+      shapes: workloadPresets["ViT-S encoder block"],
       candidates: { tileM: [32,64,128], tileN: [64,128], tileK: [32,64,128] },
       objective: "balanced",
       maxResultsPerOp: 8

@@ -58,7 +58,9 @@
     "release:check": "tsx -r tsconfig-paths/register scripts/release-check.ts",
     "release:zip": "tsx -r tsconfig-paths/register scripts/release-zip.ts",
     "validate:reference": "tsx -r tsconfig-paths/register scripts/validate-reference.ts",
-    "verify:artifacts": "tsx -r tsconfig-paths/register scripts/verify-artifacts.ts"
+    "verify:artifacts": "tsx -r tsconfig-paths/register scripts/verify-artifacts.ts",
+    "calibrate:scalesim": "npm run setup:env && tsx -r tsconfig-paths/register scripts/scalesim-regression.ts",
+    "calibrate:scalesim:quick": "npm run setup:env && tsx -r tsconfig-paths/register scripts/scalesim-regression.ts --workload \"ViT-S encoder block\" --dataflows WS --timeout-ms 600000"
   },
   "dependencies": {
     "@next/env": "^15.1.0",
@@ -87,7 +89,7 @@
     "better-sqlite3": "^11.7.0"
   },
   "engines": {
-    "node": ">=20.11 <25"
+    "node": ">=20.11 <26"
   },
   "packageManager": "npm@10.8.0"
 }

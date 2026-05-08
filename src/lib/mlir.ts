@@ -18,6 +18,8 @@ export function generateArtifacts(res: Omit<SearchResponse, "artifacts"> & { art
   const scaleSimConfig = generateScaleSimConfig(res as SearchResponse);
   const scaleSimTopology = generateScaleSimTopology(res as SearchResponse);
   const scaleSimLayout = generateScaleSimLayout(res as SearchResponse);
+  const scaleSimTopkTopology = generateScaleSimTopkTopology(res as SearchResponse);
+  const scaleSimTopkLayout = generateScaleSimTopkLayout(res as SearchResponse);
   const projectJson = JSON.stringify({ version: "0.5.0", name: res.request.hardware.name, createdAt: new Date().toISOString(), hardware: res.request.hardware, shapes: res.request.shapes, candidates: res.request.candidates, objective: res.request.objective, calibration: res.request.calibration, scaleSim: res.request.scaleSim }, null, 2);
   const manifestJson = JSON.stringify({ tileforgeVersion: "0.5.0-workbench", createdAt: new Date().toISOString(), hardware: res.request.hardware, shapes: res.request.shapes, candidates: res.request.candidates, objective: res.request.objective, scaleSim: res.request.scaleSim, summary: res.summary }, null, 2);
   const ireeCommand = generateIreeCommand("llvm-cpu", "generated.mlir", "transform.mlir", "model.vmfb", res.request.hardware);
@@ -33,7 +35,7 @@ export function generateArtifacts(res: Omit<SearchResponse, "artifacts"> & { art
   const first = res.results[0];
   const prune = first ? compactPruneReport(pruneTileCandidates(res.request.hardware, first.shape, res.request.candidates)) : "shape가 없습니다";
   const scheduleSvg = first ? tileScheduleSvg(res.request.hardware, first.shape, first.best) : "";
-  return { policyCsv, mlir, transformDialect, reportMarkdown: "", scaleSimConfig, scaleSimTopology, scaleSimLayout, projectJson, manifestJson, ireeCommand, latexTable, svgSummary, experimentComparisonCsv, validationMarkdown: validation.markdown, validationCsv: validation.csv, robustPolicyMarkdown: robust.markdown, robustPolicyCsv: robust.csv, dataflowComparisonCsv: dataflowCsv, memoryTrafficCsv: trafficCsv, pruneReportMarkdown: prune, tileScheduleSvg: scheduleSvg };
+  return { policyCsv, mlir, transformDialect, reportMarkdown: "", scaleSimConfig, scaleSimTopology, scaleSimLayout, scaleSimTopkTopology, scaleSimTopkLayout, projectJson, manifestJson, ireeCommand, latexTable, svgSummary, experimentComparisonCsv, validationMarkdown: validation.markdown, validationCsv: validation.csv, robustPolicyMarkdown: robust.markdown, robustPolicyCsv: robust.csv, dataflowComparisonCsv: dataflowCsv, memoryTrafficCsv: trafficCsv, pruneReportMarkdown: prune, tileScheduleSvg: scheduleSvg };
 }
 export function generatePolicyCsv(res: SearchResponse): string {
   const rows = ["모델(model),연산(op_name),M,N,K,배열_rows(array_rows),배열_cols(array_cols),데이터플로우(dataflow),타일_M(tile_m),타일_N(tile_n),타일_K(tile_k),tileM,tileN,tileK,사이클(cycles),시간_us(time_us),PE_사용률(utilization),패딩_비율(padding_ratio),SRAM_bytes,점수(score),경고(warnings),설명(explanation)"];
@@ -95,7 +97,7 @@ export function generateScaleSimConfig(res: SearchResponse): string {
     `FilterOffset = ${Math.max(0, Math.floor(sc.filterOffset ?? 10000000))}`,
     `OfmapOffset = ${Math.max(0, Math.floor(sc.ofmapOffset ?? 20000000))}`,
     `Dataflow = ${String(sc.dataflow ?? h.dataflow).toLowerCase()}`,
-    `Bandwidth = ${sc.bandwidth ?? 128}`,
+    `Bandwidth = ${sc.dramBandwidth ?? sc.bandwidth ?? 128}`,
     "[run_presets]",
     `InterfaceBandwidth = ${sc.interfaceBandwidth ?? "USER"}`,
   ];
@@ -131,10 +133,73 @@ export function generateScaleSimTopology(res: SearchResponse): string {
 }
 export function generateScaleSimLayout(res: SearchResponse): string {
   const header = "Layer name,IFMAP Height Intraline Factor,IFMAP Width Intraline Factor,Filter Height Intraline Factor,Filter Width Intraline Factor,Channel Intraline Factor,Num Filter Intraline Factor,IFMAP Height Intraline Order,IFMAP Width Intraline Order,Channel Intraline Order,IFMAP Height Interline Order,IFMAP Width Interline Order,Channel Interline Order,Num Filter Intraline Order,Channel Intraline Order,Filter Height Intraline Order,Filter Width Intraline Order,Num Filter Interline Order,Channel Interline Order,Filter Height Interline Order,Filter Width Interline Order,";
-  const defaultRow = "1,1,1,1,1,1,1,2,3,1,2,3,1,2,3,4,1,2,3,4,";
+  // SCALE-Sim custom-layout code transposes a 6D IFMAP tensor using
+  // (interline[0..2], intraline[0..2]). Therefore the two order groups
+  // must be disjoint axes. Use 1-based axes here because SCALE-Sim converts
+  // them to zero-based internally. The old 1,2,3 + 1,2,3 pattern caused
+  // "ValueError: repeated axis in transpose" when custom layout was enabled.
+  const defaultRow = "1,1,1,1,1,1,4,5,6,1,2,3,5,6,7,8,1,2,3,4,";
   const rows = [header];
   for (const r of res.results) rows.push(`${sanitize(r.shape.opName)},${defaultRow}`);
   return rows.join("\n") + "\n";
 }
+export interface ScaleSimTopkCandidate {
+  layerName: string;
+  shapeId: string;
+  model: string;
+  opName: string;
+  rank: number;
+  tileM: number;
+  tileN: number;
+  tileK: number;
+  tileCount: number;
+  predictedCycles: number;
+  predictedTimeUs: number;
+  predictedUtilization: number;
+  predictedPaddingRatio: number;
+  predictedSramBytes: number;
+}
+export function scaleSimTopkCandidates(res: SearchResponse, topK = 3): ScaleSimTopkCandidate[] {
+  const out: ScaleSimTopkCandidate[] = [];
+  for (const r of res.results) {
+    const s = r.shape;
+    r.candidates.slice(0, topK).forEach((c, index) => {
+      out.push({
+        layerName: scaleSimTopkLayerName(s.opName, index + 1, c.tileM, c.tileN, c.tileK),
+        shapeId: s.id,
+        model: s.model,
+        opName: s.opName,
+        rank: index + 1,
+        tileM: c.tileM,
+        tileN: c.tileN,
+        tileK: c.tileK,
+        tileCount: Math.ceil(s.m / c.tileM) * Math.ceil(s.n / c.tileN) * Math.ceil(s.k / c.tileK),
+        predictedCycles: c.cycles,
+        predictedTimeUs: c.timeUs,
+        predictedUtilization: c.utilization,
+        predictedPaddingRatio: c.paddingRatio,
+        predictedSramBytes: c.sramBytes,
+      });
+    });
+  }
+  return out;
+}
+export function generateScaleSimTopkTopology(res: SearchResponse): string {
+  const rows = ["Layer name,IFMAP Height,IFMAP Width,Filter Height,Filter Width,Channels,Num Filter,Strides,Batch Size,Sparsity Ratio,"];
+  for (const c of scaleSimTopkCandidates(res)) {
+    rows.push(`${c.layerName},${c.tileM},1,1,1,${c.tileK},${c.tileN},1,1,1:1,`);
+  }
+  return rows.join("\n") + "\n";
+}
+export function generateScaleSimTopkLayout(res: SearchResponse): string {
+  const header = "Layer name,IFMAP Height Intraline Factor,IFMAP Width Intraline Factor,Filter Height Intraline Factor,Filter Width Intraline Factor,Channel Intraline Factor,Num Filter Intraline Factor,IFMAP Height Intraline Order,IFMAP Width Intraline Order,Channel Intraline Order,IFMAP Height Interline Order,IFMAP Width Interline Order,Channel Interline Order,Num Filter Intraline Order,Channel Intraline Order,Filter Height Intraline Order,Filter Width Intraline Order,Num Filter Interline Order,Channel Interline Order,Filter Height Interline Order,Filter Width Interline Order,";
+  const defaultRow = "1,1,1,1,1,1,4,5,6,1,2,3,5,6,7,8,1,2,3,4,";
+  const rows = [header];
+  for (const c of scaleSimTopkCandidates(res)) rows.push(`${c.layerName},${defaultRow}`);
+  return rows.join("\n") + "\n";
+}
 export function generatedShapesCsv(res: SearchResponse): string { return shapesToCsv(res.request.shapes); }
 function sanitize(s: string): string { return s.replace(/[^A-Za-z0-9_]/g, "_"); }
+function scaleSimTopkLayerName(opName: string, rank: number, tileM: number, tileN: number, tileK: number): string {
+  return sanitize(`${opName}_rank${rank}_tm${tileM}_tn${tileN}_tk${tileK}`);
+}
