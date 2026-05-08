@@ -186,8 +186,6 @@ export default function Home() {
   const [autoAttachNewJob, setAutoAttachNewJob] = useState(false);
   const [customPresets, setCustomPresets] = useState<any[]>([]);
   const [customPresetName, setCustomPresetName] = useState("");
-  const [analysisJobId, setAnalysisJobId] = useState("");
-  const [selectedJobIds, setSelectedJobIds] = useState<string[]>([]);
   const liveEventSource = useRef<EventSource | null>(null);
   const [calibrationCsv, setCalibrationCsv] = useState(
     "model,op_name,array,dataflow,predicted_cycles,measured_cycles\nvit_s,qkv,128x128,WS,1000000,1120000",
@@ -409,7 +407,6 @@ export default function Home() {
       if (text.trim()) {
         setServerReportMarkdown(text);
         setServerReportJobId(id);
-        setAnalysisJobId(id);
       }
     } catch {
       // report.md may not exist until the job reaches the report stage.
@@ -451,32 +448,7 @@ export default function Home() {
       setServerReportMarkdown("");
       setServerReportJobId("");
     }
-    if (analysisJobId === id) setAnalysisJobId("");
-    setSelectedJobIds((prev) => prev.filter((x) => x !== id));
     if (liveJobId === id) stopLiveJob();
-    await refreshJobs({ switchTab: false, updateReport: true });
-    await refreshStatus(false);
-  }
-
-
-
-  async function deleteJobsByIds(ids: string[]) {
-    const unique = Array.from(new Set(ids.filter(Boolean)));
-    if (unique.length === 0) return;
-    if (!window.confirm(`선택한 작업 ${unique.length}개와 관련 artifact를 삭제할까요?`)) return;
-    let ok = 0;
-    for (const id of unique) {
-      const r = await fetch(`/api/jobs/${id}`, { method: "DELETE" });
-      if (r.ok) ok += 1;
-    }
-    setSelectedJobIds((prev) => prev.filter((id) => !unique.includes(id)));
-    if (unique.includes(serverReportJobId)) {
-      setServerReportMarkdown("");
-      setServerReportJobId("");
-    }
-    if (unique.includes(analysisJobId)) setAnalysisJobId("");
-    if (unique.includes(liveJobId)) stopLiveJob();
-    setServerMessage(`선택 작업 삭제 완료: ${ok}/${unique.length}`);
     await refreshJobs({ switchTab: false, updateReport: true });
     await refreshStatus(false);
   }
@@ -771,20 +743,6 @@ export default function Home() {
                     >
                       선택 프리셋 삭제
                     </ActionButton>
-                    <div className="preset-list" title="저장된 사용자 프리셋을 바로 적용하거나 삭제합니다.">
-                      {customPresets.map((p) => (
-                        <div className="preset-item" key={p.name}>
-                          <div>
-                            <b>{p.name}</b>
-                            <span className="small">{p.savedAt ? new Date(p.savedAt).toLocaleString() : "저장 시각 없음"}</span>
-                          </div>
-                          <div className="preset-actions">
-                            <button className="secondary" onClick={() => applyCustomPreset(p.name)}>적용</button>
-                            <button className="secondary danger-button" onClick={() => deleteCustomPreset(p.name)}>삭제</button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
                   </>
                 )}
                 <p className="small">
@@ -1388,11 +1346,6 @@ export default function Home() {
             />
           </div>
           <div className="panel alt" style={{ marginTop: 16 }}>
-            <ResultContextBar
-              jobsPayload={jobsPayload}
-              selectedJobId={analysisJobId}
-              onSelect={(id) => { setAnalysisJobId(id); if (id) void fetchJobReport(id); }}
-            />
             <div className="tabs">
               {(
                 [
@@ -1419,10 +1372,10 @@ export default function Home() {
                 </button>
               ))}
             </div>
-            {tab === "policy" && <Policy result={result} download={download} jobId={analysisJobId} jobsPayload={jobsPayload} />}
-            {tab === "bottleneck" && <Bottleneck result={result} jobId={analysisJobId} />}
-            {tab === "roofline" && <Roofline result={result} jobId={analysisJobId} />}
-            {tab === "energy" && <Energy result={result} jobId={analysisJobId} />}
+            {tab === "policy" && <Policy result={result} download={download} />}
+            {tab === "bottleneck" && <Bottleneck result={result} />}
+            {tab === "roofline" && <Roofline result={result} />}
+            {tab === "energy" && <Energy result={result} />}
             {tab === "array" && (
               <ArraySweep
                 rows={arraySweep}
@@ -1437,9 +1390,9 @@ export default function Home() {
                 download={download}
               />
             )}
-            {tab === "iree" && <Iree result={result} download={download} jobId={analysisJobId} />}
+            {tab === "iree" && <Iree result={result} download={download} />}
             {tab === "exports" && (
-              <Exports result={result} download={download} jobId={analysisJobId} jobsPayload={jobsPayload} />
+              <Exports result={result} download={download} />
             )}
             {tab === "report" && (
               <ReportTab
@@ -1449,7 +1402,7 @@ export default function Home() {
                 download={download}
                 confidence={confidence}
                 jobsPayload={jobsPayload}
-                onSelectJobReport={(id) => { setAnalysisJobId(id); void fetchJobReport(id); }}
+                onSelectJobReport={(id) => void fetchJobReport(id)}
                 onDeleteJob={(id) => void deleteJobById(id)}
               />
             )}
@@ -1471,9 +1424,6 @@ export default function Home() {
                 setAutoAttachNewJob={setAutoAttachNewJob}
                 onWatchJob={startLiveJob}
                 onDeleteJob={(id) => void deleteJobById(id)}
-                selectedJobIds={selectedJobIds}
-                setSelectedJobIds={setSelectedJobIds}
-                onDeleteSelected={(ids) => void deleteJobsByIds(ids)}
               />
             )}
             {tab === "status" && (
@@ -1500,141 +1450,6 @@ export default function Home() {
   );
 }
 
-
-function jobLabel(job: any): string {
-  if (!job) return "";
-  const when = job.createdAt ? new Date(job.createdAt).toLocaleString() : "";
-  return `${job.name ?? job.id} · ${job.status}${when ? " · " + when : ""}`;
-}
-
-function jobById(payload: any | null, id: string) {
-  const jobs = Array.isArray(payload?.jobs) ? payload.jobs : [];
-  return jobs.find((j: any) => j.id === id);
-}
-
-function ResultContextBar({
-  jobsPayload,
-  selectedJobId,
-  onSelect,
-}: {
-  jobsPayload: any | null;
-  selectedJobId: string;
-  onSelect: (id: string) => void;
-}) {
-  const jobs = Array.isArray(jobsPayload?.jobs) ? jobsPayload.jobs : [];
-  const artifactJobs = jobs.filter((j: any) => Array.isArray(j.artifacts) && j.artifacts.length > 0);
-  const selected = jobById(jobsPayload, selectedJobId);
-  return (
-    <section className="result-context" title="오른쪽 결과 탭이 현재 입력값 미리보기인지, 특정 작업의 산출물인지 표시합니다.">
-      <div>
-        <b>결과 기준</b>
-        <p className="small">
-          {selected ? `${jobLabel(selected)}의 산출물을 보고 있습니다.` : "현재 입력 설정으로 계산한 estimator 미리보기를 보고 있습니다."}
-        </p>
-      </div>
-      <div className="result-context-controls">
-        <select value={selectedJobId} onChange={(e) => onSelect(e.target.value)} title="타일 정책, IREE, 내보내기, 보고서 탭에서 참조할 작업을 선택합니다.">
-          <option value="">현재 입력 미리보기</option>
-          {artifactJobs.map((j: any) => (
-            <option key={j.id} value={j.id}>{jobLabel(j)}</option>
-          ))}
-        </select>
-        {selected && <span className={`badge ${selected.status === "failed" ? "err-badge" : selected.status === "running" ? "warn-badge" : "ok-badge"}`}>{selected.status}</span>}
-      </div>
-    </section>
-  );
-}
-
-function JobSourceNotice({ jobId, jobsPayload, tabName }: { jobId: string; jobsPayload?: any | null; tabName: string }) {
-  if (!jobId) return <p className="small source-notice">현재 입력 설정으로 계산한 {tabName} 미리보기입니다. 작업 결과를 보려면 위의 결과 기준에서 작업을 선택하세요.</p>;
-  const job = jobById(jobsPayload, jobId);
-  return <p className="small source-notice">작업 산출물 기준: <code>{job?.name ?? jobId}</code>. 없는 항목은 현재 입력 미리보기로 대체됩니다.</p>;
-}
-
-function CsvArtifactTable({ jobId, path, title }: { jobId: string; path: string; title: string }) {
-  const [text, setText] = useState("");
-  const [error, setError] = useState("");
-  useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      if (!jobId) return;
-      try {
-        const r = await fetch(`/api/jobs/${jobId}/artifact?path=${encodeURIComponent(path)}`, { cache: "no-store" });
-        if (!r.ok) throw new Error(`${path} artifact를 읽지 못했습니다.`);
-        const t = await r.text();
-        if (!cancelled) { setText(t); setError(""); }
-      } catch (e: any) {
-        if (!cancelled) setError(e.message || String(e));
-      }
-    }
-    void load();
-    return () => { cancelled = true; };
-  }, [jobId, path]);
-  if (!jobId) return null;
-  if (error) return <p className="small warn">{title}: {error}</p>;
-  if (!text) return <p className="small">{title}를 불러오는 중입니다.</p>;
-  const rows = text.trim().split(/\r?\n/).map((line) => line.split(","));
-  const header = rows[0] ?? [];
-  const body = rows.slice(1);
-  return (
-    <section className="job-artifact-view">
-      <div className="artifact-toolbar"><b>{title}</b><a className="help-link" href={`/api/jobs/${jobId}/artifact?path=${encodeURIComponent(path)}`} target="_blank">원본 열기</a></div>
-      <div className="md-table-wrap"><table className="md-table"><thead><tr>{header.map((h, i) => <th key={i}>{h}</th>)}</tr></thead><tbody>{body.map((r, i) => <tr key={i}>{header.map((_, j) => <td key={j}>{r[j] ?? ""}</td>)}</tr>)}</tbody></table></div>
-    </section>
-  );
-}
-
-
-function JobArtifactText({ jobId, path, title }: { jobId: string; path: string; title: string }) {
-  const [text, setText] = useState("");
-  const [error, setError] = useState("");
-  useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      if (!jobId) return;
-      try {
-        const r = await fetch(`/api/jobs/${jobId}/artifact?path=${encodeURIComponent(path)}`, { cache: "no-store" });
-        if (!r.ok) throw new Error(`${path} artifact를 읽지 못했습니다.`);
-        const t = await r.text();
-        if (!cancelled) { setText(t); setError(""); }
-      } catch (e: any) {
-        if (!cancelled) setError(e.message || String(e));
-      }
-    }
-    void load();
-    return () => { cancelled = true; };
-  }, [jobId, path]);
-  if (!jobId) return null;
-  if (error) return <p className="small warn">{title}: {error}</p>;
-  if (!text) return <p className="small">{title}를 불러오는 중입니다.</p>;
-  return <Artifact name={path} text={text} download={(name, body) => {
-    const blob = new Blob([body], { type: "text/plain" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = name;
-    a.click();
-    URL.revokeObjectURL(url);
-  }} />;
-}
-
-function JobArtifactList({ jobId, jobsPayload }: { jobId: string; jobsPayload: any | null }) {
-  const job = jobById(jobsPayload, jobId);
-  const artifacts: string[] = Array.isArray(job?.artifacts) ? job.artifacts : [];
-  if (!jobId) return null;
-  if (!artifacts.length) return <p className="small warn">선택한 작업의 artifact 목록이 아직 없습니다.</p>;
-  return (
-    <section className="job-artifact-view">
-      <h3>선택 작업 산출물</h3>
-      <div className="artifact-grid">
-        {artifacts.map((a) => (
-          <a key={a} href={`/api/jobs/${jobId}/artifact?path=${encodeURIComponent(a)}`} target="_blank" title={a}>{a}</a>
-        ))}
-      </div>
-    </section>
-  );
-}
-
 function Metric({
   title,
   value,
@@ -1652,11 +1467,9 @@ function Metric({
     </div>
   );
 }
-function Policy({ result, download, jobId, jobsPayload }: { result: any; download: DownloadFn; jobId?: string; jobsPayload?: any | null }) {
+function Policy({ result, download }: { result: any; download: DownloadFn }) {
   return (
     <>
-      <JobSourceNotice jobId={jobId ?? ""} jobsPayload={jobsPayload} tabName="타일 정책" />
-      {jobId && <CsvArtifactTable jobId={jobId} path="best_tile_policy.csv" title="선택 작업의 best_tile_policy.csv" />}
       <ActionButton
         tip="최적 타일 정책 표를 CSV로 저장합니다."
         onClick={() =>
@@ -1756,10 +1569,9 @@ function Heat({ points }: { points: any[] }) {
     </div>
   );
 }
-function Bottleneck({ result, jobId }: { result: any; jobId?: string }) {
+function Bottleneck({ result }: { result: any }) {
   return (
     <>
-      <JobSourceNotice jobId={jobId ?? ""} tabName="병목 분석" />
       <h3 title="전체 cycle 비중이 큰 연산과 병목 원인을 보여줍니다.">
         병목 대시보드
       </h3>
@@ -1791,10 +1603,9 @@ function Bottleneck({ result, jobId }: { result: any; jobId?: string }) {
     </>
   );
 }
-function Roofline({ result, jobId }: { result: any; jobId?: string }) {
+function Roofline({ result }: { result: any }) {
   return (
     <>
-      <JobSourceNotice jobId={jobId ?? ""} tabName="루프라인 분석" />
       <h3 title="연산 집약도와 roofline 기준 성능 한계를 분석합니다.">
         루프라인 분석
       </h3>
@@ -1834,10 +1645,9 @@ function Roofline({ result, jobId }: { result: any; jobId?: string }) {
     </>
   );
 }
-function Energy({ result, jobId }: { result: any; jobId?: string }) {
+function Energy({ result }: { result: any }) {
   return (
     <>
-      <JobSourceNotice jobId={jobId ?? ""} tabName="에너지/유효성 분석" />
       <h3 title="입력한 에너지 파라미터를 바탕으로 전체 에너지를 추정합니다.">
         에너지 추정
       </h3>
@@ -1938,11 +1748,9 @@ function ArraySweep({
     </>
   );
 }
-function Iree({ result, download, jobId }: { result: any; download: DownloadFn; jobId?: string }) {
+function Iree({ result, download }: { result: any; download: DownloadFn }) {
   return (
     <>
-      <JobSourceNotice jobId={jobId ?? ""} tabName="IREE/MLIR" />
-      {jobId && <JobArtifactText jobId={jobId} path="generated.mlir" title="선택 작업의 generated.mlir" />}
       <Artifact
         name="iree-command.sh"
         text={result.artifacts.ireeCommand}
@@ -1961,11 +1769,9 @@ function Iree({ result, download, jobId }: { result: any; download: DownloadFn; 
     </>
   );
 }
-function Exports({ result, download, jobId, jobsPayload }: { result: any; download: DownloadFn; jobId?: string; jobsPayload?: any | null }) {
+function Exports({ result, download }: { result: any; download: DownloadFn }) {
   return (
     <>
-      <JobSourceNotice jobId={jobId ?? ""} jobsPayload={jobsPayload} tabName="내보내기" />
-      {jobId && <JobArtifactList jobId={jobId} jobsPayload={jobsPayload} />}
       <ActionButton
         tip="결과 artifact의 해시와 메타데이터를 담은 manifest를 저장합니다."
         onClick={() =>
@@ -2467,9 +2273,6 @@ function Jobs({
   setAutoAttachNewJob,
   onWatchJob,
   onDeleteJob,
-  selectedJobIds,
-  setSelectedJobIds,
-  onDeleteSelected,
 }: {
   text: string;
   download: DownloadFn;
@@ -2487,9 +2290,6 @@ function Jobs({
   setAutoAttachNewJob: (value: boolean) => void;
   onWatchJob: (id: string) => void;
   onDeleteJob: (id: string) => void;
-  selectedJobIds: string[];
-  setSelectedJobIds: (ids: string[]) => void;
-  onDeleteSelected: (ids: string[]) => void;
 }) {
   return (
     <>
@@ -2529,7 +2329,7 @@ function Jobs({
         작업 목록은 자동으로 갱신됩니다. 각 작업은 stage 이력, 진행률, 로그,
         artifact, 취소, 삭제, SSE 실시간 업데이트를 포함합니다.
       </p>
-      <QueueSummary payload={jobsPayload} activeJobId={liveJobId} onWatchJob={onWatchJob} onDeleteJob={onDeleteJob} selectedJobIds={selectedJobIds} setSelectedJobIds={setSelectedJobIds} onDeleteSelected={onDeleteSelected} />
+      <QueueSummary payload={jobsPayload} activeJobId={liveJobId} onWatchJob={onWatchJob} onDeleteJob={onDeleteJob} />
       <LiveTerminal
         jobId={liveJobId}
         job={liveJob}
@@ -2561,27 +2361,17 @@ function QueueSummary({
   activeJobId,
   onWatchJob,
   onDeleteJob,
-  selectedJobIds,
-  setSelectedJobIds,
-  onDeleteSelected,
 }: {
   payload: any | null;
   activeJobId: string;
   onWatchJob: (id: string) => void;
   onDeleteJob: (id: string) => void;
-  selectedJobIds: string[];
-  setSelectedJobIds: (ids: string[]) => void;
-  onDeleteSelected: (ids: string[]) => void;
 }) {
   const jobs = Array.isArray(payload?.jobs) ? payload.jobs : [];
   const queued = jobs.filter((j: any) => j.status === "queued");
   const running = jobs.filter((j: any) => j.status === "running");
   const recentDone = jobs.filter((j: any) => ["succeeded", "succeeded_with_warnings", "failed", "cancelled"].includes(j.status)).slice(0, 20);
   const visible = [...running, ...queued, ...recentDone];
-  const visibleIds = visible.map((j: any) => j.id);
-  const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id: string) => selectedJobIds.includes(id));
-  const toggleOne = (id: string) => setSelectedJobIds(selectedJobIds.includes(id) ? selectedJobIds.filter((x) => x !== id) : [...selectedJobIds, id]);
-  const toggleAll = () => setSelectedJobIds(allVisibleSelected ? selectedJobIds.filter((id) => !visibleIds.includes(id)) : Array.from(new Set([...selectedJobIds, ...visibleIds])));
   return (
     <section className="queue-panel" title="현재 worker 큐에 들어간 작업과 실행 중인 작업을 보여줍니다.">
       <div className="queue-header">
@@ -2590,9 +2380,6 @@ function QueueSummary({
           <span className="badge">running {running.length}</span>
           <span className="badge">queued {queued.length}</span>
           <span className="badge">total {payload?.total ?? jobs.length}</span>
-          <span className="badge">selected {selectedJobIds.length}</span>
-          <button className="secondary" onClick={toggleAll} disabled={visible.length === 0}>{allVisibleSelected ? "전체 해제" : "표시 작업 전체 선택"}</button>
-          <button className="secondary danger-button" onClick={() => onDeleteSelected(selectedJobIds)} disabled={selectedJobIds.length === 0}>선택 삭제</button>
         </div>
       </div>
       {visible.length === 0 ? (
@@ -2602,7 +2389,6 @@ function QueueSummary({
           <table className="queue-table">
             <thead>
               <tr>
-                <th><input type="checkbox" checked={allVisibleSelected} onChange={toggleAll} title="표시된 작업 전체 선택" /></th>
                 <th>상태</th>
                 <th>이름</th>
                 <th>단계</th>
@@ -2615,7 +2401,6 @@ function QueueSummary({
             <tbody>
               {visible.map((job: any) => (
                 <tr key={job.id} className={job.id === activeJobId ? "active-row" : ""}>
-                  <td><input type="checkbox" checked={selectedJobIds.includes(job.id)} onChange={() => toggleOne(job.id)} title="삭제할 작업 선택" /></td>
                   <td><span className={`badge ${job.status === "running" ? "warn-badge" : job.status === "queued" ? "" : job.status === "failed" ? "err-badge" : "ok-badge"}`}>{job.status}</span></td>
                   <td title={job.id}>{job.name ?? job.id}</td>
                   <td>{job.stage ?? "-"}</td>
