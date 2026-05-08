@@ -1054,30 +1054,35 @@ function externalComparisonMarkdown(
   const top3Verdict = top3Ratio === undefined
     ? "top3 tile 검증 결과가 아직 없어 estimator 정확도를 판단할 수 없습니다."
     : top3Ratio > 1.15
-      ? "top3 tile 기준으로 SCALE-Sim cycle이 estimator보다 큽니다. memory stall, layout fill/drain, dataflow별 reuse 비용이 더 반영되었는지 확인해야 합니다."
+      ? "SCALE-Sim 환산 cycle이 TileForge보다 큽니다. SRAM/DRAM traffic, fill/drain, dataflow schedule 비용을 추가 점검하세요."
       : top3Ratio < 0.85
-        ? "top3 tile 기준으로 SCALE-Sim cycle이 estimator보다 작습니다. estimator가 tile 반복, padding, pipeline 비용을 보수적으로 잡은 편입니다."
+        ? "SCALE-Sim 환산 cycle이 TileForge보다 작습니다. estimator가 반복/패딩/pipeline 비용을 보수적으로 잡은 편입니다."
         : "top3 tile 기준으로 estimator와 SCALE-Sim이 비교적 잘 맞습니다.";
   const lines = [
-    "## 2-2. 예측 결과와 실제 실행 결과 비교",
+    "## 17. 실제 외부 도구 검증 보고서",
     "",
-    "### 기준 정리",
-    "- **정확도 판단의 주 기준은 `SCALE-Sim top3 tile 후보 검증`입니다.** 이 경로는 TileForge가 고른 tile을 SCALE-Sim에 넣고, SCALE-Sim의 layout 1회 cycle에 `tileCount`를 곱해 전체 tiled workload cycle로 환산합니다.",
-    "- `SCALE-Sim full topology`는 기존 `topology.csv` 1행당 cycle을 읽는 sanity check입니다. 이 값은 TileForge의 전체 tiled estimate와 분모가 다를 수 있으므로 직접 오차율로 해석하지 않습니다.",
-    "- SRAM/DRAM은 두 기준을 분리합니다: `SRAM 작업 영역`은 capacity footprint이고, `SRAM/DRAM access`는 실행 중 traffic입니다. SCALE-Sim access report의 원소 count는 원소당 byte를 곱해 KiB로 환산합니다.",
+    "> 이 섹션은 full-pipeline 실행 후 실제 SCALE-Sim/IREE 산출물을 읽어 report.md에 덧붙인 검증 부록입니다.",
     "",
-    "### A. SCALE-Sim full topology sanity check — 직접 정확도 지표 아님",
+    "### 17-1. 비교 기준 요약",
+    "",
+    "| 기준 | 사용 목적 | TileForge와 직접 비교 가능 여부 |",
+    "|---|---|---|",
+    "| SCALE-Sim full topology | COMPUTE_REPORT.csv가 정상 생성/파싱되었는지 확인하는 sanity check | 아니오 — topology row/layer cycle이므로 tiled total과 분모가 다를 수 있음 |",
+    "| SCALE-Sim top3 tile 검증 | TileForge 상위 tile 후보를 SCALE-Sim으로 재실행해 estimator 정확도 확인 | 예 — layout cycle × tileCount로 전체 tiled cycle에 맞춤 |",
+    "| IREE compile | generated.mlir이 실제 compiler를 통과하는지 확인 | cycle 비교용 아님 |",
+    "",
+    "### 17-2. Full topology sanity check",
+    "",
     "| 항목 | TileForge tiled total | SCALE-Sim full-topology sum | 차이 | 해석 |",
     "|---|---:|---:|---:|---|",
-    `| cycle | ${predictedTotal.toLocaleString()} | ${hasActual ? actualTotal!.toLocaleString() : "대기 중"} | ${hasActual ? `${absDelta! >= 0 ? "+" : ""}${absDelta!.toLocaleString()} (${formatPctDelta(actualTotal!, predictedTotal)})` : "대기 중"} | ${hasActual ? `참고 ratio=${ratio!.toFixed(3)}배, 단위가 달라 정확도 지표로 사용하지 않음` : "full-pipeline 완료 후 갱신"} |`,
+    `| cycle | ${predictedTotal.toLocaleString()} | ${hasActual ? actualTotal!.toLocaleString() : "대기 중"} | ${hasActual ? `${absDelta! >= 0 ? "+" : ""}${absDelta!.toLocaleString()} (${formatPctDelta(actualTotal!, predictedTotal)})` : "대기 중"} | ${hasActual ? `참고 ratio=${ratio!.toFixed(3)}배. 정확도 지표가 아니라 실행 확인용입니다.` : "full-pipeline 완료 후 갱신"} |`,
     "",
-    "- 해석: 이 표는 SCALE-Sim이 실제로 실행되고 COMPUTE_REPORT.csv가 파싱되었는지 확인하는 용도입니다. estimator 성능 평가는 아래 top3 tile 검증 표를 기준으로 보세요.",
-    "- 주의: IREE compile 성공은 `generated.mlir`의 컴파일 가능성을 검증하는 단계입니다. 실제 cycle 비교는 SCALE-Sim 결과를 사용하되, 위 full-topology cycle은 tile 기준과 분리해 해석합니다.",
+    "- 이 표는 기존 full topology 기준입니다. TileForge estimator는 tile 반복까지 반영한 tiled total이므로, 이 ratio만 보고 estimator가 틀렸다고 판단하지 않습니다.",
   ];
   if (hasActual && scale?.layers?.length) {
     lines.push(
       "",
-      "#### SCALE-Sim full-topology row별 cycle",
+      "#### Full topology row별 cycle 상위 항목",
       "| 순위 | SCALE-Sim row/layer | row cycle | 비중 | TileForge 선택 tile | TileForge tiled total |",
       "|---:|---|---:|---:|---|---:|",
     );
@@ -1086,7 +1091,7 @@ function externalComparisonMarkdown(
       .sort((a, b) => b.cycles - a.cycles)
       .slice(0, 8)
       .entries()) {
-      const tile = layer.tileM && layer.tileN && layer.tileK ? `${layer.tileM}x${layer.tileN}x${layer.tileK}` : "-";
+      const tile = layer.tileM && layer.tileN && layer.tileK ? `${layer.tileM}×${layer.tileN}×${layer.tileK}` : "-";
       lines.push(
         `| ${index + 1} | ${layer.name} | ${layer.cycles.toLocaleString()} | ${((layer.cycles / total) * 100).toFixed(1)}% | ${tile} | ${layer.predictedCycles !== undefined ? layer.predictedCycles.toLocaleString() : "-"} |`,
       );
@@ -1094,29 +1099,32 @@ function externalComparisonMarkdown(
     lines.push(
       "",
       "#### TileForge op별 tiled estimate 상위 항목",
-      "| 순위 | 연산 | TileForge tiled cycle | 비중 |",
-      "|---:|---|---:|---:|",
+      "| 순위 | 연산 | TileForge tiled cycle | 비중 | 선택 tile |",
+      "|---:|---|---:|---:|---|",
     );
     for (const [index, item] of [...res.results]
       .sort((a, b) => b.best.cycles - a.best.cycles)
       .slice(0, 8)
       .entries()) {
       lines.push(
-        `| ${index + 1} | ${item.shape.model}.${item.shape.opName} | ${item.best.cycles.toLocaleString()} | ${((item.best.cycles / predictedTotal) * 100).toFixed(1)}% |`,
+        `| ${index + 1} | ${item.shape.model}.${item.shape.opName} | ${item.best.cycles.toLocaleString()} | ${((item.best.cycles / predictedTotal) * 100).toFixed(1)}% | ${item.best.tileM}×${item.best.tileN}×${item.best.tileK} |`,
       );
     }
   }
   if (scale?.candidateLayers?.length) {
     lines.push(
       "",
-      "### B. SCALE-Sim top3 tile 후보 검증 — estimator 정확도 주 기준",
-      `- Tile 후보 MAPE: ${scale.candidateMapePct !== undefined ? `${scale.candidateMapePct.toFixed(2)}%` : "해당 없음"}`,
-      `- Tile 후보 P50/P90 오차: ${scale.candidateP50ErrorPct !== undefined ? `${scale.candidateP50ErrorPct.toFixed(2)}%` : "해당 없음"} / ${scale.candidateP90ErrorPct !== undefined ? `${scale.candidateP90ErrorPct.toFixed(2)}%` : "해당 없음"}`,
-      `- Best-rank agreement: ${scale.candidateBestRankAgreementPct !== undefined ? `${scale.candidateBestRankAgreementPct.toFixed(1)}%` : "해당 없음"}`,
-      `- Tile validation cycle ratio(SCALE-Sim/TileForge): ${top3Ratio !== undefined ? top3Ratio.toFixed(3) : "해당 없음"}`,
-      `- 해석: ${top3Verdict}`,
+      "### 17-3. SCALE-Sim top3 tile 후보 검증 — 정확도 주 기준",
       "",
-      "| 연산 | rank | tile | tileCount | TileForge total cycle | SCALE-Sim layout cycle | SCALE-Sim total cycle | 차이 | SRAM access 예측/실제 | DRAM access 예측/실제 | SCALE-Sim util |",
+      "| 지표 | 값 | 해석 |",
+      "|---|---:|---|",
+      `| MAPE | ${scale.candidateMapePct !== undefined ? `${scale.candidateMapePct.toFixed(2)}%` : "해당 없음"} | top3 후보 전체 평균 상대 오차입니다. |`,
+      `| P50 / P90 오차 | ${scale.candidateP50ErrorPct !== undefined ? `${scale.candidateP50ErrorPct.toFixed(2)}%` : "해당 없음"} / ${scale.candidateP90ErrorPct !== undefined ? `${scale.candidateP90ErrorPct.toFixed(2)}%` : "해당 없음"} | 일반적인 오차와 최악권 오차를 분리해 봅니다. |`,
+      `| Best-rank agreement | ${scale.candidateBestRankAgreementPct !== undefined ? `${scale.candidateBestRankAgreementPct.toFixed(1)}%` : "해당 없음"} | estimator가 고른 1등 tile이 SCALE-Sim 기준에서도 1등인지 나타냅니다. |`,
+      `| Cycle ratio | ${top3Ratio !== undefined ? top3Ratio.toFixed(3) : "해당 없음"} | SCALE-Sim total / TileForge total 입니다. |`,
+      `| 판정 | - | ${top3Verdict} |`,
+      "",
+      "| 연산 | rank | tile | tileCount | TileForge total cycle | SCALE-Sim layout cycle | SCALE-Sim total cycle | 오차 | SRAM access 예측/실제 | DRAM access 예측/실제 | SCALE-Sim util |",
       "|---|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     );
     for (const layer of scale.candidateLayers.slice(0, 12)) {
@@ -1124,7 +1132,7 @@ function externalComparisonMarkdown(
       const measuredTotal = layer.cycles;
       const delta = predicted > 0 ? ((measuredTotal - predicted) / predicted) * 100 : 0;
       lines.push(
-        `| ${layer.opName ?? layer.name} | ${layer.rank ?? "-"} | ${layer.tileM}x${layer.tileN}x${layer.tileK} | ${layer.tileCount ?? "-"} | ${predicted.toLocaleString()} | ${layer.cyclesPerTile !== undefined ? layer.cyclesPerTile.toLocaleString() : "-"} | ${Math.round(measuredTotal).toLocaleString()} | ${predicted > 0 ? `${delta >= 0 ? "+" : ""}${delta.toFixed(1)}%` : "해당 없음"} | ${formatTrafficComparison(layer.predictedSramAccessBytes, layer.sramAccesses, bytesPerElement)} | ${formatTrafficComparison(layer.predictedDramAccessBytes, layer.dramAccesses, bytesPerElement)} | ${layer.overallUtil !== undefined ? `${layer.overallUtil.toFixed(1)}%` : "해당 없음"} |`,
+        `| ${layer.opName ?? layer.name} | ${layer.rank ?? "-"} | ${layer.tileM}×${layer.tileN}×${layer.tileK} | ${layer.tileCount ?? "-"} | ${predicted.toLocaleString()} | ${layer.cyclesPerTile !== undefined ? layer.cyclesPerTile.toLocaleString() : "-"} | ${Math.round(measuredTotal).toLocaleString()} | ${predicted > 0 ? `${delta >= 0 ? "+" : ""}${delta.toFixed(1)}%` : "해당 없음"} | ${formatTrafficComparison(layer.predictedSramAccessBytes, layer.sramAccesses, bytesPerElement)} | ${formatTrafficComparison(layer.predictedDramAccessBytes, layer.dramAccesses, bytesPerElement)} | ${layer.overallUtil !== undefined ? `${layer.overallUtil.toFixed(1)}%` : "해당 없음"} |`,
       );
     }
     lines.push(

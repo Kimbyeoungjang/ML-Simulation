@@ -2519,11 +2519,12 @@ function Graphs({ result, download, jobId, jobsPayload }: { result: any; downloa
       if (Number.isFinite(rank) && rank > 0) candidateActualByRank.set(rank, c);
     }
   }
-  const top = (Array.isArray(op?.candidates) ? op.candidates.slice(0, 3) : []).map((p: any, index: number) => ({
+  const allCandidates = (Array.isArray(op?.candidates) ? op.candidates : []).map((p: any, index: number) => ({
     ...p,
     __rank: index + 1,
     __actual: candidateActualByRank.get(index + 1) ?? candidateActualByTile.get(tileKey(p)) ?? (index === 0 ? mainActual : undefined),
   }));
+  const top = allCandidates.slice(0, 3);
   const actualFor = (p: any, index: number) => p.__actual ?? candidateActualByRank.get(index + 1) ?? candidateActualByTile.get(tileKey(p)) ?? (index === 0 ? mainActual : undefined);
   const actualAccessKiB = (a: any, key: "sramAccesses" | "dramAccesses") => {
     const accesses = Number(a?.[key]);
@@ -2540,24 +2541,27 @@ function Graphs({ result, download, jobId, jobsPayload }: { result: any; downloa
     score: { label: "종합 점수", unit: "score", lowerBetter: true, value: (p) => Number(p.score ?? p.cycles) || 0, format: (v) => v.toFixed(3), description: "objective에 따른 내부 ranking 점수입니다." },
   };
   const info = metricInfo[metric] ?? metricInfo.cycles;
+  const allActualMetricValues = allCandidates.map((p: any, i: number) => info.actualValue?.(actualFor(p, i))).map((v) => Number.isFinite(v) && v! > 0 ? v : undefined);
   const actualMetricValues = top.map((p: any, i: number) => info.actualValue?.(actualFor(p, i))).map((v) => Number.isFinite(v) && v! > 0 ? v : undefined);
-  const hasActualMetric = actualMetricValues.some((v) => v !== undefined);
-  const maxValue = Math.max(1e-9, ...actualMetricValues.map((v) => v ? Math.abs(v) : 0), ...top.map((p: any) => Math.abs(info.value(p)) || 0));
-  const best = top[0];
+  const hasActualMetric = allActualMetricValues.some((v) => v !== undefined);
+  const maxValue = Math.max(1e-9, ...allActualMetricValues.map((v) => v ? Math.abs(v) : 0), ...allCandidates.map((p: any) => Math.abs(info.value(p)) || 0));
+  const best = allCandidates.length
+    ? [...allCandidates].sort((a: any, b: any) => info.lowerBetter ? info.value(a) - info.value(b) : info.value(b) - info.value(a))[0]
+    : top[0];
   const svgWidth = 980;
   const rowH = hasActualMetric ? 44 : 34;
-  const svgHeight = 86 + Math.max(1, top.length) * rowH;
+  const svgHeight = 86 + Math.max(1, allCandidates.length) * rowH;
   const safeTitle = `${info.label} comparison${op?.shape ? ` - ${op.shape.model}.${op.shape.opName}` : ""}`;
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${svgWidth}" height="${svgHeight}" viewBox="0 0 ${svgWidth} ${svgHeight}">
   <rect width="100%" height="100%" fill="#0b1020"/>
   <text x="20" y="30" fill="#eaf0ff" font-family="Arial" font-size="18">${safeTitle}</text>
-  <text x="20" y="52" fill="#9fb0d0" font-family="Arial" font-size="12">Top-3 tile 후보만 표시합니다. ${info.description}</text>
-  ${top.map((p: any, i: number) => {
+  <text x="20" y="52" fill="#9fb0d0" font-family="Arial" font-size="12">전체 tile 후보 ${allCandidates.length}개를 모두 표시합니다. ${info.description}</text>
+  ${allCandidates.map((p: any, i: number) => {
     const y = 86 + i * rowH;
     const v = info.value(p);
     const w = Math.max(2, Math.round((Math.abs(v) / maxValue) * 600));
     const label = `#${p.__rank ?? i + 1} ${p.tileM}x${p.tileN}x${p.tileK}`;
-    const actualMetricValue = actualMetricValues[i];
+    const actualMetricValue = allActualMetricValues[i];
     const actualW = actualMetricValue ? Math.max(2, Math.round((Math.abs(actualMetricValue) / maxValue) * 600)) : 0;
     const actualPart = actualW ? `<rect x="170" y="${y + 20}" width="${actualW}" height="6" rx="3" fill="#ffb86b"/><text x="${180 + actualW}" y="${y + 26}" fill="#ffdfb0" font-family="Consolas, monospace" font-size="10">SCALE-Sim ${info.format(actualMetricValue!)}</text>` : "";
     return `<text x="20" y="${y + 15}" fill="#cfe0ff" font-family="Consolas, monospace" font-size="12">${label}</text><rect x="170" y="${y}" width="${w}" height="16" rx="4" fill="#8db3ff"/><text x="${180 + w}" y="${y + 13}" fill="#eaf0ff" font-family="Consolas, monospace" font-size="12">예측 ${info.format(v)} · util ${((Number(p.utilization) || 0) * 100).toFixed(1)}% · SRAM ${((Number(p.sramBytes)||0)/1024).toFixed(1)} KiB</text>${actualPart}`;
@@ -2602,7 +2606,7 @@ function Graphs({ result, download, jobId, jobsPayload }: { result: any; downloa
     <section className="graphs-panel">
       <JobSourceNotice jobId={jobId ?? ""} jobsPayload={jobsPayload} tabName="그래프" />
       <h3>타일 후보 성능 비교</h3>
-      <p className="small">상위 3개 tile 후보만 고정해서 표시합니다. 첫 번째 그래프는 선택한 지표, 두 번째 그래프는 cycle/PE/SRAM/DRAM을 한 번에 보여줍니다.</p>
+      <p className="small">첫 번째 그래프는 선택한 지표를 모든 tile 후보에 대해 표시합니다. 두 번째 그래프는 SCALE-Sim으로 검증한 상위 3개 tile의 cycle/PE/SRAM/DRAM을 한 번에 보여줍니다.</p>
       {error && <p className="small warn">선택 작업 result.json을 읽지 못해 현재 입력 미리보기를 사용합니다: {error}</p>}
       <div className="row graph-controls">
         <div>
@@ -2626,21 +2630,23 @@ function Graphs({ result, download, jobId, jobsPayload }: { result: any; downloa
         </div>
       </div>
       <div className="graph-actions">
-        <ActionButton tip="현재 선택 지표 그래프를 SVG 파일로 다운로드합니다." onClick={() => download(`tile-candidate-top3-${metric}.svg`, svg, "image/svg+xml")}>선택 지표 SVG 다운로드</ActionButton>
-        <ActionButton tip="Top-3 전체 지표 요약 그래프를 SVG 파일로 다운로드합니다." onClick={() => download("tile-candidate-top3-overview.svg", overviewSvg, "image/svg+xml")}>전체 지표 SVG 다운로드</ActionButton>
+        <ActionButton tip="현재 선택 지표의 전체 후보 그래프를 SVG 파일로 다운로드합니다." onClick={() => download(`tile-candidate-all-${metric}.svg`, svg, "image/svg+xml")}>전체 후보 SVG 다운로드</ActionButton>
+        <ActionButton tip="Top-3 전체 지표 요약 그래프를 SVG 파일로 다운로드합니다." onClick={() => download("tile-candidate-top3-overview.svg", overviewSvg, "image/svg+xml")}>Top-3 요약 SVG 다운로드</ActionButton>
       </div>
       {best && (
         <div className="cards graph-summary-cards">
-          <Metric title={info.lowerBetter ? `최저 ${info.label}` : `최고 ${info.label}`} value={info.format(info.value(best))} tip="현재 선택한 지표 기준 최상위 타일 후보입니다." />
-          <Metric title="Top-1 타일" value={`${best.tileM}×${best.tileN}×${best.tileK}`} tip="estimator가 선택한 상위 1번 후보입니다." />
+          <Metric title={info.lowerBetter ? `전체 후보 최저 ${info.label}` : `전체 후보 최고 ${info.label}`} value={info.format(info.value(best))} tip="현재 선택한 지표 기준 전체 후보 중 가장 좋은 타일입니다." />
+          <Metric title="선택 지표 최상위 타일" value={`${best.tileM}×${best.tileN}×${best.tileK}`} tip="현재 그래프 지표 기준 전체 후보 중 최상위 타일입니다." />
           <Metric title="PE 사용률" value={`${((best.utilization ?? 0) * 100).toFixed(1)}%`} tip="선택 후보의 PE 사용률입니다." />
           <Metric title="SRAM 작업 영역" value={`${((best.sramBytes ?? 0) / 1024).toFixed(1)} KiB`} tip="선택 후보의 로컬 SRAM/cache 작업 영역입니다." />
           <Metric title="SRAM 접근량" value={`${estimatedSramAccessKiB(best).toFixed(1)} KiB`} tip="선택 후보의 전체 SRAM access traffic 추정입니다." />
         </div>
       )}
+      <h3>전체 후보 지표 그래프</h3>
       <div className="chart-scroll"><div className="chart-svg" dangerouslySetInnerHTML={{ __html: svg }} /></div>
+      <h3>Top-3 검증 요약 그래프</h3>
       <div className="chart-scroll"><div className="chart-svg" dangerouslySetInnerHTML={{ __html: overviewSvg }} /></div>
-      <h3>상위 3개 타일 후보</h3>
+      <h3>상위 3개 타일 후보 검증 표</h3>
       <table className="compact-table">
         <thead><tr><th>순위</th><th>타일</th><th>{info.label} 예측</th><th>{info.label} 실제</th><th>예측 cycle</th><th>SCALE-Sim cycle</th><th>시간 us</th><th>사용률</th><th>패딩</th><th>SRAM 영역</th><th>SRAM access</th><th>DRAM access</th></tr></thead>
         <tbody>{top.map((p: any, i: number) => {
@@ -2652,6 +2658,16 @@ function Graphs({ result, download, jobId, jobsPayload }: { result: any; downloa
             </tr>
           );
         })}</tbody>
+      </table>
+      <h3>전체 후보 타일 표</h3>
+      <p className="small">아래 표는 estimator가 계산한 모든 후보를 현재 선택 지표 순서로 정렬한 것입니다. SCALE-Sim 실제값은 top3로 실행된 후보에만 표시됩니다.</p>
+      <table className="compact-table">
+        <thead><tr><th>지표순위</th><th>est.순위</th><th>타일</th><th>{info.label}</th><th>cycle</th><th>사용률</th><th>패딩</th><th>SRAM 영역</th><th>SRAM access</th><th>DRAM access</th></tr></thead>
+        <tbody>{[...allCandidates].sort((a: any, b: any) => info.lowerBetter ? info.value(a) - info.value(b) : info.value(b) - info.value(a)).map((p: any, i: number) => (
+          <tr key={`all-${p.tileM}-${p.tileN}-${p.tileK}-${i}`}>
+            <td>{i + 1}</td><td>{p.__rank}</td><td>{p.tileM}×{p.tileN}×{p.tileK}</td><td>{info.format(info.value(p))}</td><td>{Math.round(p.cycles).toLocaleString()}</td><td>{((p.utilization ?? 0) * 100).toFixed(1)}%</td><td>{((p.paddingRatio ?? 0) * 100).toFixed(1)}%</td><td>{((p.sramBytes ?? 0) / 1024).toFixed(1)} KiB</td><td>{estimatedSramAccessKiB(p).toFixed(1)} KiB</td><td>{estimatedDramAccessKiB(p).toFixed(1)} KiB</td>
+          </tr>
+        ))}</tbody>
       </table>
     </section>
   );
