@@ -103,6 +103,7 @@ export interface TileCandidateResult {
   shapeId: string; model: string; opName: string;
   tileM: number; tileN: number; tileK: number;
   cycles: number; rawCycles?: number; calibrationFactor?: number; timeUs: number; utilization: number; paddingRatio: number; sramBytes: number;
+  learnedMetrics?: { sramBytes?: number; dramBytes?: number; utilization?: number; availableTargets?: string[] };
   boundaryPenalty: number; score: number; isPareto: boolean; warnings: string[]; explanation: string;
 }
 export interface OpSearchResult { shape: MatmulShape; best: TileCandidateResult; candidates: TileCandidateResult[]; pareto: TileCandidateResult[]; heatmap: HeatmapPoint[]; }

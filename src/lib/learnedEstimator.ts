@@ -19,6 +19,12 @@ export interface LearnedEstimatorSample {
   tileK: number;
   estimatorCycles: number;
   measuredCycles: number;
+  estimatorSramBytes?: number;
+  measuredSramBytes?: number;
+  estimatorDramBytes?: number;
+  measuredDramBytes?: number;
+  estimatorUtilization?: number;
+  measuredUtilization?: number;
 }
 
 export interface LearnedEstimatorTreeNode {

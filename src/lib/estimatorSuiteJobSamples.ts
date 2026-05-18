@@ -23,6 +23,12 @@ export interface CollectedEstimatorSampleRow {
   tileK: number;
   estimatorCycles: number;
   measuredCycles: number;
+  estimatorSramBytes?: number;
+  measuredSramBytes?: number;
+  estimatorDramBytes?: number;
+  measuredDramBytes?: number;
+  estimatorUtilization?: number;
+  measuredUtilization?: number;
   scaleSimRunName: string;
   jobId: string;
   jobName: string;
@@ -44,6 +50,42 @@ function firstPositive(values: unknown[]) {
     if (x > 0) return x;
   }
   return NaN;
+}
+
+function firstFinite(values: unknown[]) {
+  for (const v of values) {
+    const x = n(v);
+    if (Number.isFinite(x)) return x;
+  }
+  return undefined;
+}
+
+function accessBytes(accesses: unknown, dtypeBytes: number) {
+  const x = n(accesses);
+  if (!(x > 0)) return undefined;
+  return Math.round(x * Math.max(1, dtypeBytes || 1));
+}
+
+function utilizationFraction(value: unknown) {
+  const x = n(value);
+  if (!(x > 0)) return undefined;
+  return x > 1 ? x / 100 : x;
+}
+
+function sameTile(layer: any, tileM: number, tileN: number, tileK: number) {
+  return n(layer?.tileM) === tileM && n(layer?.tileN) === tileN && n(layer?.tileK) === tileK;
+}
+
+function pickScaleLayer(scale: any, shape: any, tileM: number, tileN: number, tileK: number) {
+  const candidates = Array.isArray(scale?.candidateLayers) ? scale.candidateLayers : [];
+  const layers = Array.isArray(scale?.layers) ? scale.layers : [];
+  return (
+    candidates.find((l: any) => sameTile(l, tileM, tileN, tileK) && (!shape?.opName || l.opName === shape.opName || l.name === shape.opName)) ||
+    candidates.find((l: any) => sameTile(l, tileM, tileN, tileK)) ||
+    layers.find((l: any) => sameTile(l, tileM, tileN, tileK) && (!shape?.opName || l.opName === shape.opName || l.name === shape.opName)) ||
+    layers.find((l: any) => shape?.opName && (l.opName === shape.opName || l.name === shape.opName)) ||
+    layers[0]
+  );
 }
 
 async function readJsonMaybe<T = any>(file: string): Promise<T | undefined> {
@@ -132,18 +174,35 @@ export async function collectEstimatorSamplesFromJobs(jobs: JobRecord[], jobRoot
     const resultJson = await readJsonMaybe<any>(path.join(dir, "result.json"));
     const response = resultJson?.payload?.response ?? resultJson?.response ?? resultJson;
     const resultRow = Array.isArray(response?.results) ? response.results[0] : undefined;
-    let estimatorCycles = firstPositive([resultRow?.best?.cycles, resultRow?.cycles, response?.summary?.totalCycles]);
-    if (!(estimatorCycles > 0)) {
+    let estimatorCycles = firstPositive([resultRow?.best?.rawCycles, resultRow?.best?.cycles, resultRow?.cycles, response?.summary?.analyticalTotalCycles, response?.summary?.totalCycles]);
+    let estimatorSramBytes = firstPositive([resultRow?.best?.sramBytes, resultRow?.sramBytes]);
+    let estimatorUtilization = firstFinite([resultRow?.best?.utilization, resultRow?.utilization]);
+    if (!(estimatorCycles > 0) || !(estimatorSramBytes > 0) || estimatorUtilization === undefined) {
       try {
-        estimatorCycles = estimateAll(req).summary.totalCycles;
+        const fresh = estimateAll(req);
+        const freshRow = fresh.results?.[0];
+        estimatorCycles = estimatorCycles > 0 ? estimatorCycles : fresh.summary.totalCycles;
+        estimatorSramBytes = estimatorSramBytes > 0 ? estimatorSramBytes : firstPositive([freshRow?.best?.sramBytes, fresh.summary.maxSramBytes]);
+        estimatorUtilization = estimatorUtilization ?? firstFinite([fresh.summary.meanUtilization, freshRow?.best?.utilization]);
       } catch {
-        estimatorCycles = NaN;
+        estimatorCycles = estimatorCycles > 0 ? estimatorCycles : NaN;
       }
     }
+    const matchedLayer = pickScaleLayer(scale, shape, tileM, tileN, tileK);
     const measuredCycles = firstPositive([
-      scale.layers?.[0]?.cycles,
+      matchedLayer?.tileExtrapolatedCycles,
+      matchedLayer?.cycles,
       scale.totalCycles,
       scale.totalCyclesInclPrefetch,
+    ]);
+    const dtypeBytes = shape.dtypeBytes ?? hw.bytesPerElement ?? 2;
+    const measuredSramBytes = accessBytes(firstPositive([matchedLayer?.sramAccessBytes, matchedLayer?.sramBytes, matchedLayer?.sramAccesses]), dtypeBytes);
+    const measuredDramBytes = accessBytes(firstPositive([matchedLayer?.dramAccessBytes, matchedLayer?.dramBytes, matchedLayer?.dramAccesses]), dtypeBytes);
+    const measuredUtilization = utilizationFraction(firstFinite([matchedLayer?.computeUtil, matchedLayer?.overallUtil, matchedLayer?.mappingEfficiency]));
+    const estimatorDramBytes = firstPositive([
+      resultRow?.best?.dramBytes,
+      resultRow?.dramBytes,
+      (shape.m * shape.k + shape.k * shape.n + shape.m * shape.n) * dtypeBytes,
     ]);
     if (!(estimatorCycles > 0) || !(measuredCycles > 0)) {
       skipped.push({ jobId: job.id, name: job.name, reason: "missing positive estimatorCycles or measuredCycles" });
@@ -158,7 +217,7 @@ export async function collectEstimatorSamplesFromJobs(jobs: JobRecord[], jobRoot
       sramKB: hw.sramKB,
       frequencyMHz: hw.frequencyMHz,
       dataflow: hw.dataflow,
-      dtypeBytes: shape.dtypeBytes ?? hw.bytesPerElement ?? 2,
+      dtypeBytes,
       m: shape.m,
       n: shape.n,
       k: shape.k,
@@ -167,6 +226,12 @@ export async function collectEstimatorSamplesFromJobs(jobs: JobRecord[], jobRoot
       tileK,
       estimatorCycles: Math.round(estimatorCycles),
       measuredCycles: Math.round(measuredCycles),
+      estimatorSramBytes: estimatorSramBytes > 0 ? Math.round(estimatorSramBytes) : undefined,
+      measuredSramBytes,
+      estimatorDramBytes: estimatorDramBytes > 0 ? Math.round(estimatorDramBytes) : undefined,
+      measuredDramBytes,
+      estimatorUtilization: estimatorUtilization === undefined ? undefined : estimatorUtilization,
+      measuredUtilization,
       scaleSimRunName: req.scaleSim?.runName || job.name || job.id,
       jobId: job.id,
       jobName: job.name || job.id,
@@ -228,6 +293,12 @@ export function mergeCollectedSamplesIntoCsv(csvText: string, collected: Collect
       tileK: r.tileK || match.tileK,
       estimatorCycles: r.estimatorCycles || match.estimatorCycles,
       measuredCycles: String(match.measuredCycles),
+      estimatorSramBytes: r.estimatorSramBytes || match.estimatorSramBytes,
+      measuredSramBytes: match.measuredSramBytes === undefined ? r.measuredSramBytes : String(match.measuredSramBytes),
+      estimatorDramBytes: r.estimatorDramBytes || match.estimatorDramBytes,
+      measuredDramBytes: match.measuredDramBytes === undefined ? r.measuredDramBytes : String(match.measuredDramBytes),
+      estimatorUtilization: r.estimatorUtilization || match.estimatorUtilization,
+      measuredUtilization: match.measuredUtilization === undefined ? r.measuredUtilization : String(match.measuredUtilization),
       scaleSimRunName: r.scaleSimRunName || match.scaleSimRunName,
       jobId: match.jobId,
       jobName: match.jobName,

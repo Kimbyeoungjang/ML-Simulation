@@ -1,5 +1,5 @@
 import type { SearchRequest, SearchResponse, TileCandidateResult } from "@/types/domain";
-import { predictEstimatorSuiteCycles, type EstimatorSuiteModel, type EstimatorSuiteModelName } from "./estimatorSuite";
+import { predictEstimatorSuiteCycles, predictEstimatorSuiteMetrics, type EstimatorSuiteModel, type EstimatorSuiteModelName } from "./estimatorSuite";
 import type { LearnedEstimatorSample } from "./learnedEstimator";
 import { mean } from "./math";
 import { generateReportMarkdown } from "./report";
@@ -54,12 +54,13 @@ function adjustCandidate(req: SearchRequest, model: EstimatorSuiteModel, candida
   const rawCycles = candidate.rawCycles && candidate.rawCycles > 0 ? candidate.rawCycles : candidate.cycles;
   const sample = candidateToSample(req, { ...candidate, cycles: rawCycles, rawCycles });
   const learnedCycles = clamp(predictEstimatorSuiteCycles(model, sample), 1, rawCycles * 100);
+  const learnedMetrics = predictEstimatorSuiteMetrics(model, sample);
   const factor = learnedCycles / Math.max(1, rawCycles);
   const cycles = Math.max(1, Math.round(learnedCycles));
   const timeUs = cycles / Math.max(1, req.hardware.frequencyMHz);
-  const utilization = Number(candidate.utilization) || 0;
+  const utilization = Number.isFinite(learnedMetrics.utilization) ? clamp(Number(learnedMetrics.utilization), 0, 1) : (Number(candidate.utilization) || 0);
   const paddingRatio = Number(candidate.paddingRatio) || 0;
-  const sramBytes = Number(candidate.sramBytes) || 0;
+  const sramBytes = Number.isFinite(learnedMetrics.sramBytes) ? Math.max(0, Math.round(Number(learnedMetrics.sramBytes))) : (Number(candidate.sramBytes) || 0);
   const score = cycles / 1e6 + (1 - utilization) * 5 + paddingRatio * 3 + Math.max(0, sramBytes - req.hardware.sramKB * 1024) / Math.max(1, req.hardware.sramKB * 1024);
   const warnings = Array.isArray(candidate.warnings) ? [...candidate.warnings] : [];
   if (factor > 1.5) warnings.push(`Learned estimator 보정 큼: ×${factor.toFixed(2)}`);
@@ -70,6 +71,7 @@ function adjustCandidate(req: SearchRequest, model: EstimatorSuiteModel, candida
     cycles,
     timeUs,
     score,
+    learnedMetrics: { ...learnedMetrics, utilization },
     warnings: Array.from(new Set(warnings)),
     explanation: `${candidate.explanation} Learned estimator suite가 analytical ${rawCycles.toLocaleString()} cycles를 ${cycles.toLocaleString()} cycles로 보정했습니다(×${factor.toFixed(3)}).`,
   };

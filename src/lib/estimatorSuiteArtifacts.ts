@@ -9,6 +9,7 @@ import {
   type EstimatorSuiteSplitKind,
   type TrainEstimatorSuiteOptions,
 } from "./estimatorSuite";
+import { multiTargetSummaryRows } from "./multiTargetEstimator";
 
 export interface EstimatorSuiteRunOptions extends TrainEstimatorSuiteOptions {
   topK?: number;
@@ -88,6 +89,16 @@ function str(row: Record<string, string>, names: string[], fallback = "") {
   return fallback;
 }
 
+function optNum(row: Record<string, string>, names: string[]) {
+  for (const n of names) {
+    const raw = row[n];
+    if (raw === undefined || raw === "") continue;
+    const v = Number(raw);
+    if (Number.isFinite(v)) return v;
+  }
+  return undefined;
+}
+
 export function sampleFromEstimatorRow(row: Record<string, string>): LearnedEstimatorSample | undefined {
   const measuredCycles = num(row, ["measuredCycles", "scaleSimCycles", "scalesimCycles", "totalCycles", "cycles_measured", "measured_cycles"]);
   const estimatorCycles = num(row, ["estimatorCycles", "predictedCycles", "tileforgeCycles", "cycles_estimator", "predicted_cycles"]);
@@ -105,6 +116,12 @@ export function sampleFromEstimatorRow(row: Record<string, string>): LearnedEsti
     dataflow: str(row, ["dataflow"], defaultHardware.dataflow),
     dtypeBytes: num(row, ["dtypeBytes", "dtype_bytes"], 2),
     m, n, k, tileM, tileN, tileK, estimatorCycles, measuredCycles,
+    estimatorSramBytes: optNum(row, ["estimatorSramBytes", "predictedSramBytes", "tileforgeSramBytes", "sramBytes", "sram_bytes_estimator"]),
+    measuredSramBytes: optNum(row, ["measuredSramBytes", "scaleSimSramBytes", "scalesimSramBytes", "sramAccessBytes", "sramBytesMeasured", "sram_bytes_measured"]),
+    estimatorDramBytes: optNum(row, ["estimatorDramBytes", "predictedDramBytes", "tileforgeDramBytes", "dramBytes", "dram_bytes_estimator"]),
+    measuredDramBytes: optNum(row, ["measuredDramBytes", "scaleSimDramBytes", "scalesimDramBytes", "dramAccessBytes", "dramBytesMeasured", "dram_bytes_measured"]),
+    estimatorUtilization: optNum(row, ["estimatorUtilization", "predictedUtilization", "tileforgeUtilization", "utilization", "util_estimator"]),
+    measuredUtilization: optNum(row, ["measuredUtilization", "scaleSimUtilization", "scalesimUtilization", "actualUtilization", "utilMeasured", "util_measured"]),
   };
 }
 
@@ -143,7 +160,13 @@ export function designEstimatorSuiteCsv(request: SearchRequest, options: { topK?
         tileN: tile.tileN,
         tileK: tile.tileK,
         estimatorCycles: tile.cycles,
+        estimatorSramBytes: tile.sramBytes,
+        estimatorDramBytes: (shape.m * shape.k + shape.k * shape.n + shape.m * shape.n) * (shape.dtypeBytes || request.hardware.bytesPerElement || 2),
+        estimatorUtilization: tile.utilization,
         measuredCycles: "",
+        measuredSramBytes: "",
+        measuredDramBytes: "",
+        measuredUtilization: "",
         scaleSimRunName: `web_lab_${rows.length}`,
       });
     }
@@ -161,12 +184,13 @@ export function normalizeSuiteSplitKinds(value: unknown): EstimatorSuiteSplitKin
 export function buildEstimatorSuiteArtifacts(model: EstimatorSuiteModel, samples: LearnedEstimatorSample[]): EstimatorSuiteArtifactBundle {
   const rows = model.validationSuite;
   const metricRows = rows.map((r) => `| ${r.kind} | ${r.testSamples} | ${r.baseline.learnedMapePct.toFixed(2)}% | ${r.tree.learnedMapePct.toFixed(2)}% | ${r.neural.learnedMapePct.toFixed(2)}% | ${r.ensemble.learnedMapePct.toFixed(2)}% | ${r.ensemble.p90AbsPct.toFixed(2)}% | ${r.recommended} |`).join("\n");
+  const multiRows = multiTargetSummaryRows(model.multiTarget).map(r => `| ${r.target} | ${r.samples} | ${r.mapePct.toFixed(2)}% | ${r.p90AbsPct.toFixed(2)}% |`).join("\n");
   const reportMarkdown = [
     `# TileForge Web Estimator Suite Report`,
     ``,
     `추천 최종 모델: **${model.recommended}**`,
     ``,
-    `이 suite는 cycle 자체를 직접 학습하지 않고 기존 analytical estimator의 \`log(measuredCycles / estimatorCycles)\` residual을 Tree와 Neural 모델이 각각 학습한 뒤 validation 성능으로 ensemble weight를 정합니다.`,
+    `이 suite는 cycle에 대해 analytical baseline, Tree residual, Neural residual, Direct neural을 함께 학습하고 validation 성능으로 ensemble weight를 정합니다. CSV에 SRAM/DRAM/utilization measured column이 있으면 해당 지표는 별도 multi-target direct model로 학습합니다.`,
     ``,
     `## Dataset`,
     ``,
@@ -188,6 +212,12 @@ export function buildEstimatorSuiteArtifacts(model: EstimatorSuiteModel, samples
     `| Split | Test samples | Analytical MAPE | Tree MAPE | Neural MAPE | Ensemble MAPE | Ensemble P90 | Best |`,
     `|---|---:|---:|---:|---:|---:|---:|---|`,
     metricRows || `| n/a | 0 | - | - | - | - | - | - |`,
+    ``,
+    `## Multi-target metrics`,
+    ``,
+    `| Target | Samples | MAPE | P90 |`,
+    `|---|---:|---:|---:|`,
+    multiRows || `| n/a | 0 | - | - |`,
     ``,
     `## Recommended use`,
     ``,

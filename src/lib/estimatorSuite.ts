@@ -1,9 +1,10 @@
 import { evaluateLearnedEstimator, predictLearnedCycles, trainLearnedEstimator, type LearnedEstimatorMetrics, type LearnedEstimatorModel, type LearnedEstimatorSample, type TrainLearnedEstimatorOptions } from "./learnedEstimator";
 import { evaluateNeuralResidualEstimator, predictNeuralCycles, trainNeuralResidualEstimator, type NeuralResidualEstimatorModel, type TrainNeuralResidualOptions } from "./neuralResidualEstimator";
 import { evaluateDirectNeuralEstimator, predictDirectNeuralCycles, trainDirectNeuralEstimator, type DirectNeuralEstimatorModel } from "./directNeuralEstimator";
+import { predictMultiTargetMetrics, trainMultiTargetEstimator, type MultiTargetEstimatorModel } from "./multiTargetEstimator";
 
 export type EstimatorSuiteSplitKind = "random" | "workload" | "array" | "dataflow" | "large-shape";
-export type EstimatorSuiteModelName = "analytical" | "tree-residual" | "neural-residual" | "ensemble";
+export type EstimatorSuiteModelName = "analytical" | "tree-residual" | "neural-residual" | "direct-neural" | "ensemble";
 
 export interface EstimatorSuiteWeights {
   analytical: number;
@@ -33,6 +34,8 @@ export interface EstimatorSuiteModel {
   neural: NeuralResidualEstimatorModel;
   /** Optional v2 component: predicts log(measuredCycles) directly instead of residual. */
   directNeural?: DirectNeuralEstimatorModel;
+  /** Optional v3 component: separately predicts SRAM/DRAM/utilization targets when CSV columns exist. */
+  multiTarget?: MultiTargetEstimatorModel;
   weights: EstimatorSuiteWeights;
   recommended: EstimatorSuiteModelName;
   validationSuite: EstimatorSuiteSplitReport[];
@@ -47,7 +50,7 @@ export interface EstimatorSuiteModel {
     epochs: number;
     learningRate: number;
     l2: number;
-    strategy: "analytical_plus_residual_ensemble" | "hybrid_residual_and_direct_neural";
+    strategy: "analytical_plus_residual_ensemble" | "hybrid_residual_and_direct_neural" | "multi_target_hybrid_estimator";
   };
 }
 
@@ -128,6 +131,10 @@ export function predictEstimatorSuiteCycles(model: EstimatorSuiteModel, sample: 
   return Math.max(1, Math.round(y));
 }
 
+export function predictEstimatorSuiteMetrics(model: EstimatorSuiteModel, sample: LearnedEstimatorSample) {
+  return predictMultiTargetMetrics(model.multiTarget, sample);
+}
+
 export function evaluateEstimatorSuite(model: EstimatorSuiteModel, samples: LearnedEstimatorSample[]): LearnedEstimatorMetrics {
   const rows = cleanSamples(samples);
   const baselineErr = rows.map(s => (s.estimatorCycles - s.measuredCycles) / s.measuredCycles);
@@ -184,13 +191,14 @@ export function weightsFromMetrics(baseline: LearnedEstimatorMetrics, tree: Lear
   return { analytical: invA / sum, tree: invT / sum, neural: invN / sum, directNeural: invD / sum };
 }
 
-function recommendModel(baseline: LearnedEstimatorMetrics, tree: LearnedEstimatorMetrics, neural: LearnedEstimatorMetrics, ensemble: LearnedEstimatorMetrics): EstimatorSuiteModelName {
+function recommendModel(baseline: LearnedEstimatorMetrics, tree: LearnedEstimatorMetrics, neural: LearnedEstimatorMetrics, ensemble: LearnedEstimatorMetrics, direct?: LearnedEstimatorMetrics): EstimatorSuiteModelName {
   const scores: Array<[EstimatorSuiteModelName, number]> = [
     ["analytical", baselineScore(baseline)],
     ["tree-residual", safeScore(tree)],
     ["neural-residual", safeScore(neural)],
     ["ensemble", safeScore(ensemble)]
   ];
+  if (direct) scores.push(["direct-neural", safeScore(direct)]);
   scores.sort((a, b) => a[1] - b[1]);
   return scores[0][0];
 }
@@ -262,7 +270,7 @@ export function trainEstimatorSuite(samples: LearnedEstimatorSample[], opts: Tra
     const directMetrics = evaluateDirectNeuralEstimator(directNeural, split.test);
     const weights = weightsFromMetrics(baseline, treeMetrics, neuralMetrics, directMetrics);
     const ensembleMetrics = evaluateWeightedEnsemble(split.test, tree, neural, weights, directNeural);
-    const recommended = recommendModel(baseline, treeMetrics, neuralMetrics, ensembleMetrics);
+    const recommended = recommendModel(baseline, treeMetrics, neuralMetrics, ensembleMetrics, directMetrics);
     opts.progress?.({ stage: "validating", message: `${splitKinds[i]} split 평가 완료: analytical MAPE=${baseline.learnedMapePct.toFixed(2)}%, tree=${treeMetrics.learnedMapePct.toFixed(2)}%, residual-neural=${neuralMetrics.learnedMapePct.toFixed(2)}%, direct-neural=${directMetrics.learnedMapePct.toFixed(2)}%, ensemble=${ensembleMetrics.learnedMapePct.toFixed(2)}%, 추천=${recommended}`, progress: 16 + i * 8 });
     validationSuite.push({ kind: splitKinds[i], label: split.label, trainSamples: trainRows.length, testSamples: split.test.length, baseline, tree: treeMetrics, neural: neuralMetrics, ensemble: ensembleMetrics, weights, recommended });
   }
@@ -274,6 +282,8 @@ export function trainEstimatorSuite(samples: LearnedEstimatorSample[], opts: Tra
   const neural = trainNeuralResidualEstimator(finalTrainRows, { hiddenUnits, epochs, learningRate, l2, seed, validationFraction: opts.validationFraction ?? 0.2, progress: (e) => opts.progress?.({ ...e, progress: 74 + Math.min(8, (e.progress ?? 0) * 0.08) }) });
   opts.progress?.({ stage: "training-neural", message: `최종 Direct Neural cycle 학습 시작: train=${finalTrainRows.length}, hidden=${hiddenUnits}, epochs=${epochs}`, progress: 82 });
   const directNeural = trainDirectNeuralEstimator(finalTrainRows, { hiddenUnits, epochs, learningRate, l2, seed: seed + 17, validationFraction: opts.validationFraction ?? 0.2, progress: (e) => opts.progress?.({ ...e, progress: 82 + Math.min(8, (e.progress ?? 0) * 0.08) }) });
+  opts.progress?.({ stage: "training-neural", message: "Multi-target SRAM/DRAM/utilization 학습 준비 중", progress: 90 });
+  const multiTarget = trainMultiTargetEstimator(finalTrainRows, { hiddenUnits: Math.max(16, Math.floor(hiddenUnits / 2)), epochs: Math.max(120, Math.floor(epochs / 2)), learningRate, l2, seed: seed + 29, minSamples: 40, validationFraction: opts.validationFraction ?? 0.2, progress: (e) => opts.progress?.({ ...e, progress: 90 + Math.min(4, (e.progress ?? 0) * 0.04) }) });
   const avg = (pick: (r: EstimatorSuiteSplitReport) => LearnedEstimatorMetrics) => {
     const ms = validationSuite.map(pick);
     if (!ms.length) return undefined;
@@ -294,9 +304,9 @@ export function trainEstimatorSuite(samples: LearnedEstimatorSample[], opts: Tra
   const directAvg = evaluateDirectNeuralEstimator(directNeural, clean);
   opts.progress?.({ stage: "validating", message: "최종 ensemble weight 계산 중", progress: 92 });
   const weights = weightsFromMetrics(baselineAvg, treeAvg, neuralAvg, directAvg);
-  const pseudoModel = { kind: "tileforge-estimator-suite-v1", createdAt: new Date().toISOString(), target: "log_measured_over_estimator", tree, neural, directNeural, weights, recommended: "ensemble", validationSuite, metadata: { samples: clean.length, trainSamples: finalTrainRows.length, seed, trees, maxDepth, minLeaf, hiddenUnits, epochs, learningRate, l2, strategy: "hybrid_residual_and_direct_neural" } } as EstimatorSuiteModel;
+  const pseudoModel = { kind: "tileforge-estimator-suite-v1", createdAt: new Date().toISOString(), target: "log_measured_over_estimator", tree, neural, directNeural, multiTarget, weights, recommended: "ensemble", validationSuite, metadata: { samples: clean.length, trainSamples: finalTrainRows.length, seed, trees, maxDepth, minLeaf, hiddenUnits, epochs, learningRate, l2, strategy: "multi_target_hybrid_estimator" } } as EstimatorSuiteModel;
   const ensembleAvg = avg(r => r.ensemble) ?? evaluateEstimatorSuite(pseudoModel, clean);
-  const recommended = recommendModel(baselineAvg, treeAvg, neuralAvg, ensembleAvg);
+  const recommended = recommendModel(baselineAvg, treeAvg, neuralAvg, ensembleAvg, directAvg);
   opts.progress?.({ stage: "validating", message: `Estimator Suite 완료: weights analytical=${weights.analytical.toFixed(3)}, tree=${weights.tree.toFixed(3)}, neural=${weights.neural.toFixed(3)}, 추천=${recommended}`, progress: 98 });
   return { ...pseudoModel, recommended };
 }
@@ -314,6 +324,9 @@ export function estimatorSuitePredictionRows(samples: LearnedEstimatorSample[], 
       neuralCycles,
       directNeuralCycles,
       ensembleCycles,
+      predictedSramBytes: predictEstimatorSuiteMetrics(model, s).sramBytes,
+      predictedDramBytes: predictEstimatorSuiteMetrics(model, s).dramBytes,
+      predictedUtilization: predictEstimatorSuiteMetrics(model, s).utilization,
       analyticalAbsPct: Math.abs((s.estimatorCycles - s.measuredCycles) / s.measuredCycles) * 100,
       treeAbsPct: Math.abs((treeCycles - s.measuredCycles) / s.measuredCycles) * 100,
       neuralAbsPct: Math.abs((neuralCycles - s.measuredCycles) / s.measuredCycles) * 100,
