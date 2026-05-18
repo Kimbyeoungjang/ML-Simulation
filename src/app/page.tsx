@@ -188,6 +188,21 @@ export default function Home() {
     maxFinalTrainSamples: 20000,
     splits: "random,workload,array,dataflow,large-shape",
   });
+  const [estimatorPlanOptions, setEstimatorPlanOptions] = useState({
+    mRange: "64:512:64",
+    nRange: "64:512:64",
+    kRange: "64:512:64",
+    tileMRange: defaultCandidates.tileM.join(","),
+    tileNRange: defaultCandidates.tileN.join(","),
+    tileKRange: defaultCandidates.tileK.join(","),
+    arrayRange: `${defaultHardware.arrayRows}x${defaultHardware.arrayCols}`,
+    sramKbRange: String(defaultHardware.sramKB),
+    dataflows: defaultHardware.dataflow,
+    maxSamples: 128,
+    queueLimit: 128,
+    topKPerShape: 1,
+    includeCurrentShapes: true,
+  });
   const [estimatorSuiteResult, setEstimatorSuiteResult] = useState<any | null>(null);
   const [estimatorSuiteBusy, setEstimatorSuiteBusy] = useState(false);
   const [calibrationRow, setCalibrationRow] = useState({
@@ -382,6 +397,9 @@ export default function Home() {
   function updateEstimatorSuiteOptions(patch: Partial<typeof estimatorSuiteOptions>) {
     setEstimatorSuiteOptions((cur) => ({ ...cur, ...patch }));
   }
+  function updateEstimatorPlanOptions(patch: Partial<typeof estimatorPlanOptions>) {
+    setEstimatorPlanOptions((cur) => ({ ...cur, ...patch }));
+  }
 
   async function generateEstimatorSuiteDesign() {
     setEstimatorSuiteBusy(true);
@@ -399,6 +417,36 @@ export default function Home() {
       setTab("estimatorSuite");
     } catch (e: any) {
       setServerMessage(`Estimator suite 설계 실패: ${e?.message ?? e}`);
+    } finally {
+      setEstimatorSuiteBusy(false);
+    }
+  }
+
+  async function generateEstimatorSamplingPlan(enqueue = false) {
+    setEstimatorSuiteBusy(true);
+    try {
+      const r = await fetch("/api/estimator-suite", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: enqueue ? "plan-and-queue" : "plan",
+          request,
+          options: estimatorPlanOptions,
+          maxSamples: estimatorPlanOptions.maxSamples,
+          queueLimit: estimatorPlanOptions.queueLimit,
+        }),
+      });
+      const j = await r.json();
+      if (!r.ok || !j.ok) throw new Error(j.error || "Estimator sampling plan failed");
+      setEstimatorSuiteCsv(j.planCsv);
+      setEstimatorSuiteResult(j);
+      const queued = Array.isArray(j.queuedJobs) ? j.queuedJobs.length : 0;
+      setServerMessage(enqueue ? `Estimator 표본 계획 ${j.rows}개 생성, full-pipeline 작업 ${queued}개 큐 등록` : `Estimator 표본 계획 CSV 생성: ${j.rows}개 후보`);
+      setTab(enqueue ? "jobs" : "estimatorSuite");
+      if (enqueue) await refreshJobs({ switchTab: true, updateReport: false });
+      if (enqueue && j.queuedJobs?.[0]?.id && autoAttachNewJob) startLiveJob(j.queuedJobs[0].id);
+    } catch (e: any) {
+      setServerMessage(`Estimator 표본 계획 실패: ${e?.message ?? e}`);
     } finally {
       setEstimatorSuiteBusy(false);
     }
@@ -1009,9 +1057,12 @@ export default function Home() {
           setEstimatorSuiteCsv={setEstimatorSuiteCsv}
           estimatorSuiteOptions={estimatorSuiteOptions}
           updateEstimatorSuiteOptions={updateEstimatorSuiteOptions}
+          estimatorPlanOptions={estimatorPlanOptions}
+          updateEstimatorPlanOptions={updateEstimatorPlanOptions}
           estimatorSuiteResult={estimatorSuiteResult}
           estimatorSuiteBusy={estimatorSuiteBusy}
           generateEstimatorSuiteDesign={generateEstimatorSuiteDesign}
+          generateEstimatorSamplingPlan={generateEstimatorSamplingPlan}
           runEstimatorSuiteWeb={runEstimatorSuiteWeb}
           jobsJson={jobsJson}
           liveJobId={liveJobId}

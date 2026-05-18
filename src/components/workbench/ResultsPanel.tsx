@@ -58,9 +58,12 @@ export function ResultsPanel(props: ResultsPanelProps) {
     setEstimatorSuiteCsv,
     estimatorSuiteOptions,
     updateEstimatorSuiteOptions,
+    estimatorPlanOptions,
+    updateEstimatorPlanOptions,
     estimatorSuiteResult,
     estimatorSuiteBusy,
     generateEstimatorSuiteDesign,
+    generateEstimatorSamplingPlan,
     runEstimatorSuiteWeb,
     jobsJson,
     liveJobId,
@@ -184,9 +187,13 @@ export function ResultsPanel(props: ResultsPanelProps) {
                 setCsv={setEstimatorSuiteCsv}
                 options={estimatorSuiteOptions}
                 updateOptions={updateEstimatorSuiteOptions}
+                planOptions={estimatorPlanOptions}
+                updatePlanOptions={updateEstimatorPlanOptions}
                 result={estimatorSuiteResult}
                 busy={estimatorSuiteBusy}
                 onDesign={generateEstimatorSuiteDesign}
+                onPlan={() => generateEstimatorSamplingPlan(false)}
+                onQueuePlan={() => generateEstimatorSamplingPlan(true)}
                 onRun={runEstimatorSuiteWeb}
                 download={download}
               />

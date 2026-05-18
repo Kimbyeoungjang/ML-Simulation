@@ -3,6 +3,8 @@ import path from "node:path";
 import { NextResponse } from "next/server";
 import { stableId } from "@/lib/determinism";
 import { buildEstimatorSuiteArtifacts, designEstimatorSuiteCsv, normalizeSuiteSplitKinds, parseEstimatorSamplesCsv } from "@/lib/estimatorSuiteArtifacts";
+import { buildEstimatorSamplingPlan, requestFromPlanRow } from "@/lib/estimatorSamplingPlan";
+import { createJob } from "@/server/jobStore";
 import { trainEstimatorSuite } from "@/lib/estimatorSuite";
 import { formatZodError, parseSearchRequest } from "@/lib/validation";
 import { getWorkspaceRoot } from "@/server/workspace";
@@ -34,6 +36,22 @@ export async function POST(req: Request) {
       const designCsv = designEstimatorSuiteCsv(request, { topK: num(body, "topK", 3) });
       const { dir, artifacts } = await writeRunArtifacts(runId, { "estimator-suite-design.csv": designCsv });
       return NextResponse.json({ ok: true, action, runId, dir, artifacts, designCsv, rows: Math.max(0, designCsv.split(/\r?\n/).filter(Boolean).length - 1) });
+    }
+
+    if (action === "plan" || action === "plan-and-queue") {
+      const request = parseSearchRequest(body.request);
+      const maxSamples = num(body, "maxSamples", num(body, "max-samples", 512));
+      const plan = buildEstimatorSamplingPlan(request, { ...(body.options ?? {}), maxSamples });
+      const queuedJobs: Array<{ id: string; name?: string; status?: string }> = [];
+      if (action === "plan-and-queue" || body.enqueue === true) {
+        const queueLimit = Math.max(1, Math.min(num(body, "queueLimit", num(body, "queue-limit", maxSamples)), 1000));
+        for (const row of plan.rows.slice(0, queueLimit)) {
+          const job = await createJob("full-pipeline", requestFromPlanRow(request, row), row.scaleSimRunName);
+          queuedJobs.push({ id: job.id, name: job.name, status: job.status });
+        }
+      }
+      const { dir, artifacts } = await writeRunArtifacts(runId, { "estimator-suite-sampling-plan.csv": plan.csv });
+      return NextResponse.json({ ok: true, action, runId, dir, artifacts, planCsv: plan.csv, rows: plan.totalRows, queuedJobs });
     }
 
     const csvText = String(body.csvText ?? body.csv ?? "");
