@@ -4,10 +4,11 @@ import { NextResponse } from "next/server";
 import { stableId } from "@/lib/determinism";
 import { buildEstimatorSuiteArtifacts, designEstimatorSuiteCsv, normalizeSuiteSplitKinds, parseEstimatorSamplesCsv } from "@/lib/estimatorSuiteArtifacts";
 import { buildEstimatorSamplingPlan, requestFromPlanRow } from "@/lib/estimatorSamplingPlan";
-import { createJob } from "@/server/jobStore";
+import { collectEstimatorSamplesFromJobs, mergeCollectedSamplesIntoCsv } from "@/lib/estimatorSuiteJobSamples";
+import { createJob, listJobs } from "@/server/jobStore";
 import { trainEstimatorSuite } from "@/lib/estimatorSuite";
 import { formatZodError, parseSearchRequest } from "@/lib/validation";
-import { getWorkspaceRoot } from "@/server/workspace";
+import { getJobRoot, getWorkspaceRoot } from "@/server/workspace";
 
 function num(body: any, name: string, fallback: number) {
   const v = Number(body?.options?.[name] ?? body?.[name]);
@@ -52,6 +53,27 @@ export async function POST(req: Request) {
       }
       const { dir, artifacts } = await writeRunArtifacts(runId, { "estimator-suite-sampling-plan.csv": plan.csv });
       return NextResponse.json({ ok: true, action, runId, dir, artifacts, planCsv: plan.csv, rows: plan.totalRows, queuedJobs });
+    }
+
+
+    if (action === "collect-jobs") {
+      const csvText = String(body.csvText ?? body.csv ?? "");
+      const jobs = await listJobs();
+      const collected = await collectEstimatorSamplesFromJobs(jobs, getJobRoot());
+      const mergedCsv = mergeCollectedSamplesIntoCsv(csvText, collected.rows);
+      const validSamples = parseEstimatorSamplesCsv(mergedCsv).length;
+      const { dir, artifacts } = await writeRunArtifacts(runId, { "estimator-suite-measured-samples.csv": mergedCsv });
+      return NextResponse.json({
+        ok: true,
+        action,
+        runId,
+        dir,
+        artifacts,
+        csv: mergedCsv,
+        rows: collected.rows.length,
+        validSamples,
+        skipped: collected.skipped.slice(0, 50),
+      });
     }
 
     const csvText = String(body.csvText ?? body.csv ?? "");

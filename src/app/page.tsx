@@ -452,6 +452,28 @@ export default function Home() {
     }
   }
 
+
+  async function collectEstimatorSamplesFromJobsWeb() {
+    setEstimatorSuiteBusy(true);
+    try {
+      const r = await fetch("/api/estimator-suite", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "collect-jobs", csvText: estimatorSuiteCsv }),
+      });
+      const j = await r.json();
+      if (!r.ok || !j.ok) throw new Error(j.error || "Estimator sample collection failed");
+      setEstimatorSuiteCsv(j.csv ?? "");
+      setEstimatorSuiteResult(j);
+      setServerMessage(`완료 작업에서 estimator 학습 sample ${j.validSamples ?? 0}개 준비됨: 새로 수집 ${j.rows ?? 0}개`);
+      setTab("estimatorSuite");
+    } catch (e: any) {
+      setServerMessage(`Estimator sample 수집 실패: ${e?.message ?? e}`);
+    } finally {
+      setEstimatorSuiteBusy(false);
+    }
+  }
+
   async function runEstimatorSuiteWeb() {
     setEstimatorSuiteBusy(true);
     try {
@@ -1020,6 +1042,7 @@ export default function Home() {
           clearCalibration={clearCalibration}
           calibration={calibration}
           generateEstimatorSuiteDesign={generateEstimatorSuiteDesign}
+          collectEstimatorSamplesFromJobsWeb={collectEstimatorSamplesFromJobsWeb}
           runEstimatorSuiteWeb={runEstimatorSuiteWeb}
           liveJobId={liveJobId}
           createJob={createJob}
@@ -1063,6 +1086,7 @@ export default function Home() {
           estimatorSuiteBusy={estimatorSuiteBusy}
           generateEstimatorSuiteDesign={generateEstimatorSuiteDesign}
           generateEstimatorSamplingPlan={generateEstimatorSamplingPlan}
+          collectEstimatorSamplesFromJobsWeb={collectEstimatorSamplesFromJobsWeb}
           runEstimatorSuiteWeb={runEstimatorSuiteWeb}
           jobsJson={jobsJson}
           liveJobId={liveJobId}
