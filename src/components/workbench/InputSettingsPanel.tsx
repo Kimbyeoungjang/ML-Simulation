@@ -11,7 +11,6 @@ type InputTab =
   | "scalesim"
   | "workload"
   | "conv"
-  | "calibration"
   | "tools";
 
 type InputSettingsPanelProps = Record<string, any>;
@@ -68,15 +67,6 @@ export function InputSettingsPanel(props: InputSettingsPanelProps) {
     conv,
     setConv,
     addConv,
-    calibrationRow,
-    setCalibrationRow,
-    appendCalibrationRow,
-    appendCalibrationFromJob,
-    calibrationCsv,
-    setCalibrationCsv,
-    applyCalibrationCsv,
-    clearCalibration,
-    calibration,
     generateEstimatorSuiteDesign,
     createJob,
     runServerEstimate,
@@ -96,7 +86,7 @@ export function InputSettingsPanel(props: InputSettingsPanelProps) {
   return (
         <section
           className="panel"
-          title="왼쪽 패널에서 하드웨어, 타일 후보, workload, 보정값, 실행 작업을 설정합니다."
+          title="왼쪽 패널에서 하드웨어, 타일 후보, workload, 실행 작업을 설정합니다."
         >
           <h2 title="실험에 사용할 모든 입력값을 설정하는 영역입니다.">
             입력 설정
@@ -113,7 +103,6 @@ export function InputSettingsPanel(props: InputSettingsPanelProps) {
                 "scalesim",
                 "workload",
                 "conv",
-                "calibration",
                 "tools",
               ] as InputTab[]
             ).map((t) => (
@@ -654,61 +643,6 @@ export function InputSettingsPanel(props: InputSettingsPanelProps) {
                   <MiniField label="dtypeBytes" tip="fp16/bf16=2, fp32=4, int8=1."><input type="number" value={conv.dtypeBytes} onChange={(e) => setConv({ ...conv, dtypeBytes: +e.target.value })} /></MiniField>
                 </div>
                 <ActionButton tip="Conv2D shape를 im2col 기준 GEMM shape로 변환한 뒤 현재 workload 뒤에 추가합니다." onClick={addConv}>Conv를 GEMM으로 추가</ActionButton>
-              </>
-            )}
-
-            {inputTab === "calibration" && (
-              <>
-                <h3 title="실측 결과를 사용해 analytic estimator의 cycle 예측을 보정합니다.">
-                  보정
-                </h3>
-                <div className="info-box">
-                  <b>보정은 언제 쓰나요?</b>
-                  <p className="small">동일한 연산을 실제 측정하거나 SCALE-Sim 결과와 비교했을 때 estimator가 일관되게 높거나 낮으면 보정 sample을 추가하세요. measured/predicted 비율이 이후 cycle 추정에 곱해집니다.</p>
-                </div>
-                <h4>간편 보정 sample 추가</h4>
-                <div className="row3">
-                  <MiniField label="model" tip="보정 sample의 모델 이름입니다."><input value={calibrationRow.model} onChange={(e) => setCalibrationRow({ ...calibrationRow, model: e.target.value })} /></MiniField>
-                  <MiniField label="opName" tip="보정 sample의 연산 이름입니다."><input value={calibrationRow.opName} onChange={(e) => setCalibrationRow({ ...calibrationRow, opName: e.target.value })} /></MiniField>
-                  <MiniField label="array" tip="배열 크기입니다. 예: 128x128"><input value={calibrationRow.array} onChange={(e) => setCalibrationRow({ ...calibrationRow, array: e.target.value })} /></MiniField>
-                </div>
-                <div className="row3">
-                  <MiniField label="dataflow" tip="보정 sample의 dataflow입니다."><select value={calibrationRow.dataflow} onChange={(e) => setCalibrationRow({ ...calibrationRow, dataflow: e.target.value })}><option>WS</option><option>OS</option><option>IS</option></select></MiniField>
-                  <MiniField label="predictedCycles" tip="보정 전 estimator predicted cycle입니다."><input type="number" value={calibrationRow.predictedCycles} onChange={(e) => setCalibrationRow({ ...calibrationRow, predictedCycles: +e.target.value })} /></MiniField>
-                  <MiniField label="measuredCycles" tip="실측 또는 SCALE-Sim measured cycle입니다."><input type="number" value={calibrationRow.measuredCycles} onChange={(e) => setCalibrationRow({ ...calibrationRow, measuredCycles: +e.target.value })} /></MiniField>
-                </div>
-                <div className="calibration-actions">
-                  <ActionButton className="secondary" tip="간편 입력한 보정 sample을 아래 CSV 끝에 추가합니다." onClick={appendCalibrationRow}>sample을 CSV에 추가</ActionButton>
-                  <ActionButton className="secondary" tip="선택한 작업 또는 최신 완료 작업의 TileForge 예측 cycle과 SCALE-Sim cycle을 CSV sample로 자동 추가합니다." onClick={appendCalibrationFromJob}>선택 작업 오차 자동 입력</ActionButton>
-                </div>
-                <h4>Raw CSV 입력</h4>
-                <textarea
-                  title="실측 CSV를 입력합니다. 열: model, op_name, array, dataflow, predicted_cycles, measured_cycles"
-                  value={calibrationCsv}
-                  onChange={(e) => setCalibrationCsv(e.target.value)}
-                />
-                <ActionButton
-                  tip="실측값/예측값 비율을 계산해 이후 cycle 추정에 보정 계수를 적용합니다."
-                  onClick={applyCalibrationCsv}
-                >
-                  보정 적용
-                </ActionButton>
-                <ActionButton
-                  className="secondary"
-                  tip="현재 적용된 보정 계수를 제거합니다."
-                  onClick={clearCalibration}
-                >
-                  보정 해제
-                </ActionButton>
-                {calibration && (
-                  <p
-                    className="small warn"
-                    title="현재 estimator에 적용 중인 전역 보정 계수입니다."
-                  >
-                    샘플 {calibration.samples.length}개 기준 보정 계수{" "}
-                    {calibration.globalCycleFactor.toFixed(3)} 적용 중
-                  </p>
-                )}
               </>
             )}
 

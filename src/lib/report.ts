@@ -1,5 +1,4 @@
 import type { SearchResponse } from "@/types/domain";
-import { profileToMarkdown } from "./calibration";
 import { bottleneckMarkdown } from "./bottleneck";
 import { rooflineMarkdown } from "./roofline";
 import { energyMarkdown } from "./energy";
@@ -66,7 +65,7 @@ export function generateReportMarkdown(res: SearchResponse): string {
   lines.push(`## 7. 타일 선택 이유`);
   for (const r of res.results) lines.push(`- ${r.best.explanation}`);
   lines.push("", validityMarkdown(h, res.request.shapes, res.results.map(r=>r.best)), "", fusionMarkdown(analyzeFusion(res.request.shapes)), "");
-  lines.push(`## 10. 보정 정보`, "```text", profileToMarkdown(res.request.calibration), "```", "");
+  lines.push(`## 10. Estimator Suite 정보`, "```text", suite?.applied ? `활성 Estimator Suite가 적용되었습니다. samples=${suite.trainingSamples ?? "n/a"}, 평균 cycle factor=×${suite.averageCycleFactor?.toFixed?.(3) ?? "n/a"}` : "활성 Estimator Suite가 적용되지 않았습니다.", "```", "");
   lines.push(`## 11. 하드웨어 설계 조언`);
   for (const a of res.designAdvice) lines.push(`- ${a}`);
   lines.push("", `## 12. IREE 실행 명령`);

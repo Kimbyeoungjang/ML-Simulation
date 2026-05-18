@@ -14,8 +14,6 @@ import {
   Roofline,
   StatusTab,
 } from "@/components/workbench/resultTabs";
-import { Artifact } from "@/components/workbench/primitives";
-import { profileToMarkdown } from "@/lib/calibration";
 import { fmt } from "@/lib/math";
 
 type Tab =
@@ -24,7 +22,6 @@ type Tab =
   | "roofline"
   | "energy"
   | "array"
-  | "calibration"
   | "iree"
   | "exports"
   | "graphs"
@@ -44,7 +41,6 @@ export function ResultsPanel(props: ResultsPanelProps) {
     result,
     uncertainty,
     confidence,
-    calibration,
     arraySweep,
     download,
     analysisJobId,
@@ -124,7 +120,7 @@ export function ResultsPanel(props: ResultsPanelProps) {
             />
             <Metric
               title="신뢰도"
-              tip="입력 유효성, 보정 샘플, 경고 수 등을 종합한 결과 신뢰도입니다."
+              tip="입력 유효성, Estimator Suite 학습 샘플, 경고 수 등을 종합한 결과 신뢰도입니다."
               value={`${confidence.level} (${(confidence.score * 100).toFixed(0)}%)`}
             />
             <Metric
@@ -154,7 +150,6 @@ export function ResultsPanel(props: ResultsPanelProps) {
                   "roofline",
                   "energy",
                   "array",
-                  "calibration",
                   "iree",
                   "exports",
                   "graphs",
@@ -182,13 +177,6 @@ export function ResultsPanel(props: ResultsPanelProps) {
               <ArraySweep
                 rows={arraySweep}
                 comparisonCsv={result.artifacts.experimentComparisonCsv ?? ""}
-                download={download}
-              />
-            )}
-            {tab === "calibration" && (
-              <Artifact
-                name="calibration.md"
-                text={profileToMarkdown(calibration)}
                 download={download}
               />
             )}

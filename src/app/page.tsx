@@ -4,7 +4,6 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { conv2dToGemm } from "@/lib/conv";
 import { parseShapesCsv } from "@/lib/csv";
-import { parseMeasurementCsv, profileToMarkdown } from "@/lib/calibration";
 import {
   defaultArraySweep,
   defaultCandidates,
@@ -20,7 +19,6 @@ import { hardwarePresets, workloadPresets } from "@/lib/presets";
 import { assessConfidence, confidenceMarkdown } from "@/lib/confidence";
 import { totalCycleUncertainty } from "@/lib/uncertainty";
 import type {
-  CalibrationProfile,
   Conv2DShape,
   Dataflow,
   HardwareConfig,
@@ -41,7 +39,6 @@ type Tab =
   | "roofline"
   | "energy"
   | "array"
-  | "calibration"
   | "iree"
   | "exports"
   | "graphs"
@@ -56,7 +53,6 @@ type InputTab =
   | "scalesim"
   | "workload"
   | "conv"
-  | "calibration"
   | "tools";
 
 const tabLabels: Record<Tab, string> = {
@@ -65,7 +61,6 @@ const tabLabels: Record<Tab, string> = {
   roofline: "루프라인",
   energy: "에너지",
   array: "배열 비교",
-  calibration: "보정",
   iree: "IREE",
   exports: "내보내기",
   graphs: "그래프",
@@ -82,7 +77,6 @@ const inputTabLabels: Record<InputTab, string> = {
   scalesim: "SCALE-Sim",
   workload: "워크로드",
   conv: "Conv 변환",
-  calibration: "보정",
   tools: "도구/실행",
 };
 
@@ -93,7 +87,6 @@ const inputTabTips: Record<InputTab, string> = {
   scalesim: "SCALE-Sim의 SRAM/DRAM bandwidth, layout, bank 파라미터를 세부 설정합니다.",
   workload: "CSV, ONNX, JSON에서 GEMM workload shape를 가져옵니다.",
   conv: "Conv2D 파라미터를 im2col GEMM shape로 변환합니다.",
-  calibration: "실측 cycle CSV를 사용해 estimator 보정 계수를 적용합니다.",
   tools: "서버 추정, 프로젝트 저장, full-pipeline 실행, 상태 진단을 수행합니다.",
 };
 
@@ -103,7 +96,6 @@ const tabTips: Record<Tab, string> = {
   roofline: "연산 집약도 기준으로 compute-bound인지 memory-bound인지 판단합니다.",
   energy: "MAC, SRAM, DRAM 접근 기반의 간단한 에너지 추정을 표시합니다.",
   array: "여러 systolic array 크기를 비교하여 설계 후보를 고릅니다.",
-  calibration: "실측값 CSV로 적용한 보정 계수와 보정 보고서를 확인합니다.",
   iree: "생성된 MLIR과 IREE 실행 명령을 확인하고 다운로드합니다.",
   exports: "SCALE-Sim, LaTeX, SVG, manifest 등 산출물을 내려받습니다.",
   graphs: "타일 후보별 cycle/utilization 차이를 그래프로 비교합니다.",
@@ -180,9 +172,6 @@ export default function Home() {
   const [analysisJobId, setAnalysisJobId] = useState("");
   const [selectedJobIds, setSelectedJobIds] = useState<string[]>([]);
   const liveEventSource = useRef<EventSource | null>(null);
-  const [calibrationCsv, setCalibrationCsv] = useState(
-    "model,op_name,array,dataflow,predicted_cycles,measured_cycles\nvit_s,qkv,128x128,WS,1000000,1120000",
-  );
   const [estimatorSuiteCsv, setEstimatorSuiteCsv] = useState(
     "id,model,opName,arrayRows,arrayCols,sramKB,frequencyMHz,dataflow,dtypeBytes,m,n,k,tileM,tileN,tileK,estimatorCycles,measuredCycles\n" +
       "s0,demo,qkv,128,128,4096,700,WS,2,384,768,768,128,128,64,1000000,1120000",
@@ -217,17 +206,6 @@ export default function Home() {
   const [estimatorSuiteModels, setEstimatorSuiteModels] = useState<any[]>([]);
   const [selectedEstimatorPreset, setSelectedEstimatorPreset] = useState("quick-512");
   const [activeEstimatorSuite, setActiveEstimatorSuite] = useState<{ runId?: string; model?: EstimatorSuiteModel } | null>(null);
-  const [calibrationRow, setCalibrationRow] = useState({
-    model: "vit_s",
-    opName: "qkv",
-    array: "128x128",
-    dataflow: "WS",
-    predictedCycles: 1000000,
-    measuredCycles: 1120000,
-  });
-  const [calibration, setCalibration] = useState<
-    CalibrationProfile | undefined
-  >(undefined);
   const [conv, setConv] = useState<Conv2DShape>({
     id: "conv0",
     model: "cnn",
@@ -262,7 +240,6 @@ export default function Home() {
     candidates,
     objective,
     maxResultsPerOp: 24,
-    calibration,
     scaleSim,
   };
   const effectiveHardwarePresets = useMemo(
@@ -286,9 +263,9 @@ export default function Home() {
   const confidence = useMemo(
     () =>
       assessConfidence(result, {
-        calibrationSamples: calibration?.samples.length ?? 0,
+        calibrationSamples: result.estimatorSuite?.applied ? result.estimatorSuite.modelSamples ?? 0 : 0,
       }),
-    [JSON.stringify(result.summary), calibration?.samples.length],
+    [JSON.stringify(result.summary), result.estimatorSuite?.applied, result.estimatorSuite?.modelSamples],
   );
   const uncertainty = useMemo(
     () => totalCycleUncertainty(result),
@@ -926,33 +903,6 @@ export default function Home() {
       `ONNX에서 GEMM shape ${j.shapes.length}개를 불러왔습니다. ${j.warnings?.length ? "경고: " + j.warnings.join(" | ") : ""}`,
     );
   }
-  async function applyCalibrationCsv() {
-    try {
-      const profile = parseMeasurementCsv(
-        calibrationCsv,
-        hardware.frequencyMHz,
-      );
-      setCalibration(profile);
-      const r = await fetch("/api/calibration", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          text: calibrationCsv,
-          frequencyMHz: hardware.frequencyMHz,
-        }),
-      });
-      const j = await r.json();
-      setServerMessage(
-        `보정 적용 완료: ${profile.samples.length}개 샘플 기준 factor ${profile.globalCycleFactor.toFixed(3)}. 서버 응답: ${j.globalCycleFactor?.toFixed?.(3) ?? "ok"}`,
-      );
-    } catch (e: any) {
-      setServerMessage(e.message);
-    }
-  }
-  function clearCalibration() {
-    setCalibration(undefined);
-    setServerMessage("보정값을 해제했습니다.");
-  }
   function applyHardwarePreset(name: string) {
     const p = effectiveHardwarePresets.find((p) => p.name === name);
     if (p) { setHardware(p); setDataflowModes([p.dataflow]); }
@@ -1099,55 +1049,6 @@ export default function Home() {
     setServerMessage(`수동 GEMM shape 추가: ${manualShape.model}.${manualShape.opName}`);
   }
 
-  function appendCalibrationRow() {
-    const line = `${calibrationRow.model},${calibrationRow.opName},${calibrationRow.array},${calibrationRow.dataflow},${calibrationRow.predictedCycles},${calibrationRow.measuredCycles}`;
-    const header = "model,op_name,array,dataflow,predicted_cycles,measured_cycles";
-    setCalibrationCsv((cur) => {
-      const trimmed = cur.trim();
-      return trimmed ? `${trimmed}\n${line}` : `${header}\n${line}`;
-    });
-  }
-
-  async function appendCalibrationFromJob() {
-    const jobId = analysisJobId || latestCompletedJobId(jobsPayload);
-    if (!jobId) { setServerMessage("보정에 사용할 완료 작업을 먼저 선택하세요."); return; }
-    try {
-      const [resultRes, scaleRes] = await Promise.all([
-        fetch(`/api/jobs/${jobId}/artifact?path=${encodeURIComponent("result.json")}`, { cache: "no-store" }),
-        fetch(`/api/jobs/${jobId}/artifact?path=${encodeURIComponent("scalesim_summary.json")}`, { cache: "no-store" }),
-      ]);
-      if (!resultRes.ok || !scaleRes.ok) throw new Error("result.json 또는 scalesim_summary.json을 읽지 못했습니다.");
-      const resultJson = JSON.parse(await resultRes.text());
-      const scaleJson = JSON.parse(await scaleRes.text());
-      const response = resultJson?.payload?.response ?? resultJson?.response ?? resultJson;
-      const rows = Array.isArray(response?.results) ? response.results : [];
-      const layers = Array.isArray(scaleJson?.layers) ? scaleJson.layers : [];
-      const hw = response?.request?.hardware ?? hardware;
-      const array = `${hw.arrayRows ?? hardware.arrayRows}x${hw.arrayCols ?? hardware.arrayCols}`;
-      const dataflow = hw.dataflow ?? hardware.dataflow ?? "WS";
-      const header = "model,op_name,array,dataflow,predicted_cycles,measured_cycles";
-      const added: string[] = [];
-      for (let i = 0; i < Math.min(rows.length, layers.length); i++) {
-        const shape = rows[i]?.shape;
-        const predicted = Number(rows[i]?.best?.cycles ?? rows[i]?.cycles ?? 0);
-        const measured = Number(layers[i]?.cycles ?? 0);
-        if (!shape || predicted <= 0 || measured <= 0) continue;
-        added.push(`${shape.model},${shape.opName},${array},${dataflow},${Math.round(predicted)},${Math.round(measured)}`);
-      }
-      if (added.length === 0 && Number(response?.summary?.totalCycles) > 0 && Number(scaleJson?.totalCycles) > 0) {
-        added.push(`${hw.name ?? "job"},total,${array},${dataflow},${Math.round(response.summary.totalCycles)},${Math.round(scaleJson.totalCycles)}`);
-      }
-      if (added.length === 0) throw new Error("추가할 predicted/measured cycle pair가 없습니다.");
-      setCalibrationCsv((cur) => {
-        const trimmed = cur.trim();
-        return trimmed ? `${trimmed}\n${added.join("\n")}` : `${header}\n${added.join("\n")}`;
-      });
-      setServerMessage(`선택 작업에서 보정 sample ${added.length}개를 추가했습니다.`);
-    } catch (error: any) {
-      setServerMessage(`작업 결과 기반 보정 sample 추가 실패: ${error?.message ?? error}`);
-    }
-  }
-
   return (
     <main>
       <header className="topbar">
@@ -1223,15 +1124,6 @@ export default function Home() {
           conv={conv}
           setConv={setConv}
           addConv={addConv}
-          calibrationRow={calibrationRow}
-          setCalibrationRow={setCalibrationRow}
-          appendCalibrationRow={appendCalibrationRow}
-          appendCalibrationFromJob={appendCalibrationFromJob}
-          calibrationCsv={calibrationCsv}
-          setCalibrationCsv={setCalibrationCsv}
-          applyCalibrationCsv={applyCalibrationCsv}
-          clearCalibration={clearCalibration}
-          calibration={calibration}
           generateEstimatorSuiteDesign={generateEstimatorSuiteDesign}
           collectEstimatorSamplesFromJobsWeb={collectEstimatorSamplesFromJobsWeb}
           runEstimatorSuiteWeb={runEstimatorSuiteWeb}
@@ -1258,7 +1150,6 @@ export default function Home() {
           result={result}
           uncertainty={uncertainty}
           confidence={confidence}
-          calibration={calibration}
           arraySweep={arraySweep}
           download={download}
           analysisJobId={analysisJobId}
