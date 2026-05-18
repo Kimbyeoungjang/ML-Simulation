@@ -600,6 +600,34 @@ export function InputSettingsPanel(props: InputSettingsPanelProps) {
                   <MiniField label="dtypeBytes" tip="fp16/bf16=2, fp32=4, int8=1."><input type="number" value={manualShape.dtypeBytes} onChange={(e) => setManualShape({ ...manualShape, dtypeBytes: +e.target.value })} /></MiniField>
                 </div>
                 <ActionButton tip="위 M/N/K 값을 현재 workload 목록 뒤에 추가합니다." onClick={addManualShape}>수동 GEMM 추가</ActionButton>
+                <h4>현재 workload 목록</h4>
+                <div className="workload-list" title="현재 분석 대상 GEMM 작업 목록입니다. 잘못 추가한 항목은 여기서 바로 삭제할 수 있습니다.">
+                  {shapes.length === 0 && <p className="small warn">현재 workload가 비어 있습니다. 수동 GEMM, CSV, ONNX 또는 프리셋으로 작업을 추가하세요.</p>}
+                  {shapes.length > 0 && (
+                    <>
+                      <div className="row graph-actions">
+                        <ActionButton className="secondary danger-button" tip="현재 workload 목록을 모두 비웁니다." onClick={() => { if (window.confirm("현재 workload를 모두 삭제할까요?")) setShapes([]); }}>전체 삭제</ActionButton>
+                      </div>
+                      <table className="compact-table">
+                        <thead><tr><th>#</th><th>id</th><th>model.op</th><th>M</th><th>N</th><th>K</th><th>dtype</th><th>작업</th></tr></thead>
+                        <tbody>
+                          {shapes.map((shape: any, index: number) => (
+                            <tr key={`${shape.id || shape.model + shape.opName}-${index}`}>
+                              <td>{index + 1}</td>
+                              <td>{shape.id}</td>
+                              <td>{shape.model}.{shape.opName}</td>
+                              <td>{shape.m}</td>
+                              <td>{shape.n}</td>
+                              <td>{shape.k}</td>
+                              <td>{shape.dtypeBytes ?? 2}</td>
+                              <td><button className="secondary danger-button" onClick={() => setShapes((prev: any[]) => prev.filter((_, i) => i !== index))}>삭제</button></td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </>
+                  )}
+                </div>
                 <h4>CSV / ONNX 불러오기</h4>
                 <textarea
                   title="GEMM shape CSV를 입력합니다. 열: id, model, op_name, m, n, k, dtype_bytes"

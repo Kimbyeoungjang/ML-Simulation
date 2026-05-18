@@ -86,6 +86,10 @@ export interface TileCandidateResult {
 export interface OpSearchResult { shape: MatmulShape; best: TileCandidateResult; candidates: TileCandidateResult[]; pareto: TileCandidateResult[]; heatmap: HeatmapPoint[]; }
 export interface HeatmapPoint { tileM: number; tileN: number; tileK: number; cycles: number; utilization: number; sramBytes: number; paddingRatio: number; score: number; }
 export interface SearchResponse { request: SearchRequest; results: OpSearchResult[]; summary: SummaryMetrics; artifacts: GeneratedArtifacts; designAdvice: string[]; bottlenecks?: BottleneckAnalysis; roofline?: RooflinePoint[]; energy?: EnergySummary; }
+
+export interface CalibrationSample { predictedCycles: number; measuredCycles: number; weight?: number; model?: string; opName?: string; }
+export interface CalibrationProfile { factor: number; samples: CalibrationSample[]; createdAt?: string; note?: string; }
+
 export interface SummaryMetrics { totalCycles: number; totalTimeUs: number; meanUtilization: number; meanPaddingRatio: number; maxSramBytes: number; bottleneckOp: string; }
 export interface BottleneckAnalysis { totalCycles: number; topOps: Array<{ opName: string; model: string; cycles: number; percent: number; issue: string; }>; lowUtilizationOps: string[]; highPaddingOps: string[]; sramRiskOps: string[]; }
 export interface RooflinePoint { opName: string; model: string; arithmeticIntensity: number; achievedGops: number; computeRoofGops: number; memoryRoofGops: number; bound: "compute" | "memory"; }
