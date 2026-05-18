@@ -26,6 +26,7 @@ export interface JobRecord {
   estimatorSuite?: {
     mode?: "csv" | "dataset";
     csvText?: string;
+    csvPath?: string;
     files?: Array<{ name: string; text: string }>;
     filePaths?: Array<{ name: string; path: string }>;
     options?: Record<string, unknown>;

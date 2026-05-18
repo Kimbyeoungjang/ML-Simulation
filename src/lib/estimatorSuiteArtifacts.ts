@@ -181,6 +181,7 @@ export function buildEstimatorSuiteArtifacts(model: EstimatorSuiteModel, samples
     `| Analytical baseline | ${model.weights.analytical.toFixed(4)} |`,
     `| Tree residual | ${model.weights.tree.toFixed(4)} |`,
     `| Neural residual | ${model.weights.neural.toFixed(4)} |`,
+    `| Direct neural cycle | ${(model.weights.directNeural ?? 0).toFixed(4)} |`,
     ``,
     `## Holdout validation`,
     ``,

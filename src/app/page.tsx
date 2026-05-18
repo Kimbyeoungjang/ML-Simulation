@@ -154,6 +154,9 @@ export default function Home() {
   const [serverMessage, setServerMessage] = useState("");
   const [jobsJson, setJobsJson] = useState("");
   const [jobsPayload, setJobsPayload] = useState<any | null>(null);
+  const [jobsViewMode, setJobsViewMode] = useState<"dashboard" | "paged">("dashboard");
+  const [jobsPage, setJobsPage] = useState(1);
+  const [jobsPageSize, setJobsPageSize] = useState(100);
   const [statusJson, setStatusJson] = useState("");
   const [statusPayload, setStatusPayload] = useState<any | null>(null);
   const [serverReportMarkdown, setServerReportMarkdown] = useState("");
@@ -356,7 +359,7 @@ export default function Home() {
       window.clearInterval(timer);
       liveEventSource.current?.close();
     };
-  }, [autoRefreshEnabled]);
+  }, [autoRefreshEnabled, jobsViewMode, jobsPage, jobsPageSize]);
 
   useEffect(() => {
     setServerReportMarkdown("");
@@ -748,8 +751,18 @@ export default function Home() {
     options: { switchTab?: boolean; updateReport?: boolean } = {},
   ) {
     const { switchTab = true, updateReport = false } = options;
-    const r = await fetch(`/api/jobs?limit=80&dashboard=1&t=${Date.now()}`, { cache: "no-store" });
-    const payload = await r.json();
+    const params = jobsViewMode === "dashboard"
+      ? `limit=${jobsPageSize}&dashboard=1&external=0&t=${Date.now()}`
+      : `limit=${jobsPageSize}&page=${jobsPage}&external=0&t=${Date.now()}`;
+    let payload: any;
+    try {
+      const r = await fetch(`/api/jobs?${params}`, { cache: "no-store" });
+      if (!r.ok) throw new Error(`jobs api ${r.status}`);
+      payload = await r.json();
+    } catch (error: any) {
+      setJobsJson(JSON.stringify({ ok: false, error: error?.message ?? String(error), previous: jobsPayload?.counts ?? null }, null, 2));
+      return;
+    }
     setJobsPayload(payload);
     setJobsJson(JSON.stringify(payload, null, 2));
     if (updateReport && reportAutoFollow) {
@@ -856,11 +869,16 @@ export default function Home() {
     );
   }
   async function refreshStatus(switchTab = true) {
-    const r = await fetch("/api/system/status", { cache: "no-store" });
-    const payload = await r.json();
-    setStatusPayload(payload);
-    setStatusJson(JSON.stringify(payload, null, 2));
-    if (switchTab) setTab("status");
+    try {
+      const r = await fetch("/api/system/status", { cache: "no-store" });
+      if (!r.ok) throw new Error(`status api ${r.status}`);
+      const payload = await r.json();
+      setStatusPayload(payload);
+      setStatusJson(JSON.stringify(payload, null, 2));
+      if (switchTab) setTab("status");
+    } catch (error: any) {
+      setStatusJson(JSON.stringify({ ok: false, error: error?.message ?? String(error), previous: statusPayload?.summary ?? null }, null, 2));
+    }
   }
 
   async function updateParallelJobs(value: number) {
@@ -1246,6 +1264,12 @@ export default function Home() {
           analysisJobId={analysisJobId}
           setAnalysisJobId={setAnalysisJobId}
           jobsPayload={jobsPayload}
+          jobsViewMode={jobsViewMode}
+          setJobsViewMode={setJobsViewMode}
+          jobsPage={jobsPage}
+          setJobsPage={setJobsPage}
+          jobsPageSize={jobsPageSize}
+          setJobsPageSize={(n: number) => { setJobsPageSize(n); setJobsPage(1); }}
           serverReportMarkdown={serverReportMarkdown}
           serverReportJobId={serverReportJobId}
           fetchJobReport={(id: string) => fetchJobReport(id, { manual: true })}

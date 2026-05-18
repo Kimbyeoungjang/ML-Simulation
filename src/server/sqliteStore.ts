@@ -112,6 +112,24 @@ export function listDashboardJobsSqlite(limit = 80): { jobs: JobRecord[]; total:
   return { jobs: [...picked.values()], total, counts };
 }
 
+export function listJobsPageSqlite(limit = 80, page = 1, status?: string): { jobs: JobRecord[]; total: number; counts: Record<string, number> } | undefined {
+  const d = getSqliteDb();
+  if (!d) return undefined;
+  const safeLimit = Math.max(1, Math.min(Math.floor(limit), 1000));
+  const safePage = Math.max(1, Math.floor(page));
+  const counts = countJobsByStatusSqlite() ?? {};
+  const params: any[] = [];
+  let where = "";
+  if (status) {
+    where = " WHERE status=?";
+    params.push(status);
+  }
+  const total = Number(d.prepare(`SELECT COUNT(*) AS n FROM jobs${where}`).get(...params).n ?? 0);
+  const offset = (safePage - 1) * safeLimit;
+  const rows = d.prepare(`SELECT json FROM jobs${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`).all(...params, safeLimit, offset);
+  return { jobs: rows.map((r: any) => JSON.parse(r.json)), total, counts };
+}
+
 export function mirrorJob(job: JobRecord) { saveJobSqlite(job); }
 
 export function mirrorLog(jobId: string, message: string, createdAt: string) {

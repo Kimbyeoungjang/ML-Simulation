@@ -88,7 +88,11 @@ export async function POST(req: Request) {
         }
         job.estimatorSuite = { mode: "dataset", filePaths, options: body.options ?? {}, dedupe: body.dedupe !== false, activate: body.activate !== false };
       } else {
-        job.estimatorSuite = { mode: "csv", csvText: String(body.csvText ?? body.csv ?? ""), options: body.options ?? {}, activate: body.activate !== false };
+        const csvText = String(body.csvText ?? body.csv ?? "");
+        const rel = "estimator-suite-input.csv";
+        await writeFile(path.join(jobDir(job.id), rel), csvText, "utf8");
+        job.estimatorSuite = { mode: "csv", csvPath: rel, options: body.options ?? {}, activate: body.activate !== false };
+        job.artifacts = [...new Set([...(job.artifacts ?? []), rel])];
       }
       await saveJob(job);
       return NextResponse.json({ ok: true, action, job, runId: job.id, message: "Estimator Suite 학습 job을 큐에 등록했습니다." });

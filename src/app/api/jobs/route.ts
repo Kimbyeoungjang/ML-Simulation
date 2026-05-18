@@ -10,7 +10,10 @@ export async function GET(req: Request) {
   const status = url.searchParams.get("status") as any;
   const since = url.searchParams.get("since") ?? undefined;
   const dashboard = url.searchParams.get("dashboard") === "1" || url.searchParams.get("view") === "dashboard";
-  return NextResponse.json({ ...(await listJobsPaged({ limit, cursor, status, since, dashboard })), externalTools: await getExternalToolsStatus() });
+  const page = url.searchParams.get("page") ? Number(url.searchParams.get("page")) : undefined;
+  const includeExternal = url.searchParams.get("external") === "1";
+  const payload = await listJobsPaged({ limit, cursor, status, since, dashboard, page });
+  return NextResponse.json({ ...payload, externalTools: includeExternal ? await getExternalToolsStatus() : undefined });
 }
 
 export async function POST(req: Request) {

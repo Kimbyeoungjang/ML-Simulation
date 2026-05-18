@@ -351,3 +351,17 @@ main { min-width: 0; }
 .graph-summary-cards .metric{min-width:0}
 @media(max-width:900px){.dataflow-grid{grid-template-columns:1fr}.dataflow-card-compact{grid-template-columns:20px 40px minmax(0,1fr)}}
 .external-log-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end}.external-log-actions .terminal-check{margin:0;display:flex;align-items:center;gap:5px}.external-log-actions input{width:auto}
+.queue-pagination {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 8px 0 10px;
+}
+.queue-badges select {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 6px 8px;
+  background: var(--panel);
+  color: var(--text);
+}

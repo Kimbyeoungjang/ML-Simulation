@@ -50,6 +50,12 @@ export function ResultsPanel(props: ResultsPanelProps) {
     analysisJobId,
     setAnalysisJobId,
     jobsPayload,
+    jobsViewMode,
+    setJobsViewMode,
+    jobsPage,
+    setJobsPage,
+    jobsPageSize,
+    setJobsPageSize,
     serverReportMarkdown,
     serverReportJobId,
     fetchJobReport,
@@ -250,6 +256,12 @@ export function ResultsPanel(props: ResultsPanelProps) {
                 autoRefreshEnabled={autoRefreshEnabled}
                 setAutoRefreshEnabled={setAutoRefreshEnabled}
                 jobsPayload={jobsPayload}
+                jobsViewMode={jobsViewMode}
+                setJobsViewMode={setJobsViewMode}
+                jobsPage={jobsPage}
+                setJobsPage={setJobsPage}
+                jobsPageSize={jobsPageSize}
+                setJobsPageSize={setJobsPageSize}
                 autoAttachNewJob={autoAttachNewJob}
                 setAutoAttachNewJob={setAutoAttachNewJob}
                 onWatchJob={startLiveJob}

@@ -58,7 +58,7 @@ describe("estimator suite", () => {
     expect(model.validationSuite.length).toBeGreaterThan(0);
     expect(model.metadata.samples).toBe(180);
     expect(model.metadata.trainSamples).toBe(100);
-    expect(model.weights.analytical + model.weights.tree + model.weights.neural).toBeCloseTo(1, 6);
+    expect(model.weights.analytical + model.weights.tree + model.weights.neural + (model.weights.directNeural ?? 0)).toBeCloseTo(1, 6);
     expect(["analytical", "tree-residual", "neural-residual", "ensemble"]).toContain(model.recommended);
     expect(predictEstimatorSuiteCycles(model, samples[0])).toBeGreaterThan(0);
     const metrics = evaluateEstimatorSuite(model, samples.slice(0, 40));

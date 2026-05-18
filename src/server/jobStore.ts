@@ -8,13 +8,23 @@ import type { SearchRequest } from "@/types/domain";
 import { hashObject } from "@/lib/hash";
 import { ensureJobRoot, getJobRoot, jobDir } from "./workspace";
 import { nowIso, stableId } from "@/lib/determinism";
-import { countJobsSqlite, deleteJobSqlite, listDashboardJobsSqlite, listJobsSqlite, markStageSqlite, mirrorLog, readJobSqlite, saveJobSqlite, selectQueuedJobsSqlite, sqlitePrimary } from "./sqliteStore";
+import { countJobsSqlite, deleteJobSqlite, listDashboardJobsSqlite, listJobsPageSqlite, listJobsSqlite, markStageSqlite, mirrorLog, readJobSqlite, saveJobSqlite, selectQueuedJobsSqlite, sqlitePrimary } from "./sqliteStore";
 import { atomicWriteFile } from "./atomic";
 import { appendJobEvent } from "./eventsLog";
 import { assertTransition, isTerminalStatus } from "@/lib/stateMachine";
 
 const DEFAULT_TIMEOUT_MS = Number(process.env.TILEFORGE_JOB_TIMEOUT_MS ?? 10 * 60 * 1000);
 const DEFAULT_MAX_ATTEMPTS = Number(process.env.TILEFORGE_JOB_MAX_ATTEMPTS ?? 1);
+const MAX_JOB_LOG_LINES = Math.max(50, Math.min(Number(process.env.TILEFORGE_MAX_JOB_LOG_LINES ?? 300), 2000));
+function trimJobForStorage(job: JobRecord) {
+  if (Array.isArray(job.logs) && job.logs.length > MAX_JOB_LOG_LINES) {
+    job.logs = job.logs.slice(-MAX_JOB_LOG_LINES);
+  }
+  if (Array.isArray(job.stageHistory) && job.stageHistory.length > 300) {
+    job.stageHistory = job.stageHistory.slice(-300);
+  }
+}
+
 export function maxParallelJobs(): number {
   // Read .env on every check so the UI can change TILEFORGE_MAX_PARALLEL_JOBS
   // without restarting the long-running worker process. the .env value wins so changes saved from the UI are picked up
@@ -56,7 +66,7 @@ function uniqueJobNameFromSet(base: string, used: Set<string>, indexHint = 0): s
 }
 
 async function uniqueJobName(base: string): Promise<string> {
-  const jobs = await listJobs().catch(() => []);
+  const jobs = await listJobsPaged({ limit: 1000 }).then(r => r.jobs).catch(() => []);
   const used = new Set(jobs.map(j => j.name).filter(Boolean) as string[]);
   return uniqueJobNameFromSet(base, used);
 }
@@ -83,7 +93,7 @@ export async function createJobsBulk(inputs: BulkJobInput[]): Promise<JobRecord[
   await ensureJobRoot();
   if (inputs.length === 0) return [];
   await enforceJobQuota(inputs.length);
-  const existing = await listJobs().catch(() => []);
+  const existing = await listJobsPaged({ limit: 1000 }).then(r => r.jobs).catch(() => []);
   const usedNames = new Set(existing.map(j => j.name).filter(Boolean) as string[]);
   const now = nowIso();
   const jobs: JobRecord[] = inputs.map((input, index) => {
@@ -124,6 +134,7 @@ export async function saveJob(job: JobRecord) {
   const id = job.id;
   const previous = jobSaveQueues.get(id) ?? Promise.resolve();
   const next = previous.catch(() => undefined).then(async () => {
+    trimJobForStorage(job);
     await mkdir(jobDir(id), { recursive: true });
     await atomicWriteFile(path.join(jobDir(id), "job.json"), JSON.stringify(job, null, 2));
     try {
@@ -246,6 +257,7 @@ function appendLogSync(job: JobRecord, log: string) {
   const at = nowIso();
   const line = `[${at}] ${log}`;
   job.logs.push(line);
+  if (job.logs.length > MAX_JOB_LOG_LINES) job.logs.splice(0, job.logs.length - MAX_JOB_LOG_LINES);
   mirrorLog(job.id, line, at);
   void appendJobEvent(job.id, { level: log.startsWith("WARNING") ? "warn" : "info", stage: job.stage, message: log });
 }
@@ -255,6 +267,7 @@ function saveJobSnapshotSync(job: JobRecord) {
   job.updatedAt = nowIso();
   const dir = jobDir(job.id);
   mkdirSync(dir, { recursive: true });
+  trimJobForStorage(job);
   const tmp = path.join(dir, "job.json.tmp");
   writeFileSync(tmp, JSON.stringify(job, null, 2), "utf8");
   renameSync(tmp, path.join(dir, "job.json"));
@@ -372,7 +385,7 @@ function sanitizeJobForDisplay(job: JobRecord): JobRecord {
   };
 }
 
-export interface ListJobsOptions { limit?: number; cursor?: string; status?: JobStatus; since?: string; dashboard?: boolean; }
+export interface ListJobsOptions { limit?: number; cursor?: string; status?: JobStatus; since?: string; dashboard?: boolean; page?: number; }
 
 function jobCounts(jobs: JobRecord[]): Record<string, number> {
   const counts: Record<string, number> = {};
@@ -403,11 +416,16 @@ export function dashboardJobs(all: JobRecord[], limit: number): JobRecord[] {
   return [...picked.values()];
 }
 
-export async function listJobsPaged(options: ListJobsOptions = {}): Promise<{ jobs: JobRecord[]; nextCursor?: string; total: number; counts: Record<string, number>; view?: string }> {
-  const limit = Math.max(1, Math.min(options.limit ?? 50, 500));
+export async function listJobsPaged(options: ListJobsOptions = {}): Promise<{ jobs: JobRecord[]; nextCursor?: string; total: number; counts: Record<string, number>; view?: string; page?: number; pageSize?: number; totalPages?: number }> {
+  const limit = Math.max(1, Math.min(options.limit ?? 50, 1000));
+  const page = Math.max(1, Math.floor(options.page ?? 1));
   if (options.dashboard && !options.cursor && !options.status && !options.since && sqlitePrimary()) {
     const dash = listDashboardJobsSqlite(limit);
-    if (dash) return { jobs: dash.jobs.map(sanitizeJobForDisplay), total: dash.total, counts: dash.counts, view: "dashboard" };
+    if (dash) return { jobs: dash.jobs.map(sanitizeJobForDisplay), total: dash.total, counts: dash.counts, view: "dashboard", page: 1, pageSize: limit, totalPages: Math.max(1, Math.ceil(dash.total / limit)) };
+  }
+  if (!options.dashboard && !options.cursor && !options.since && sqlitePrimary()) {
+    const paged = listJobsPageSqlite(limit, page, options.status);
+    if (paged) return { jobs: paged.jobs.map(sanitizeJobForDisplay), total: paged.total, counts: paged.counts, page, pageSize: limit, totalPages: Math.max(1, Math.ceil(paged.total / limit)) };
   }
   const all = (await listJobs()).filter(job => {
     if (options.status && job.status !== options.status) return false;
@@ -416,12 +434,12 @@ export async function listJobsPaged(options: ListJobsOptions = {}): Promise<{ jo
   });
   const counts = jobCounts(all);
   if (options.dashboard && !options.cursor && !options.status) {
-    return { jobs: dashboardJobs(all, limit).map(sanitizeJobForDisplay), total: all.length, counts, view: "dashboard" };
+    return { jobs: dashboardJobs(all, limit).map(sanitizeJobForDisplay), total: all.length, counts, view: "dashboard", page: 1, pageSize: limit, totalPages: Math.max(1, Math.ceil(all.length / limit)) };
   }
-  const start = options.cursor ? Math.max(0, all.findIndex(j => j.id === options.cursor) + 1) : 0;
+  const start = options.cursor ? Math.max(0, all.findIndex(j => j.id === options.cursor) + 1) : (page - 1) * limit;
   const jobs = all.slice(start, start + limit).map(sanitizeJobForDisplay);
   const nextCursor = start + limit < all.length ? jobs.at(-1)?.id : undefined;
-  return { jobs, nextCursor, total: all.length, counts };
+  return { jobs, nextCursor, total: all.length, counts, page, pageSize: limit, totalPages: Math.max(1, Math.ceil(all.length / limit)) };
 }
 
 export async function deleteJob(id: string): Promise<void> {

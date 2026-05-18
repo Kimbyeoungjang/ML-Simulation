@@ -294,6 +294,10 @@ async function runEstimatorSuiteTrainingJob(job: JobRecord) {
   await throwIfCancelled(job);
 
   let csvText = String(payload.csvText ?? "");
+  if (!csvText && payload.csvPath) {
+    const csvAbs = path.resolve(localDir, String(payload.csvPath));
+    if (csvAbs.startsWith(localDir)) csvText = await readFile(csvAbs, "utf8");
+  }
   let samples = parseEstimatorSamplesCsv(csvText);
   let datasetSummaryMarkdown = "";
   if (payload.mode === "dataset" || Array.isArray(payload.files) || Array.isArray(payload.filePaths)) {
@@ -321,7 +325,7 @@ async function runEstimatorSuiteTrainingJob(job: JobRecord) {
     job.artifacts = [...new Set([...(job.artifacts ?? []), "estimator-suite-dataset.csv", "estimator-suite-dataset-summary.md"])];
   } else {
     await writeFile(path.join(runDir, "estimator-suite-input.csv"), csvText, "utf8");
-    await writeFile(path.join(localDir, "estimator-suite-input.csv"), csvText, "utf8");
+    if (!payload.csvPath) await writeFile(path.join(localDir, "estimator-suite-input.csv"), csvText, "utf8");
     job.artifacts = [...new Set([...(job.artifacts ?? []), "estimator-suite-input.csv"])];
   }
   await saveJob(job);
@@ -374,7 +378,7 @@ async function runEstimatorSuiteTrainingJob(job: JobRecord) {
     addLogImmediate(job, `활성 Estimator Suite로 적용 완료: ${job.id}`);
   }
   await saveJob(job);
-  updateProgressImmediate(job, "done", 100, `Estimator Suite 학습 완료: samples=${model.metadata.samples}, train=${model.metadata.trainSamples}, recommended=${model.recommended}, weights a=${model.weights.analytical.toFixed(3)}, tree=${model.weights.tree.toFixed(3)}, neural=${model.weights.neural.toFixed(3)}`);
+  updateProgressImmediate(job, "done", 100, `Estimator Suite 학습 완료: samples=${model.metadata.samples}, train=${model.metadata.trainSamples}, recommended=${model.recommended}, weights a=${model.weights.analytical.toFixed(3)}, tree=${model.weights.tree.toFixed(3)}, residual-neural=${model.weights.neural.toFixed(3)}, direct-neural=${(model.weights.directNeural ?? 0).toFixed(3)}`);
   await updateJobStatus(job, "succeeded", "Estimator Suite 학습 job 완료");
 }
 

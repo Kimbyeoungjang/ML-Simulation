@@ -20,6 +20,12 @@ export function Jobs({
   jobsPayload,
   autoAttachNewJob,
   setAutoAttachNewJob,
+  jobsViewMode,
+  setJobsViewMode,
+  jobsPage,
+  setJobsPage,
+  jobsPageSize,
+  setJobsPageSize,
   onWatchJob,
   onDeleteJob,
   selectedJobIds,
@@ -42,6 +48,12 @@ export function Jobs({
   jobsPayload: any | null;
   autoAttachNewJob: boolean;
   setAutoAttachNewJob: (value: boolean) => void;
+  jobsViewMode: "dashboard" | "paged";
+  setJobsViewMode: (value: "dashboard" | "paged") => void;
+  jobsPage: number;
+  setJobsPage: (value: number) => void;
+  jobsPageSize: number;
+  setJobsPageSize: (value: number) => void;
   onWatchJob: (id: string) => void;
   onDeleteJob: (id: string) => void;
   selectedJobIds: string[];
@@ -88,7 +100,7 @@ export function Jobs({
         작업 목록은 자동으로 갱신됩니다. 각 작업은 stage 이력, 진행률, 로그,
         artifact, 취소, 삭제, SSE 실시간 업데이트를 포함합니다.
       </p>
-      <QueueSummary payload={jobsPayload} activeJobId={liveJobId} onWatchJob={onWatchJob} onDeleteJob={onDeleteJob} onCancelJob={onCancelJob} selectedJobIds={selectedJobIds} setSelectedJobIds={setSelectedJobIds} onDeleteSelected={onDeleteSelected} onCancelSelected={onCancelSelected} />
+      <QueueSummary payload={jobsPayload} activeJobId={liveJobId} jobsViewMode={jobsViewMode} setJobsViewMode={setJobsViewMode} jobsPage={jobsPage} setJobsPage={setJobsPage} jobsPageSize={jobsPageSize} setJobsPageSize={setJobsPageSize} onWatchJob={onWatchJob} onDeleteJob={onDeleteJob} onCancelJob={onCancelJob} selectedJobIds={selectedJobIds} setSelectedJobIds={setSelectedJobIds} onDeleteSelected={onDeleteSelected} onCancelSelected={onCancelSelected} />
       <LiveTerminal
         jobId={liveJobId}
         job={liveJob}
@@ -118,6 +130,12 @@ export function Jobs({
 export function QueueSummary({
   payload,
   activeJobId,
+  jobsViewMode,
+  setJobsViewMode,
+  jobsPage,
+  setJobsPage,
+  jobsPageSize,
+  setJobsPageSize,
   onWatchJob,
   onDeleteJob,
   selectedJobIds,
@@ -128,6 +146,12 @@ export function QueueSummary({
 }: {
   payload: any | null;
   activeJobId: string;
+  jobsViewMode: "dashboard" | "paged";
+  setJobsViewMode: (value: "dashboard" | "paged") => void;
+  jobsPage: number;
+  setJobsPage: (value: number) => void;
+  jobsPageSize: number;
+  setJobsPageSize: (value: number) => void;
   onWatchJob: (id: string) => void;
   onDeleteJob: (id: string) => void;
   selectedJobIds: string[];
@@ -161,8 +185,31 @@ export function QueueSummary({
           <button className="secondary" onClick={toggleAll} disabled={visible.length === 0}>{allVisibleSelected ? "전체 해제" : "표시 작업 전체 선택"}</button>
           <button className="secondary" onClick={() => onCancelSelected(selectedJobIds)} disabled={selectedJobIds.length === 0}>선택 중지</button>
           <button className="secondary danger-button" onClick={() => onDeleteSelected(selectedJobIds)} disabled={selectedJobIds.length === 0}>선택 삭제</button>
+          <select value={jobsViewMode} onChange={(e) => { setJobsViewMode(e.target.value as "dashboard" | "paged"); setJobsPage(1); }} title="대량 작업 큐 표시 방식">
+            <option value="dashboard">실시간 요약</option>
+            <option value="paged">페이지 목록</option>
+          </select>
+          <select value={jobsPageSize} onChange={(e) => setJobsPageSize(Number(e.target.value))} title="한 페이지에 표시할 작업 수">
+            {[50, 100, 200, 500, 1000].map((n) => <option key={n} value={n}>{n}개</option>)}
+          </select>
+
         </div>
       </div>
+
+      {jobsViewMode === "paged" && (
+        <div className="queue-pagination" title="대량 큐 페이지 이동">
+          <button className="secondary" onClick={() => setJobsPage(Math.max(1, jobsPage - 1))} disabled={jobsPage <= 1}>이전</button>
+          {Array.from({ length: Math.min(7, Math.max(1, Number(payload?.totalPages ?? 1))) }, (_, i) => {
+            const totalPages = Math.max(1, Number(payload?.totalPages ?? 1));
+            const start = Math.max(1, Math.min(jobsPage - 3, totalPages - 6));
+            const page = start + i;
+            if (page > totalPages) return null;
+            return <button key={page} className={page === jobsPage ? "" : "secondary"} onClick={() => setJobsPage(page)}>{page}</button>;
+          })}
+          <button className="secondary" onClick={() => setJobsPage(Math.min(Number(payload?.totalPages ?? jobsPage + 1), jobsPage + 1))} disabled={jobsPage >= Number(payload?.totalPages ?? 1)}>다음</button>
+          <span className="small">page {payload?.page ?? jobsPage} / {payload?.totalPages ?? 1}</span>
+        </div>
+      )}
       {visible.length === 0 ? (
         <p className="small">현재 표시할 작업이 없습니다. full-pipeline을 실행하면 여기에 queued/running 상태가 나타납니다.</p>
       ) : (
