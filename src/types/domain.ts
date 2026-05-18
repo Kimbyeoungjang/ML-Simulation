@@ -82,14 +82,6 @@ export interface CalibrationProfile {
   byArray?: Record<string, number>;
   byDataflow?: Partial<Record<Dataflow, number>>;
   byOp?: Record<string, number>;
-  /** Robust residual buckets learned from SCALE-Sim/measurement samples. */
-  residual?: {
-    byTileK?: Record<string, number>;
-    byTileArea?: Record<string, number>;
-    bySramPressure?: Record<string, number>;
-    byPadding?: Record<string, number>;
-    byMemoryBound?: Record<string, number>;
-  };
   samples: CalibrationSample[];
 }
 export interface CalibrationSample {
@@ -101,12 +93,6 @@ export interface CalibrationSample {
   tileM?: number;
   tileN?: number;
   tileK?: number;
-  tileCount?: number;
-  paddingRatio?: number;
-  utilization?: number;
-  sramBytes?: number;
-  sramPressure?: number;
-  memoryBoundRatio?: number;
   predictedCycles: number;
   measuredCycles?: number;
   measuredRuntimeUs?: number;
@@ -117,13 +103,10 @@ export interface TileCandidateResult {
   shapeId: string; model: string; opName: string;
   tileM: number; tileN: number; tileK: number;
   cycles: number; rawCycles?: number; calibrationFactor?: number; timeUs: number; utilization: number; paddingRatio: number; sramBytes: number;
-  ifmapBytes?: number; filterBytes?: number; ofmapBytes?: number;
-  predictedSramAccessBytes?: number; predictedDramAccessBytes?: number;
-  sramPressure?: number; memoryBoundRatio?: number;
   boundaryPenalty: number; score: number; isPareto: boolean; warnings: string[]; explanation: string;
 }
 export interface OpSearchResult { shape: MatmulShape; best: TileCandidateResult; candidates: TileCandidateResult[]; pareto: TileCandidateResult[]; heatmap: HeatmapPoint[]; }
-export interface HeatmapPoint { tileM: number; tileN: number; tileK: number; cycles: number; utilization: number; sramBytes: number; paddingRatio: number; score: number; predictedSramAccessBytes?: number; predictedDramAccessBytes?: number; sramPressure?: number; memoryBoundRatio?: number; }
+export interface HeatmapPoint { tileM: number; tileN: number; tileK: number; cycles: number; utilization: number; sramBytes: number; paddingRatio: number; score: number; }
 export interface SearchResponse { request: SearchRequest; results: OpSearchResult[]; summary: SummaryMetrics; artifacts: GeneratedArtifacts; designAdvice: string[]; bottlenecks?: BottleneckAnalysis; roofline?: RooflinePoint[]; energy?: EnergySummary; }
 export interface SummaryMetrics { totalCycles: number; totalTimeUs: number; meanUtilization: number; meanPaddingRatio: number; maxSramBytes: number; bottleneckOp: string; }
 export interface BottleneckAnalysis { totalCycles: number; topOps: Array<{ opName: string; model: string; cycles: number; percent: number; issue: string; }>; lowUtilizationOps: string[]; highPaddingOps: string[]; sramRiskOps: string[]; }

@@ -1,4 +1,5 @@
 import path from "node:path";
+import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { runExternalCommand } from "@/server/externalCommand";
 import { commandLabel, ireeCompileCommandCandidates, scaleSimCommandCandidates, withPrependedPythonPath } from "@/server/externalToolCandidates";
@@ -32,6 +33,23 @@ async function firstWorkingCommand(
   return { failures };
 }
 
+function quoteCommandToken(token: string): string {
+  return /\s/.test(token) ? `"${token.replace(/"/g, '\\"')}"` : token;
+}
+
+function cwdIndependentConfiguredCommand(command: string | undefined): string | undefined {
+  if (!command?.trim()) return undefined;
+  const tokens = command.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g)?.map(t => t.replace(/^(['"])(.*)\1$/, "$2")) ?? [];
+  if (!tokens.length) return command;
+  const rewritten = tokens.map(token => {
+    if (path.isAbsolute(token)) return token;
+    if (!/[\/]/.test(token)) return token;
+    const candidate = path.resolve(token);
+    return existsSync(candidate) ? candidate : token;
+  });
+  return rewritten.map(quoteCommandToken).join(" ");
+}
+
 function unique(values: string[]): string[] {
   return Array.from(new Set(values.filter(v => v.trim()).map(v => v.trim())));
 }
@@ -46,7 +64,7 @@ async function main() {
   // catches that and replaces it with a cwd-independent module command or an
   // absolute source-script command.
   const scaleProbeCwd = path.resolve(".tileforge", "env-probe", "scalesim");
-  const configuredScale = process.env.TILEFORGE_SCALE_SIM_CMD?.trim();
+  const configuredScale = cwdIndependentConfiguredCommand(process.env.TILEFORGE_SCALE_SIM_CMD?.trim());
   const scaleCommands = unique([
     ...(configuredScale ? [configuredScale] : []),
     ...scaleSimCommandCandidates(undefined, { ignoreEnv: true })
@@ -59,7 +77,7 @@ async function main() {
   );
   if (scale.command && scale.command !== configuredScale) values.TILEFORGE_SCALE_SIM_CMD = scale.command;
 
-  const configuredIree = process.env.TILEFORGE_IREE_COMPILE_CMD?.trim();
+  const configuredIree = cwdIndependentConfiguredCommand(process.env.TILEFORGE_IREE_COMPILE_CMD?.trim());
   const ireeCommands = unique([
     ...(configuredIree ? [configuredIree] : []),
     ...ireeCompileCommandCandidates(undefined, { ignoreEnv: true })

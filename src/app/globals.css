@@ -350,28 +350,3 @@ main { min-width: 0; }
 .calibration-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0 10px}
 .graph-summary-cards .metric{min-width:0}
 @media(max-width:900px){.dataflow-grid{grid-template-columns:1fr}.dataflow-card-compact{grid-template-columns:20px 40px minmax(0,1fr)}}
-
-/* Keep compact dataflow cards readable in the left hardware tab. */
-.dataflow-card-compact{
-  display:grid;
-  grid-template-columns:20px minmax(0,1fr);
-  grid-template-areas:"check title" "code code";
-  align-items:start;
-  gap:5px 9px;
-  min-height:64px;
-  padding:10px 12px;
-  overflow:visible;
-}
-.dataflow-card-compact input{grid-area:check;margin-top:2px;width:16px;min-width:16px;height:16px}
-.dataflow-card-compact .dataflow-title{grid-area:title;font-size:12px;line-height:1.25;white-space:normal;overflow:visible;text-overflow:clip;color:#9fb0d0}
-.dataflow-card-compact .dataflow-code{grid-area:code;display:block;margin-left:29px;font-weight:900;font-size:15px;line-height:1.2;white-space:nowrap;color:#eaf0ff}
-@media(max-width:900px){.dataflow-card-compact{grid-template-columns:20px minmax(0,1fr)}}
-
-
-/* Dataflow selector is intentionally placed below bytes-per-element to prevent clipped WS/OS/IS labels. */
-.dataflow-below-bytes{margin:8px 0 14px}
-.dataflow-grid-below{grid-template-columns:repeat(3,minmax(120px,1fr));gap:10px}
-.dataflow-card-compact{min-height:72px;overflow:visible;align-items:center}
-.dataflow-card-compact .dataflow-code{display:block;flex:0 0 auto;font-size:18px;font-weight:900;line-height:1.15;color:#eaf0ff;white-space:nowrap;overflow:visible;text-overflow:clip}
-.dataflow-card-compact .dataflow-title{display:block;min-width:0;font-size:12px;line-height:1.2;color:#9fb0d0;white-space:normal;overflow:visible;text-overflow:clip}
-@media(max-width:760px){.dataflow-grid-below{grid-template-columns:1fr}}
