@@ -2,7 +2,6 @@ import type { ArraySweepRequest, ArraySweepResult, HardwareConfig, HeatmapPoint,
 import { ceilDiv, clamp, mean } from "./math";
 import { generateArtifacts } from "./mlir";
 import { generateReportMarkdown } from "./report";
-import { applyCalibration, calibrationFactor } from "./calibration";
 import { analyzeBottlenecks } from "./bottleneck";
 import { computeRoofline } from "./roofline";
 import { computeEnergy } from "./energy";
@@ -14,10 +13,10 @@ import { assertSearchResponseInvariant, assertTileCandidateInvariant, runInvaria
 export function estimateAll(req: SearchRequest, options: { includeArtifacts?: boolean } = {}): SearchResponse {
   const cache = new Map<string, OpSearchResult>();
   const results = req.shapes.map(shape => {
-    const key = hashObject({ shape: { m: shape.m, n: shape.n, k: shape.k, dtypeBytes: shape.dtypeBytes }, hardware: req.hardware, candidates: req.candidates, objective: req.objective, max: req.maxResultsPerOp ?? 32, calibration: req.calibration, scaleSim: req.scaleSim });
+    const key = hashObject({ shape: { m: shape.m, n: shape.n, k: shape.k, dtypeBytes: shape.dtypeBytes }, hardware: req.hardware, candidates: req.candidates, objective: req.objective, max: req.maxResultsPerOp ?? 32, scaleSim: req.scaleSim });
     const hit = cache.get(key);
     if (hit) return { ...hit, shape, best: { ...hit.best, shapeId: shape.id, model: shape.model, opName: shape.opName }, candidates: hit.candidates.map(c => ({ ...c, shapeId: shape.id, model: shape.model, opName: shape.opName })) };
-    const out = estimateForShape(req.hardware, shape, req.candidates, req.objective, req.maxResultsPerOp ?? 32, req.calibration, req.scaleSim);
+    const out = estimateForShape(req.hardware, shape, req.candidates, req.objective, req.maxResultsPerOp ?? 32, req.scaleSim);
     cache.set(key, out);
     return out;
   });
@@ -59,8 +58,7 @@ function emptyArtifacts(): SearchResponse["artifacts"] {
   };
 }
 
-export function estimateForShape(hw: HardwareConfig, shape: MatmulShape, cand: TileCandidates, objective: Objective, maxResults: number, calibration = undefined as SearchRequest["calibration"], scaleSim?: ScaleSimOverrides): OpSearchResult {
-  const factor = calibrationFactor(calibration, hw, shape);
+export function estimateForShape(hw: HardwareConfig, shape: MatmulShape, cand: TileCandidates, objective: Objective, maxResults: number, scaleSim?: ScaleSimOverrides): OpSearchResult {
   const maxKeep = Math.max(1, maxResults);
   const top = new TopK<TileCandidateResult>(maxKeep, compareCandidates);
   const paretoPool = new TopK<TileCandidateResult>(Math.max(maxKeep * 4, 64), compareCandidates);
@@ -79,7 +77,7 @@ export function estimateForShape(hw: HardwareConfig, shape: MatmulShape, cand: T
 
   for (const kept of pruned.kept) {
     const tm = kept.tileM, tn = kept.tileN, tk = kept.tileK;
-    const estimated = applyCalibration(estimateTile(hw, shape, tm, tn, tk, objective, scaleSim), factor);
+    const estimated = estimateTile(hw, shape, tm, tn, tk, objective, scaleSim);
     runInvariant("tile candidate", () => assertTileCandidateInvariant(estimated));
     top.push(estimated);
     paretoPool.push(estimated);

@@ -2,7 +2,7 @@ import os from "node:os";
 import { Worker } from "node:worker_threads";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
-import type { HardwareConfig, MatmulShape, Objective, OpSearchResult, SearchRequest, TileCandidates } from "@/types/domain";
+import type { HardwareConfig, MatmulShape, Objective, OpSearchResult, TileCandidates } from "@/types/domain";
 import { estimateForShape } from "@/lib/estimator";
 
 export interface EstimateTask {
@@ -15,7 +15,6 @@ export interface ThreadPoolOptions {
   candidates: TileCandidates;
   objective: Objective;
   maxResultsPerOp: number;
-  calibration?: SearchRequest["calibration"];
   workers?: number;
 }
 
@@ -60,7 +59,6 @@ export async function estimateClustersWithWorkerThreads(tasks: EstimateTask[], o
             candidates: opts.candidates,
             objective: opts.objective,
             maxResultsPerOp: opts.maxResultsPerOp,
-            calibration: opts.calibration
           },
           execArgv: ["--import", "tsx", "-r", "tsconfig-paths/register"]
         });
@@ -95,6 +93,6 @@ export async function estimateClustersWithWorkerThreads(tasks: EstimateTask[], o
 
 export function estimateClustersSynchronously(tasks: EstimateTask[], opts: ThreadPoolOptions): Map<number, OpSearchResult> {
   const out = new Map<number, OpSearchResult>();
-  for (const task of tasks) out.set(task.taskId, estimateForShape(opts.hardware, task.shape, opts.candidates, opts.objective, opts.maxResultsPerOp, opts.calibration));
+  for (const task of tasks) out.set(task.taskId, estimateForShape(opts.hardware, task.shape, opts.candidates, opts.objective, opts.maxResultsPerOp));
   return out;
 }

@@ -163,7 +163,7 @@ TILEFORGE_MAX_PARALLEL_JOBS="2"`}</code></pre>
         <h2>SCALE-Sim 회귀 보정</h2>
         <p>
           여러 하드웨어/워크로드/dataflow 조합을 SCALE-Sim으로 실제 실행한 뒤 TileForge estimator와 비교하면,
-          estimator가 어느 방향으로 치우치는지 확인할 수 있습니다. <code>npm run calibrate:scalesim:quick</code>은
+          estimator가 어느 방향으로 치우치는지 확인할 수 있습니다. <code>npm run estimator:suite</code>은
           빠른 샘플 sweep을 큐에 넣고 완료 결과를 모아 <code>profiles/scalesim-regression-profile.json</code>을 만듭니다.
         </p>
         <p>

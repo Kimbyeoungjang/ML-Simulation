@@ -402,7 +402,7 @@ async function writeArtifacts(
   );
   const confidence = assessConfidence(res, {
     externalValidated: Boolean(res.artifacts.validationCsv),
-    calibrationSamples: res.request.calibration?.samples?.length ?? 0,
+    estimatorSuiteSamples: (res as any).estimatorSuite?.applied ? (res as any).estimatorSuite.modelSamples ?? 0 : 0,
   });
   const uncertainty = totalCycleUncertainty(res);
   const artifacts: Record<string, string> = {
@@ -1361,7 +1361,7 @@ async function appendExternalReport(
   const externalValidated = Boolean((scale?.ok && (scale.totalCycles ?? 0) > 0) && (iree?.ok && (iree.vmfbBytes ?? 0) > 0));
   const confidence = assessConfidence(res, {
     externalValidated,
-    calibrationSamples: res.request.calibration?.samples?.length ?? 0,
+    estimatorSuiteSamples: (res as any).estimatorSuite?.applied ? (res as any).estimatorSuite.modelSamples ?? 0 : 0,
     externalCycleRatio: scale?.cycleRatio,
   });
   await atomicWriteFile(path.join(dir, "confidence.md"), confidenceMarkdown(confidence));

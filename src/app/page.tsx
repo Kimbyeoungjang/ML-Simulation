@@ -263,7 +263,7 @@ export default function Home() {
   const confidence = useMemo(
     () =>
       assessConfidence(result, {
-        calibrationSamples: result.estimatorSuite?.applied ? result.estimatorSuite.modelSamples ?? 0 : 0,
+        estimatorSuiteSamples: result.estimatorSuite?.applied ? result.estimatorSuite.modelSamples ?? 0 : 0,
       }),
     [JSON.stringify(result.summary), result.estimatorSuite?.applied, result.estimatorSuite?.modelSamples],
   );

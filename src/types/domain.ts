@@ -75,30 +75,7 @@ export interface Conv2DShape {
 }
 
 export interface TileCandidates { tileM: number[]; tileN: number[]; tileK: number[]; }
-export interface CalibrationProfile {
-  name: string;
-  createdAt: string;
-  globalCycleFactor: number;
-  byArray?: Record<string, number>;
-  byDataflow?: Partial<Record<Dataflow, number>>;
-  byOp?: Record<string, number>;
-  samples: CalibrationSample[];
-}
-export interface CalibrationSample {
-  model?: string;
-  opName?: string;
-  arrayRows?: number;
-  arrayCols?: number;
-  dataflow?: Dataflow;
-  tileM?: number;
-  tileN?: number;
-  tileK?: number;
-  predictedCycles: number;
-  measuredCycles?: number;
-  measuredRuntimeUs?: number;
-  factor: number;
-}
-export interface SearchRequest { hardware: HardwareConfig; shapes: MatmulShape[]; candidates: TileCandidates; objective: Objective; maxResultsPerOp?: number; calibration?: CalibrationProfile; scaleSim?: ScaleSimOverrides; }
+export interface SearchRequest { hardware: HardwareConfig; shapes: MatmulShape[]; candidates: TileCandidates; objective: Objective; maxResultsPerOp?: number; scaleSim?: ScaleSimOverrides; }
 export interface TileCandidateResult {
   shapeId: string; model: string; opName: string;
   tileM: number; tileN: number; tileK: number;

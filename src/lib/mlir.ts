@@ -20,7 +20,7 @@ export function generateArtifacts(res: Omit<SearchResponse, "artifacts"> & { art
   const scaleSimLayout = generateScaleSimLayout(res as SearchResponse);
   const scaleSimTopkTopology = generateScaleSimTopkTopology(res as SearchResponse);
   const scaleSimTopkLayout = generateScaleSimTopkLayout(res as SearchResponse);
-  const projectJson = JSON.stringify({ version: "0.5.0", name: res.request.hardware.name, createdAt: new Date().toISOString(), hardware: res.request.hardware, shapes: res.request.shapes, candidates: res.request.candidates, objective: res.request.objective, calibration: res.request.calibration, scaleSim: res.request.scaleSim }, null, 2);
+  const projectJson = JSON.stringify({ version: "0.5.0", name: res.request.hardware.name, createdAt: new Date().toISOString(), hardware: res.request.hardware, shapes: res.request.shapes, candidates: res.request.candidates, objective: res.request.objective, scaleSim: res.request.scaleSim }, null, 2);
   const manifestJson = JSON.stringify({ tileforgeVersion: "0.5.0-workbench", createdAt: new Date().toISOString(), hardware: res.request.hardware, shapes: res.request.shapes, candidates: res.request.candidates, objective: res.request.objective, scaleSim: res.request.scaleSim, summary: res.summary }, null, 2);
   const ireeCommand = generateIreeCommand("llvm-cpu", "generated.mlir", "transform.mlir", "model.vmfb", res.request.hardware);
   const latexTable = latexPolicyTable(res as SearchResponse);

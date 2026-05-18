@@ -103,7 +103,7 @@ export function EstimatorSuitePanel({
             <input value={presetName ?? ""} onChange={(e) => setPresetName?.(e.target.value)} placeholder="예: vit_s_4096_train" />
           </label>
         </div>
-        <div className="calibration-actions">
+        <div className="estimator-actions">
           <button className="secondary" onClick={() => selectedPresetId && onApplyPreset?.(selectedPresetId)} disabled={busy || !selectedPresetId}>프리셋 적용</button>
           <button className="secondary" onClick={onSavePreset} disabled={busy}>현재 설정을 사용자 프리셋으로 저장</button>
           <button className="secondary" onClick={() => selectedPresetId && onDeletePreset?.(selectedPresetId)} disabled={busy || !selectedPresetId || presets.find((preset: any) => preset.id === selectedPresetId)?.source === "builtin"}>선택 사용자 프리셋 삭제</button>
@@ -116,7 +116,7 @@ export function EstimatorSuitePanel({
       <section className="suite-section" title="학습된 Estimator Suite 모델을 일반 TileForge estimator에 적용합니다.">
         <h4>1. 활성 Estimator Suite 적용</h4>
         <p className="small">활성 모델을 선택하면 일반 타일 ranking, 총 cycle, 보고서의 cycle 값이 analytical baseline 대신 learned ensemble 보정값을 사용합니다. 서버 full-pipeline 작업에도 같은 활성 모델이 적용됩니다.</p>
-        <div className="calibration-actions">
+        <div className="estimator-actions">
           <button className="secondary" onClick={onRefreshModels} disabled={busy}>모델 목록 새로고침</button>
           <button className="secondary" onClick={onClearActiveModel} disabled={busy || !active?.runId}>활성 모델 해제</button>
         </div>
@@ -172,7 +172,7 @@ export function EstimatorSuitePanel({
         <label className="check" title="켜면 현재 입력 패널의 workload shape도 표본 계획에 포함합니다.">
           <input type="checkbox" checked={Boolean(planOptions.includeCurrentShapes)} onChange={(e) => updatePlanOptions({ includeCurrentShapes: e.target.checked })} /> 현재 workload shape 포함
         </label>
-        <div className="calibration-actions">
+        <div className="estimator-actions">
           <button className="secondary" onClick={onPlan} disabled={busy}>{busy ? "생성 중..." : "범위로 표본 CSV 생성"}</button>
           <button onClick={onQueuePlan} disabled={busy}>{busy ? "등록 중..." : "표본을 full-pipeline 큐에 등록"}</button>
         </div>
@@ -196,7 +196,7 @@ export function EstimatorSuitePanel({
         ) : (
           <p className="small warn">아직 선택된 CSV가 없습니다. 여러 결과 CSV를 선택한 뒤 아래 버튼을 누르세요.</p>
         )}
-        <div className="calibration-actions">
+        <div className="estimator-actions">
           <button onClick={() => onImportDataset(datasetFiles, datasetTrainAfterImport)} disabled={busy || datasetFiles.length === 0}>
             {datasetTrainAfterImport ? "CSV 병합 후 자동 학습" : "CSV 병합/검증만 실행"}
           </button>
@@ -253,7 +253,7 @@ export function EstimatorSuitePanel({
         </div>
       </section>
 
-      <div className="calibration-actions">
+      <div className="estimator-actions">
         <button className="secondary" onClick={onDesign} disabled={busy}>{busy ? "실행 중..." : "현재 설정으로 설계 CSV 생성"}</button>
         <button className="secondary" onClick={onCollectJobs} disabled={busy}>{busy ? "수집 중..." : "완료 작업에서 measuredCycles 채우기"}</button>
         <button onClick={onRun} disabled={busy}>{busy ? "학습 중..." : "CSV로 Estimator Suite 학습"}</button>
