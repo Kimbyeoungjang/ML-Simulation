@@ -3,6 +3,7 @@ import path from "node:path";
 import type { JobRecord } from "@/types/job";
 import type { SearchRequest } from "@/types/domain";
 import { estimateAll } from "./estimator";
+import { memoryTrafficFor } from "./memoryTraffic";
 import { parseEstimatorCsv, toEstimatorCsv } from "./estimatorSuiteArtifacts";
 
 export interface CollectedEstimatorSampleRow {
@@ -13,6 +14,8 @@ export interface CollectedEstimatorSampleRow {
   arrayCols: number;
   sramKB: number;
   frequencyMHz: number;
+  memoryBandwidthGBs?: number;
+  dispatchOverheadUs?: number;
   dataflow: string;
   dtypeBytes: number;
   m: number;
@@ -77,14 +80,22 @@ function sameTile(layer: any, tileM: number, tileN: number, tileK: number) {
 }
 
 function pickScaleLayer(scale: any, shape: any, tileM: number, tileN: number, tileK: number) {
-  const candidates = Array.isArray(scale?.candidateLayers) ? scale.candidateLayers : [];
   const layers = Array.isArray(scale?.layers) ? scale.layers : [];
+  const candidates = Array.isArray(scale?.candidateLayers) ? scale.candidateLayers : [];
+  const sameOp = (l: any) => !shape?.opName || l.opName === shape.opName || l.name === shape.opName;
+
+  // Estimator Suite is used for full-layer prediction/reporting. Therefore the
+  // training target must come from the full-layer SCALE-Sim topology first.
+  // candidateLayers are micro-run diagnostics and must never silently become the
+  // main measuredCycles target unless a full-layer row is unavailable.
   return (
-    candidates.find((l: any) => sameTile(l, tileM, tileN, tileK) && (!shape?.opName || l.opName === shape.opName || l.name === shape.opName)) ||
+    layers.find((l: any) => sameTile(l, tileM, tileN, tileK) && sameOp(l)) ||
+    layers.find((l: any) => sameOp(l)) ||
+    layers.find((l: any) => sameTile(l, tileM, tileN, tileK)) ||
+    layers[0] ||
+    candidates.find((l: any) => sameTile(l, tileM, tileN, tileK) && sameOp(l)) ||
     candidates.find((l: any) => sameTile(l, tileM, tileN, tileK)) ||
-    layers.find((l: any) => sameTile(l, tileM, tileN, tileK) && (!shape?.opName || l.opName === shape.opName || l.name === shape.opName)) ||
-    layers.find((l: any) => shape?.opName && (l.opName === shape.opName || l.name === shape.opName)) ||
-    layers[0]
+    candidates[0]
   );
 }
 
@@ -190,19 +201,31 @@ export async function collectEstimatorSamplesFromJobs(jobs: JobRecord[], jobRoot
     }
     const matchedLayer = pickScaleLayer(scale, shape, tileM, tileN, tileK);
     const measuredCycles = firstPositive([
-      matchedLayer?.tileExtrapolatedCycles,
       matchedLayer?.cycles,
+      matchedLayer?.scaleSimRawCycles,
       scale.totalCycles,
       scale.totalCyclesInclPrefetch,
     ]);
     const dtypeBytes = shape.dtypeBytes ?? hw.bytesPerElement ?? 2;
+    const traffic = memoryTrafficFor(hw, shape, {
+      shapeId: shape.id, model: shape.model, opName: shape.opName,
+      tileM, tileN, tileK, cycles: Math.max(1, estimatorCycles), rawCycles: Math.max(1, estimatorCycles),
+      timeUs: Math.max(1, estimatorCycles) / Math.max(1, hw.frequencyMHz), utilization: estimatorUtilization ?? 0,
+      paddingRatio: 0, sramBytes: estimatorSramBytes > 0 ? estimatorSramBytes : 0,
+      boundaryPenalty: 0, score: 0, isPareto: false, warnings: [], explanation: ""
+    });
     const measuredSramBytes = accessBytes(firstPositive([matchedLayer?.sramAccessBytes, matchedLayer?.sramBytes, matchedLayer?.sramAccesses]), dtypeBytes);
     const measuredDramBytes = accessBytes(firstPositive([matchedLayer?.dramAccessBytes, matchedLayer?.dramBytes, matchedLayer?.dramAccesses]), dtypeBytes);
     const measuredUtilization = utilizationFraction(firstFinite([matchedLayer?.computeUtil, matchedLayer?.overallUtil, matchedLayer?.mappingEfficiency]));
     const estimatorDramBytes = firstPositive([
+      traffic.dramReadBytes + traffic.dramWriteBytes,
       resultRow?.best?.dramBytes,
       resultRow?.dramBytes,
       (shape.m * shape.k + shape.k * shape.n + shape.m * shape.n) * dtypeBytes,
+    ]);
+    const estimatorSramTrafficBytes = firstPositive([
+      traffic.sramReadBytes + traffic.sramWriteBytes,
+      estimatorSramBytes,
     ]);
     if (!(estimatorCycles > 0) || !(measuredCycles > 0)) {
       skipped.push({ jobId: job.id, name: job.name, reason: "missing positive estimatorCycles or measuredCycles" });
@@ -216,6 +239,8 @@ export async function collectEstimatorSamplesFromJobs(jobs: JobRecord[], jobRoot
       arrayCols: hw.arrayCols,
       sramKB: hw.sramKB,
       frequencyMHz: hw.frequencyMHz,
+      memoryBandwidthGBs: hw.memoryBandwidthGBs,
+      dispatchOverheadUs: hw.dispatchOverheadUs,
       dataflow: hw.dataflow,
       dtypeBytes,
       m: shape.m,
@@ -226,7 +251,7 @@ export async function collectEstimatorSamplesFromJobs(jobs: JobRecord[], jobRoot
       tileK,
       estimatorCycles: Math.round(estimatorCycles),
       measuredCycles: Math.round(measuredCycles),
-      estimatorSramBytes: estimatorSramBytes > 0 ? Math.round(estimatorSramBytes) : undefined,
+      estimatorSramBytes: estimatorSramTrafficBytes > 0 ? Math.round(estimatorSramTrafficBytes) : undefined,
       measuredSramBytes,
       estimatorDramBytes: estimatorDramBytes > 0 ? Math.round(estimatorDramBytes) : undefined,
       measuredDramBytes,
@@ -283,6 +308,8 @@ export function mergeCollectedSamplesIntoCsv(csvText: string, collected: Collect
       arrayCols: r.arrayCols || match.arrayCols,
       sramKB: r.sramKB || match.sramKB,
       frequencyMHz: r.frequencyMHz || match.frequencyMHz,
+      memoryBandwidthGBs: r.memoryBandwidthGBs || match.memoryBandwidthGBs,
+      dispatchOverheadUs: r.dispatchOverheadUs || match.dispatchOverheadUs,
       dataflow: r.dataflow || match.dataflow,
       dtypeBytes: r.dtypeBytes || match.dtypeBytes,
       m: r.m || match.m,

@@ -74,6 +74,8 @@ function candidateToSample(req: SearchRequest, candidate: TileCandidateResult): 
     arrayCols: req.hardware.arrayCols,
     sramKB: req.hardware.sramKB,
     frequencyMHz: req.hardware.frequencyMHz,
+    memoryBandwidthGBs: req.hardware.memoryBandwidthGBs ?? 0,
+    dispatchOverheadUs: req.hardware.dispatchOverheadUs ?? 0,
     dataflow: req.hardware.dataflow,
     dtypeBytes: shape?.dtypeBytes ?? req.hardware.bytesPerElement ?? 2,
     m: shape?.m ?? 1,

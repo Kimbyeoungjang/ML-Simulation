@@ -42,7 +42,7 @@ function target(s: LearnedEstimatorSample) { return clamp(Math.log(Math.max(1, s
 function rng(seed: number) { let s = seed >>> 0; return () => { s = (1664525 * s + 1013904223) >>> 0; return s / 0x100000000; }; }
 function shuffle<T>(items: T[], seed: number): T[] { const rand = rng(seed); const out = items.slice(); for (let i = out.length - 1; i > 0; i--) { const j = Math.floor(rand() * (i + 1)); [out[i], out[j]] = [out[j], out[i]]; } return out; }
 function normalizeStats(xs: number[][]) { const cols = xs[0]?.length ?? 0; const featureMean = Array.from({ length: cols }, (_, j) => mean(xs.map(r => r[j] ?? 0))); const featureStd = Array.from({ length: cols }, (_, j) => std(xs.map(r => r[j] ?? 0), featureMean[j])); return { featureMean, featureStd }; }
-function applyNorm(x: number[], mu: number[], sigma: number[]) { return x.map((v, i) => (v - mu[i]) / (sigma[i] || 1)); }
+function applyNorm(x: number[], mu: number[], sigma: number[]) { return mu.map((m, i) => ((x[i] ?? 0) - m) / (sigma[i] || 1)); }
 function tanh(x: number) { return Math.tanh(clamp(x, -20, 20)); }
 function forward(model: DirectNeuralEstimatorModel, x: number[]) { const hidden = model.w1.map((row, i) => tanh(row.reduce((sum, w, j) => sum + w * x[j], model.b1[i] ?? 0))); const y = hidden.reduce((sum, h, i) => sum + h * (model.w2[i] ?? 0), model.b2); return { hidden, y }; }
 

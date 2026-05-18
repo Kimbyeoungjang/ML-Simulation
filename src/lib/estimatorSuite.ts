@@ -255,7 +255,7 @@ function numericRange(rows: LearnedEstimatorSample[], key: keyof LearnedEstimato
 function trainingDomain(rows: LearnedEstimatorSample[]) {
   const numericKeys: (keyof LearnedEstimatorSample)[] = [
     "m", "n", "k", "tileM", "tileN", "tileK",
-    "arrayRows", "arrayCols", "sramKB", "frequencyMHz", "estimatorCycles",
+    "arrayRows", "arrayCols", "sramKB", "frequencyMHz", "memoryBandwidthGBs", "dispatchOverheadUs", "estimatorCycles",
   ];
   return {
     numeric: Object.fromEntries(numericKeys.map(k => [String(k), numericRange(rows, k)])),

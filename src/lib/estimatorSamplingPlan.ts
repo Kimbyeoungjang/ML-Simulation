@@ -25,6 +25,8 @@ export interface EstimatorSamplingPlanRow {
   arrayCols: number;
   sramKB: number;
   frequencyMHz: number;
+  memoryBandwidthGBs?: number | string;
+  dispatchOverheadUs?: number | string;
   dataflow: Dataflow;
   dtypeBytes: number;
   m: number;
@@ -146,6 +148,8 @@ export function buildEstimatorSamplingPlan(base: SearchRequest, options: Estimat
         arrayCols: array.cols,
         sramKB,
         frequencyMHz: hw.frequencyMHz,
+        memoryBandwidthGBs: hw.memoryBandwidthGBs ?? "",
+        dispatchOverheadUs: hw.dispatchOverheadUs ?? "",
         dataflow,
         dtypeBytes: shape.dtypeBytes,
         m: shape.m,

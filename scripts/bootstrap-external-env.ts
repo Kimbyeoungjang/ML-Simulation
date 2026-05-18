@@ -86,8 +86,26 @@ async function main() {
   if (iree.command && iree.command !== configuredIree) values.TILEFORGE_IREE_COMPILE_CMD = iree.command;
 
 
-  if (!process.env.TILEFORGE_MAX_PARALLEL_JOBS?.trim()) {
-    values.TILEFORGE_MAX_PARALLEL_JOBS = "2";
+  const defaultEnv: Record<string, string> = {
+    TILEFORGE_MAX_PARALLEL_JOBS: "2",
+    TILEFORGE_MAX_QUEUED_JOBS: "10000",
+    TILEFORGE_JOB_TIMEOUT_MS: "1800000",
+    TILEFORGE_JOB_MAX_ATTEMPTS: "1",
+    TILEFORGE_MAX_JOB_LOG_LINES: "300",
+    TILEFORGE_SQLITE_PRIMARY: "1",
+    TILEFORGE_KEEP_EXTERNAL_RAW: "0",
+    TILEFORGE_EXTERNAL_KEEP_REPORT_MAX_BYTES: String(25 * 1024 * 1024),
+    TILEFORGE_MAX_EXTERNAL_OUTPUT_BYTES: "2000000",
+    TILEFORGE_MAX_ARTIFACTS_MB: "256",
+    TILEFORGE_MAX_BUNDLE_MB: "512",
+    TILEFORGE_EXTERNAL_STATUS_CACHE_MS: "10000",
+    TILEFORGE_MAX_CANDIDATES: "20000",
+    TILEFORGE_HEATMAP_MAX_POINTS: "5000",
+    TILEFORGE_DISABLE_SQLITE: "0",
+    TILEFORGE_DISABLE_CACHE: "0",
+  };
+  for (const [key, value] of Object.entries(defaultEnv)) {
+    if (!process.env[key]?.trim()) values[key] = value;
   }
 
   const result = upsertProjectDotEnv(values, process.cwd(), { overwrite: true });

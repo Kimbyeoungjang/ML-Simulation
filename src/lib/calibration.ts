@@ -48,3 +48,14 @@ export function parseCalibrationCsv(text: string): CalibrationSample[] {
   }
   return out;
 }
+
+
+/** Backward-compatible name used by older CI/tests. */
+export function calibrationFactor(samples: CalibrationSample[] = []): number {
+  return fitCalibrationProfile(samples).factor;
+}
+
+/** Backward-compatible CSV parser name used by older CI/tests. */
+export function parseMeasurementCsv(text: string): CalibrationSample[] {
+  return parseCalibrationCsv(text);
+}

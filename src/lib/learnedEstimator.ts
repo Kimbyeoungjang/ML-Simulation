@@ -25,6 +25,8 @@ export interface LearnedEstimatorSample {
   measuredDramBytes?: number;
   estimatorUtilization?: number;
   measuredUtilization?: number;
+  memoryBandwidthGBs?: number;
+  dispatchOverheadUs?: number;
 }
 
 export interface LearnedEstimatorTreeNode {
@@ -80,6 +82,7 @@ export interface TrainLearnedEstimatorOptions {
 const FEATURE_NAMES = [
   "logM", "logN", "logK", "logTM", "logTN", "logTK",
   "logArrayRows", "logArrayCols", "logSramKB", "logFrequencyMHz",
+  "logMemoryBandwidthGBs", "logDispatchOverheadUs",
   "mModTileM", "nModTileN", "kModTileK",
   "tileMOverRows", "tileNOverCols", "tileKOverRows",
   "opsLog", "sramUseRatio", "paddingRatio", "estimatorLogCycles",
@@ -124,6 +127,7 @@ export function learnedEstimatorFeatures(s: LearnedEstimatorSample): number[] {
   return [
     log1p(s.m), log1p(s.n), log1p(s.k), log1p(s.tileM), log1p(s.tileN), log1p(s.tileK),
     log1p(s.arrayRows), log1p(s.arrayCols), log1p(s.sramKB), log1p(s.frequencyMHz),
+    log1p(s.memoryBandwidthGBs ?? 0), log1p(s.dispatchOverheadUs ?? 0),
     safeDiv(s.m % s.tileM, s.tileM), safeDiv(s.n % s.tileN, s.tileN), safeDiv(s.k % s.tileK, s.tileK),
     safeDiv(s.tileM, s.arrayRows), safeDiv(s.tileN, s.arrayCols), safeDiv(s.tileK, s.arrayRows),
     log1p(usefulOps), safeDiv(sramBytes, Math.max(1, s.sramKB * 1024)), paddedOps / usefulOps - 1, log1p(s.estimatorCycles),
@@ -137,7 +141,7 @@ function normalize(xs: number[][]) {
   const featureStd = Array.from({ length: cols }, (_, j) => std(xs.map(r => r[j] ?? 0), featureMean[j]));
   return { featureMean, featureStd };
 }
-function applyNorm(x: number[], mu: number[], sigma: number[]) { return x.map((v, i) => (v - mu[i]) / sigma[i]); }
+function applyNorm(x: number[], mu: number[], sigma: number[]) { return mu.map((m, i) => ((x[i] ?? 0) - m) / (sigma[i] || 1)); }
 
 function variance(ys: number[]) {
   const m = mean(ys);

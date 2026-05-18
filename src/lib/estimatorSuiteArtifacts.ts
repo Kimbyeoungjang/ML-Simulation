@@ -113,6 +113,8 @@ export function sampleFromEstimatorRow(row: Record<string, string>): LearnedEsti
     arrayCols: num(row, ["arrayCols", "array_cols"], defaultHardware.arrayCols),
     sramKB: num(row, ["sramKB", "sram_kb"], defaultHardware.sramKB),
     frequencyMHz: num(row, ["frequencyMHz", "freqMHz", "frequency_mhz"], defaultHardware.frequencyMHz),
+    memoryBandwidthGBs: optNum(row, ["memoryBandwidthGBs", "memoryBandwidthGBps", "memoryBandwidth", "memory_bandwidth_gbs"]),
+    dispatchOverheadUs: optNum(row, ["dispatchOverheadUs", "dispatch_us", "dispatchOverhead"]),
     dataflow: str(row, ["dataflow"], defaultHardware.dataflow),
     dtypeBytes: num(row, ["dtypeBytes", "dtype_bytes"], 2),
     m, n, k, tileM, tileN, tileK, estimatorCycles, measuredCycles,

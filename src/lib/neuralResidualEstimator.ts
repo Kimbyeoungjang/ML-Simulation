@@ -76,7 +76,7 @@ function normalizeStats(xs: number[][]) {
   return { featureMean, featureStd };
 }
 
-function applyNorm(x: number[], mu: number[], sigma: number[]) { return x.map((v, i) => (v - mu[i]) / (sigma[i] || 1)); }
+function applyNorm(x: number[], mu: number[], sigma: number[]) { return mu.map((m, i) => ((x[i] ?? 0) - m) / (sigma[i] || 1)); }
 function tanh(x: number) { return Math.tanh(clamp(x, -20, 20)); }
 
 function forward(model: NeuralResidualEstimatorModel, x: number[]) {
