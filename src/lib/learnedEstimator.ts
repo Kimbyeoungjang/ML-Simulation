@@ -68,6 +68,7 @@ export interface TrainLearnedEstimatorOptions {
   minLeaf?: number;
   validationFraction?: number;
   seed?: number;
+  progress?: (event: { stage: string; message: string; progress?: number }) => void;
 }
 
 const FEATURE_NAMES = [
@@ -196,6 +197,8 @@ export function trainLearnedEstimator(samples: LearnedEstimatorSample[], opts: T
   const minLeaf = opts.minLeaf ?? Math.max(4, Math.floor(Math.sqrt(train.length) / 2));
   const rand = rng(seed + 1);
   const forest: LearnedEstimatorTreeNode[] = [];
+  opts.progress?.({ stage: "training-tree", message: `Tree residual 학습 시작: trees=${trees}, train=${train.length}, validation=${validation.length}`, progress: 0 });
+  let lastPct = -1;
   for (let t = 0; t < trees; t++) {
     const bootX: number[][] = [];
     const bootY: number[] = [];
@@ -205,6 +208,11 @@ export function trainLearnedEstimator(samples: LearnedEstimatorSample[], opts: T
       bootY.push(trainY[ix]);
     }
     forest.push(buildTree(bootX, bootY, 0, maxDepth, minLeaf, rand));
+    const pct = Math.floor(((t + 1) / trees) * 100);
+    if (pct === 100 || pct >= lastPct + 10) {
+      lastPct = pct;
+      opts.progress?.({ stage: "training-tree", message: `Tree residual ${t + 1}/${trees} trees 완료 (${pct}%)`, progress: pct });
+    }
   }
   const model: LearnedEstimatorModel = {
     kind: "tileforge-learned-estimator-v1",
@@ -217,6 +225,7 @@ export function trainLearnedEstimator(samples: LearnedEstimatorSample[], opts: T
     globalLogRatio,
     metadata: { samples: clean.length, trainSamples: train.length, validationSamples: validation.length, seed, maxDepth, minLeaf, trees }
   };
+  opts.progress?.({ stage: "training-tree", message: "Tree residual holdout 평가 중", progress: 100 });
   model.validation = evaluateLearnedEstimator(model, validation);
   return model;
 }

@@ -7,7 +7,7 @@ const boundedCandidateList = z.array(positiveInt).min(1).max(64).transform(value
 
 export const DataflowSchema = z.enum(["WS", "OS", "IS"]);
 export const ObjectiveSchema = z.enum(["balanced", "cycles", "utilization", "hardware-design", "pareto"]);
-export const JobKindSchema = z.enum(["estimate", "scalesim", "iree-compile", "full-pipeline"]);
+export const JobKindSchema = z.enum(["estimate", "scalesim", "iree-compile", "full-pipeline", "estimator-suite-train"]);
 
 export const HardwareSchema = z.object({
   name: z.string().min(1).default("custom"),

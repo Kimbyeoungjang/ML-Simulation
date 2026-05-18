@@ -223,23 +223,32 @@ export function trainEstimatorSuite(samples: LearnedEstimatorSample[], opts: Tra
   const splitKinds = opts.splitKinds ?? ["random", "workload", "array", "dataflow", "large-shape"];
 
   const validationSuite: EstimatorSuiteSplitReport[] = [];
+  opts.progress?.({ stage: "validating", message: `Estimator Suite 학습 시작: valid samples=${clean.length}, splits=${splitKinds.join(",")}`, progress: 5 });
   for (let i = 0; i < splitKinds.length; i++) {
     const split = makeSplit(clean, splitKinds[i], seed + i * 101);
-    if (!split || !splitIsUsable(split)) continue;
+    if (!split || !splitIsUsable(split)) {
+      opts.progress?.({ stage: "validating", message: `${splitKinds[i]} split 건너뜀: train/test sample 부족`, progress: 10 + i * 8 });
+      continue;
+    }
     const trainRows = downsample(split.train, opts.maxSplitTrainSamples, seed + i * 997);
-    const tree = trainLearnedEstimator(trainRows, { trees: Math.max(24, Math.floor(trees / 2)), maxDepth, minLeaf, seed: seed + i * 11, validationFraction: 0.15 });
-    const neural = trainNeuralResidualEstimator(trainRows, { hiddenUnits, epochs: Math.max(80, Math.floor(epochs / 2)), learningRate, l2, seed: seed + i * 13, validationFraction: 0.15 });
+    opts.progress?.({ stage: "validating", message: `${splitKinds[i]} split 준비: train=${trainRows.length}, test=${split.test.length}`, progress: 10 + i * 8 });
+    const tree = trainLearnedEstimator(trainRows, { trees: Math.max(24, Math.floor(trees / 2)), maxDepth, minLeaf, seed: seed + i * 11, validationFraction: 0.15, progress: (e) => opts.progress?.({ ...e, message: `[${splitKinds[i]}] ${e.message}`, progress: 10 + i * 8 + Math.min(3, (e.progress ?? 0) * 0.03) }) });
+    const neural = trainNeuralResidualEstimator(trainRows, { hiddenUnits, epochs: Math.max(80, Math.floor(epochs / 2)), learningRate, l2, seed: seed + i * 13, validationFraction: 0.15, progress: (e) => opts.progress?.({ ...e, message: `[${splitKinds[i]}] ${e.message}`, progress: 13 + i * 8 + Math.min(3, (e.progress ?? 0) * 0.03) }) });
     const baseline = evaluateAnalyticalEstimator(split.test);
     const treeMetrics = evaluateLearnedEstimator(tree, split.test);
     const neuralMetrics = evaluateNeuralResidualEstimator(neural, split.test);
     const weights = weightsFromMetrics(baseline, treeMetrics, neuralMetrics);
     const ensembleMetrics = evaluateWeightedEnsemble(split.test, tree, neural, weights);
-    validationSuite.push({ kind: splitKinds[i], label: split.label, trainSamples: trainRows.length, testSamples: split.test.length, baseline, tree: treeMetrics, neural: neuralMetrics, ensemble: ensembleMetrics, weights, recommended: recommendModel(baseline, treeMetrics, neuralMetrics, ensembleMetrics) });
+    const recommended = recommendModel(baseline, treeMetrics, neuralMetrics, ensembleMetrics);
+    opts.progress?.({ stage: "validating", message: `${splitKinds[i]} split 평가 완료: analytical MAPE=${baseline.learnedMapePct.toFixed(2)}%, tree=${treeMetrics.learnedMapePct.toFixed(2)}%, neural=${neuralMetrics.learnedMapePct.toFixed(2)}%, ensemble=${ensembleMetrics.learnedMapePct.toFixed(2)}%, 추천=${recommended}`, progress: 16 + i * 8 });
+    validationSuite.push({ kind: splitKinds[i], label: split.label, trainSamples: trainRows.length, testSamples: split.test.length, baseline, tree: treeMetrics, neural: neuralMetrics, ensemble: ensembleMetrics, weights, recommended });
   }
 
   const finalTrainRows = downsample(clean, opts.maxFinalTrainSamples ?? 20000, seed + 404);
-  const tree = trainLearnedEstimator(finalTrainRows, { trees, maxDepth, minLeaf, seed, validationFraction: opts.validationFraction ?? 0.2 });
-  const neural = trainNeuralResidualEstimator(finalTrainRows, { hiddenUnits, epochs, learningRate, l2, seed, validationFraction: opts.validationFraction ?? 0.2 });
+  opts.progress?.({ stage: "training-tree", message: `최종 Tree residual 학습 시작: train=${finalTrainRows.length}, trees=${trees}, maxDepth=${maxDepth}`, progress: 58 });
+  const tree = trainLearnedEstimator(finalTrainRows, { trees, maxDepth, minLeaf, seed, validationFraction: opts.validationFraction ?? 0.2, progress: (e) => opts.progress?.({ ...e, progress: 58 + Math.min(16, (e.progress ?? 0) * 0.16) }) });
+  opts.progress?.({ stage: "training-neural", message: `최종 Neural residual 학습 시작: train=${finalTrainRows.length}, hidden=${hiddenUnits}, epochs=${epochs}`, progress: 74 });
+  const neural = trainNeuralResidualEstimator(finalTrainRows, { hiddenUnits, epochs, learningRate, l2, seed, validationFraction: opts.validationFraction ?? 0.2, progress: (e) => opts.progress?.({ ...e, progress: 74 + Math.min(16, (e.progress ?? 0) * 0.16) }) });
   const avg = (pick: (r: EstimatorSuiteSplitReport) => LearnedEstimatorMetrics) => {
     const ms = validationSuite.map(pick);
     if (!ms.length) return undefined;
@@ -257,10 +266,12 @@ export function trainEstimatorSuite(samples: LearnedEstimatorSample[], opts: Tra
   const baselineAvg = avg(r => r.baseline) ?? evaluateAnalyticalEstimator(clean);
   const treeAvg = avg(r => r.tree) ?? evaluateLearnedEstimator(tree, clean);
   const neuralAvg = avg(r => r.neural) ?? evaluateNeuralResidualEstimator(neural, clean);
+  opts.progress?.({ stage: "validating", message: "최종 ensemble weight 계산 중", progress: 92 });
   const weights = weightsFromMetrics(baselineAvg, treeAvg, neuralAvg);
   const pseudoModel = { kind: "tileforge-estimator-suite-v1", createdAt: new Date().toISOString(), target: "log_measured_over_estimator", tree, neural, weights, recommended: "ensemble", validationSuite, metadata: { samples: clean.length, trainSamples: finalTrainRows.length, seed, trees, maxDepth, minLeaf, hiddenUnits, epochs, learningRate, l2, strategy: "analytical_plus_residual_ensemble" } } as EstimatorSuiteModel;
   const ensembleAvg = avg(r => r.ensemble) ?? evaluateEstimatorSuite(pseudoModel, clean);
   const recommended = recommendModel(baselineAvg, treeAvg, neuralAvg, ensembleAvg);
+  opts.progress?.({ stage: "validating", message: `Estimator Suite 완료: weights analytical=${weights.analytical.toFixed(3)}, tree=${weights.tree.toFixed(3)}, neural=${weights.neural.toFixed(3)}, 추천=${recommended}`, progress: 98 });
   return { ...pseudoModel, recommended };
 }
 

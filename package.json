@@ -32,7 +32,7 @@
     "section:test": "node -e \"console.log('compressed test scripts: basic / unit / extras / all')\"",
     "test": "npm run test:unit",
     "test:basic": "npm run typecheck && npm run smoke",
-    "test:unit": "vitest run tests/estimator.test.ts tests/calibration.test.ts tests/confidence.test.ts tests/validation.test.ts tests/workbench.test.ts tests/golden.test.ts tests/neuralResidualEstimator.test.ts tests/estimatorSuite.test.ts tests/estimatorSuiteArtifacts.test.ts tests/estimatorSamplingPlan.test.ts tests/estimatorSuiteApply.test.ts tests/estimatorSuiteDataset.test.ts",
+    "test:unit": "vitest run tests/estimator.test.ts tests/calibration.test.ts tests/confidence.test.ts tests/validation.test.ts tests/workbench.test.ts tests/golden.test.ts tests/neuralResidualEstimator.test.ts tests/estimatorSuite.test.ts tests/estimatorSuiteArtifacts.test.ts tests/estimatorSamplingPlan.test.ts tests/estimatorSuiteApply.test.ts tests/estimatorSuiteDataset.test.ts tests/estimatorPresets.test.ts tests/jobDashboard.test.ts tests/estimatorSuiteTrainingJob.test.ts",
     "test:extras": "npm run validate:external:mock && npm run test:docs && npm run test:examples && npm run test:windows-scripts",
     "test:all": "npm run setup:env && npm run doctor && npm run doctor:external && npm run test:basic && npm run test:unit && npm run test:extras",
     "test:ci": "npm run test:all && npm run test:advanced",

@@ -31,6 +31,7 @@ export interface TrainNeuralResidualOptions {
   l2?: number;
   validationFraction?: number;
   seed?: number;
+  progress?: (event: { stage: string; message: string; progress?: number }) => void;
 }
 
 export interface EstimatorComparisonResult {
@@ -112,6 +113,8 @@ export function trainNeuralResidualEstimator(samples: LearnedEstimatorSample[], 
   const lr0 = opts.learningRate ?? 0.015;
   const l2 = opts.l2 ?? 1e-4;
 
+  opts.progress?.({ stage: "training-neural", message: `Neural residual 학습 시작: hidden=${hiddenUnits}, epochs=${epochs}, train=${train.length}, validation=${validation.length}`, progress: 0 });
+  let lastEpochPct = -1;
   for (let epoch = 0; epoch < epochs; epoch++) {
     const order = shuffle(trainX.map((_, i) => i), seed + epoch + 1000);
     const lr = lr0 / Math.sqrt(1 + epoch / 80);
@@ -130,6 +133,11 @@ export function trainNeuralResidualEstimator(samples: LearnedEstimatorSample[], 
       }
       b2 -= lr * gradY;
     }
+    const pct = Math.floor(((epoch + 1) / epochs) * 100);
+    if (pct === 100 || pct >= lastEpochPct + 10) {
+      lastEpochPct = pct;
+      opts.progress?.({ stage: "training-neural", message: `Neural residual epoch ${epoch + 1}/${epochs} 완료 (${pct}%, lr=${lr.toFixed(5)})`, progress: pct });
+    }
   }
 
   const model: NeuralResidualEstimatorModel = {
@@ -146,6 +154,7 @@ export function trainNeuralResidualEstimator(samples: LearnedEstimatorSample[], 
     globalLogRatio,
     metadata: { samples: clean.length, trainSamples: train.length, validationSamples: validation.length, seed, epochs, learningRate: lr0, l2 }
   };
+  opts.progress?.({ stage: "training-neural", message: "Neural residual holdout 평가 중", progress: 100 });
   model.validation = evaluateNeuralResidualEstimator(model, validation);
   return model;
 }

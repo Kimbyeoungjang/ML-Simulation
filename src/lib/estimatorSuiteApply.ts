@@ -54,8 +54,11 @@ function adjustCandidate(req: SearchRequest, model: EstimatorSuiteModel, candida
   const factor = learnedCycles / Math.max(1, rawCycles);
   const cycles = Math.max(1, Math.round(learnedCycles));
   const timeUs = cycles / Math.max(1, req.hardware.frequencyMHz);
-  const score = cycles / 1e6 + (1 - candidate.utilization) * 5 + candidate.paddingRatio * 3 + Math.max(0, candidate.sramBytes - req.hardware.sramKB * 1024) / Math.max(1, req.hardware.sramKB * 1024);
-  const warnings = [...candidate.warnings];
+  const utilization = Number(candidate.utilization) || 0;
+  const paddingRatio = Number(candidate.paddingRatio) || 0;
+  const sramBytes = Number(candidate.sramBytes) || 0;
+  const score = cycles / 1e6 + (1 - utilization) * 5 + paddingRatio * 3 + Math.max(0, sramBytes - req.hardware.sramKB * 1024) / Math.max(1, req.hardware.sramKB * 1024);
+  const warnings = Array.isArray(candidate.warnings) ? [...candidate.warnings] : [];
   if (factor > 1.5) warnings.push(`Learned estimator 보정 큼: ×${factor.toFixed(2)}`);
   return {
     ...candidate,
@@ -91,10 +94,16 @@ export function applyEstimatorSuiteToSearchResponse(response: SearchResponse, mo
     const best = adjustedCandidates[0] ?? adjustCandidate(request, model, result.best);
     const pareto = result.pareto.map(c => adjustCandidate(request, model, c)).sort(compareAdjustedCandidates);
     const heatmap = result.heatmap.map(h => {
-      const candidate = result.candidates.find(c => c.tileM === h.tileM && c.tileN === h.tileN && c.tileK === h.tileK);
-      if (!candidate) return h;
-      const adjusted = adjustCandidate(request, model, candidate);
-      return { ...h, cycles: adjusted.cycles, score: adjusted.score };
+      const candidate = result.candidates.find(c => c.tileM === h.tileM && c.tileN === h.tileN && c.tileK === h.tileK) ?? h;
+      const adjusted = adjustCandidate(request, model, candidate as TileCandidateResult);
+      return {
+        ...h,
+        rawCycles: adjusted.rawCycles,
+        cycles: adjusted.cycles,
+        timeUs: adjusted.timeUs,
+        score: adjusted.score,
+        warnings: adjusted.warnings,
+      };
     });
     return { ...result, best, candidates: adjustedCandidates, pareto, heatmap };
   });

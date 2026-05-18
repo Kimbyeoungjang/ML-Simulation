@@ -55,6 +55,10 @@ export function ResultsPanel(props: ResultsPanelProps) {
     fetchJobReport,
     deleteJobById,
     estimatorSuiteCsv,
+    estimatorPresets,
+    selectedEstimatorPreset,
+    setSelectedEstimatorPreset,
+    onApplyEstimatorPreset,
     setEstimatorSuiteCsv,
     estimatorSuiteOptions,
     updateEstimatorSuiteOptions,
@@ -198,6 +202,10 @@ export function ResultsPanel(props: ResultsPanelProps) {
             {tab === "estimatorSuite" && (
               <EstimatorSuitePanel
                 csv={estimatorSuiteCsv}
+                presets={estimatorPresets}
+                selectedPresetId={selectedEstimatorPreset}
+                setSelectedPresetId={setSelectedEstimatorPreset}
+                onApplyPreset={onApplyEstimatorPreset}
                 setCsv={setEstimatorSuiteCsv}
                 options={estimatorSuiteOptions}
                 updateOptions={updateEstimatorSuiteOptions}

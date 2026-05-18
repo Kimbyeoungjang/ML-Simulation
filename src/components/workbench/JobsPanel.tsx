@@ -139,6 +139,9 @@ export function QueueSummary({
   const jobs = Array.isArray(payload?.jobs) ? payload.jobs : [];
   const queued = jobs.filter((j: any) => j.status === "queued");
   const running = jobs.filter((j: any) => j.status === "running");
+  const counts = payload?.counts ?? {};
+  const queuedTotal = Number(counts.queued ?? queued.length);
+  const runningTotal = Number(counts.running ?? running.length);
   const recentDone = jobs.filter((j: any) => ["succeeded", "succeeded_with_warnings", "failed", "cancelled"].includes(j.status)).slice(0, 20);
   const visible = [...running, ...queued, ...recentDone];
   const visibleIds = visible.map((j: any) => j.id);
@@ -150,9 +153,10 @@ export function QueueSummary({
       <div className="queue-header">
         <h3>작업 큐</h3>
         <div className="queue-badges">
-          <span className="badge">running {running.length}</span>
-          <span className="badge">queued {queued.length}</span>
+          <span className="badge">running {runningTotal}</span>
+          <span className="badge">queued {queuedTotal}</span>
           <span className="badge">total {payload?.total ?? jobs.length}</span>
+          {payload?.view === "dashboard" && <span className="badge ok-badge">live dashboard</span>}
           <span className="badge">selected {selectedJobIds.length}</span>
           <button className="secondary" onClick={toggleAll} disabled={visible.length === 0}>{allVisibleSelected ? "전체 해제" : "표시 작업 전체 선택"}</button>
           <button className="secondary" onClick={() => onCancelSelected(selectedJobIds)} disabled={selectedJobIds.length === 0}>선택 중지</button>
@@ -195,7 +199,7 @@ export function QueueSummary({
           </table>
         </div>
       )}
-      <p className="small">새 작업 생성 시 콘솔 자동 연결을 끄면 큐에는 추가되지만 현재 보고 있는 콘솔은 유지됩니다.</p>
+      <p className="small">새 작업 생성 시 콘솔 자동 연결을 끄면 큐에는 추가되지만 현재 보고 있는 콘솔은 유지됩니다. 대량 큐에서는 running 작업과 다음 queued 작업을 우선 표시합니다.</p>
     </section>
   );
 }

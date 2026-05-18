@@ -1,6 +1,7 @@
 import "./env";
 import { readProjectDotEnv } from "./env";
 import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { JobKind, JobRecord, JobStatus, JobStage } from "@/types/job";
 import type { SearchRequest } from "@/types/domain";
@@ -249,6 +250,37 @@ function appendLogSync(job: JobRecord, log: string) {
   void appendJobEvent(job.id, { level: log.startsWith("WARNING") ? "warn" : "info", stage: job.stage, message: log });
 }
 
+
+function saveJobSnapshotSync(job: JobRecord) {
+  job.updatedAt = nowIso();
+  const dir = jobDir(job.id);
+  mkdirSync(dir, { recursive: true });
+  const tmp = path.join(dir, "job.json.tmp");
+  writeFileSync(tmp, JSON.stringify(job, null, 2), "utf8");
+  renameSync(tmp, path.join(dir, "job.json"));
+  try {
+    saveJobSqlite(job);
+  } catch (error) {
+    console.warn(`[tileforge] sqlite mirror sync save failed for job ${job.id}:`, error);
+  }
+}
+
+export function addLogImmediate(job: JobRecord, log: string) {
+  appendLogSync(job, log);
+  saveJobSnapshotSync(job);
+}
+
+export function updateProgressImmediate(job: JobRecord, stage: JobStage, progress: number, log?: string) {
+  job.stage = stage;
+  job.progress = progress;
+  const at = nowIso();
+  job.stageHistory = [...(job.stageHistory ?? []), { stage, status: progress >= 100 ? "done" : "running", at, detail: log }];
+  markStageSqlite(job.id, stage, progress >= 100 ? "done" : "running", at, log);
+  void appendJobEvent(job.id, { level: "info", stage, code: "STAGE_PROGRESS", message: log ?? `progress=${progress}`, data: { progress } });
+  if (log) appendLogSync(job, log);
+  saveJobSnapshotSync(job);
+}
+
 export async function addLog(job: JobRecord, log: string) { appendLogSync(job, log); await saveJob(job); }
 export async function addWarning(job: JobRecord, warning: string) { job.warnings = [...(job.warnings ?? []), warning]; await addLog(job, `WARNING: ${warning}`); }
 
@@ -340,18 +372,52 @@ function sanitizeJobForDisplay(job: JobRecord): JobRecord {
   };
 }
 
-export interface ListJobsOptions { limit?: number; cursor?: string; status?: JobStatus; since?: string; }
-export async function listJobsPaged(options: ListJobsOptions = {}): Promise<{ jobs: JobRecord[]; nextCursor?: string; total: number }> {
+export interface ListJobsOptions { limit?: number; cursor?: string; status?: JobStatus; since?: string; dashboard?: boolean; }
+
+function jobCounts(jobs: JobRecord[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const job of jobs) counts[job.status] = (counts[job.status] ?? 0) + 1;
+  return counts;
+}
+
+function updatedDesc(a: JobRecord, b: JobRecord): number {
+  return (b.updatedAt || b.createdAt).localeCompare(a.updatedAt || a.createdAt);
+}
+
+function createdAsc(a: JobRecord, b: JobRecord): number {
+  return a.createdAt.localeCompare(b.createdAt);
+}
+
+export function dashboardJobs(all: JobRecord[], limit: number): JobRecord[] {
+  const running = all.filter((j) => j.status === "running").sort(updatedDesc);
+  const queued = all.filter((j) => j.status === "queued").sort(createdAsc);
+  const terminal = all.filter((j) => isTerminalStatus(j.status)).sort(updatedDesc);
+
+  const picked = new Map<string, JobRecord>();
+  const push = (job: JobRecord) => { if (!picked.has(job.id) && picked.size < limit) picked.set(job.id, job); };
+  for (const job of running) push(job);
+  const queuedBudget = Math.max(10, limit - picked.size - Math.min(20, terminal.length));
+  for (const job of queued.slice(0, queuedBudget)) push(job);
+  for (const job of terminal) push(job);
+  for (const job of queued) push(job);
+  return [...picked.values()];
+}
+
+export async function listJobsPaged(options: ListJobsOptions = {}): Promise<{ jobs: JobRecord[]; nextCursor?: string; total: number; counts: Record<string, number>; view?: string }> {
   const all = (await listJobs()).filter(job => {
     if (options.status && job.status !== options.status) return false;
     if (options.since && job.createdAt < options.since) return false;
     return true;
   });
-  const start = options.cursor ? Math.max(0, all.findIndex(j => j.id === options.cursor) + 1) : 0;
+  const counts = jobCounts(all);
   const limit = Math.max(1, Math.min(options.limit ?? 50, 500));
+  if (options.dashboard && !options.cursor && !options.status) {
+    return { jobs: dashboardJobs(all, limit).map(sanitizeJobForDisplay), total: all.length, counts, view: "dashboard" };
+  }
+  const start = options.cursor ? Math.max(0, all.findIndex(j => j.id === options.cursor) + 1) : 0;
   const jobs = all.slice(start, start + limit).map(sanitizeJobForDisplay);
   const nextCursor = start + limit < all.length ? jobs.at(-1)?.id : undefined;
-  return { jobs, nextCursor, total: all.length };
+  return { jobs, nextCursor, total: all.length, counts };
 }
 
 export async function deleteJob(id: string): Promise<void> {

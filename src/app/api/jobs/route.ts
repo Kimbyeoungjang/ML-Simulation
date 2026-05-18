@@ -9,7 +9,8 @@ export async function GET(req: Request) {
   const cursor = url.searchParams.get("cursor") ?? undefined;
   const status = url.searchParams.get("status") as any;
   const since = url.searchParams.get("since") ?? undefined;
-  return NextResponse.json({ ...(await listJobsPaged({ limit, cursor, status, since })), externalTools: await getExternalToolsStatus() });
+  const dashboard = url.searchParams.get("dashboard") === "1" || url.searchParams.get("view") === "dashboard";
+  return NextResponse.json({ ...(await listJobsPaged({ limit, cursor, status, since, dashboard })), externalTools: await getExternalToolsStatus() });
 }
 
 export async function POST(req: Request) {

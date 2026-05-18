@@ -13,6 +13,7 @@ import {
 } from "@/lib/defaults";
 import { estimateAll, sweepArrays } from "@/lib/estimator";
 import { applyEstimatorSuiteToSearchResponse } from "@/lib/estimatorSuiteApply";
+import { estimatorPresets, findEstimatorPreset } from "@/lib/estimatorPresets";
 import type { EstimatorSuiteModel } from "@/lib/estimatorSuite";
 import { parseNumList, fmt } from "@/lib/math";
 import { hardwarePresets, workloadPresets } from "@/lib/presets";
@@ -208,6 +209,7 @@ export default function Home() {
   const [estimatorSuiteResult, setEstimatorSuiteResult] = useState<any | null>(null);
   const [estimatorSuiteBusy, setEstimatorSuiteBusy] = useState(false);
   const [estimatorSuiteModels, setEstimatorSuiteModels] = useState<any[]>([]);
+  const [selectedEstimatorPreset, setSelectedEstimatorPreset] = useState("quick-512");
   const [activeEstimatorSuite, setActiveEstimatorSuite] = useState<{ runId?: string; model?: EstimatorSuiteModel } | null>(null);
   const [calibrationRow, setCalibrationRow] = useState({
     model: "vit_s",
@@ -424,6 +426,19 @@ export default function Home() {
     setEstimatorPlanOptions((cur) => ({ ...cur, ...patch }));
   }
 
+  function applyEstimatorPreset(id = selectedEstimatorPreset) {
+    const preset = findEstimatorPreset(id);
+    if (!preset) {
+      setServerMessage(`Estimator 프리셋을 찾지 못했습니다: ${id}`);
+      return;
+    }
+    setSelectedEstimatorPreset(id);
+    setEstimatorPlanOptions((cur) => ({ ...cur, ...preset.planOptions }));
+    setEstimatorSuiteOptions((cur) => ({ ...cur, ...preset.trainOptions }));
+    setServerMessage(`Estimator 프리셋 적용: ${preset.name} - ${preset.description}`);
+    setTab("estimatorSuite");
+  }
+
   async function generateEstimatorSuiteDesign() {
     setEstimatorSuiteBusy(true);
     try {
@@ -504,21 +519,23 @@ export default function Home() {
       const r = await fetch("/api/estimator-suite", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ action: train ? "dataset-and-train" : "dataset", files, options: estimatorSuiteOptions, train }),
+        body: JSON.stringify({ action: train ? "dataset-job" : "dataset", request, files, options: estimatorSuiteOptions, train, activate: true }),
       });
       const j = await r.json();
       if (!r.ok || !j.ok) throw new Error(j.error || "Estimator dataset import failed");
-      setEstimatorSuiteCsv(j.csv ?? "");
-      setEstimatorSuiteResult(j);
-      if (j.model) {
-        setActiveEstimatorSuite({ runId: j.runId, model: j.model });
-        await refreshEstimatorSuiteModels();
+      if (train && j.job?.id) {
+        setEstimatorSuiteResult(j);
+        setServerMessage(`Estimator dataset 학습 job 등록: ${j.job.name ?? j.job.id}. 작업 큐에서 진행률과 학습 로그를 확인하세요.`);
+        setTab("jobs");
+        await refreshJobs({ switchTab: true, updateReport: false });
+        startLiveJob(j.job.id);
+      } else {
+        setEstimatorSuiteCsv(j.csv ?? "");
+        setEstimatorSuiteResult(j);
+        const valid = j.summary?.validSamples ?? 0;
+        setServerMessage(`Estimator dataset 병합 완료: 유효 sample ${valid.toLocaleString?.() ?? valid}개`);
+        setTab("estimatorSuite");
       }
-      const valid = j.summary?.validSamples ?? 0;
-      setServerMessage(train
-        ? `Estimator dataset ${valid.toLocaleString?.() ?? valid}개 sample 병합/학습 완료: 추천=${j.model?.recommended ?? "n/a"}`
-        : `Estimator dataset 병합 완료: 유효 sample ${valid.toLocaleString?.() ?? valid}개`);
-      setTab("estimatorSuite");
     } catch (e: any) {
       setServerMessage(`Estimator dataset 처리 실패: ${e?.message ?? e}`);
     } finally {
@@ -532,15 +549,15 @@ export default function Home() {
       const r = await fetch("/api/estimator-suite", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ action: "suite", csvText: estimatorSuiteCsv, options: estimatorSuiteOptions }),
+        body: JSON.stringify({ action: "suite-job", request, csvText: estimatorSuiteCsv, options: estimatorSuiteOptions, activate: true }),
       });
       const j = await r.json();
-      if (!r.ok || !j.ok) throw new Error(j.error || "Estimator suite failed");
+      if (!r.ok || !j.ok) throw new Error(j.error || "Estimator suite job failed");
       setEstimatorSuiteResult(j);
-      setActiveEstimatorSuite({ runId: j.runId, model: j.model });
-      await refreshEstimatorSuiteModels();
-      setServerMessage(`Estimator suite 완료: ${j.model?.metadata?.samples?.toLocaleString?.() ?? j.model?.metadata?.samples} samples, 추천=${j.model?.recommended}. 이 브라우저 미리보기에도 즉시 적용했습니다.`);
-      setTab("estimatorSuite");
+      setServerMessage(`Estimator Suite 학습 job 등록: ${j.job?.name ?? j.job?.id}. 작업 큐에서 전체 진행률과 학습 로그를 실시간으로 확인하세요.`);
+      setTab("jobs");
+      await refreshJobs({ switchTab: true, updateReport: false });
+      if (j.job?.id) startLiveJob(j.job.id);
     } catch (e: any) {
       setServerMessage(`Estimator suite 실패: ${e?.message ?? e}`);
     } finally {
@@ -674,7 +691,7 @@ export default function Home() {
     options: { switchTab?: boolean; updateReport?: boolean } = {},
   ) {
     const { switchTab = true, updateReport = false } = options;
-    const r = await fetch("/api/jobs?limit=50", { cache: "no-store" });
+    const r = await fetch(`/api/jobs?limit=80&dashboard=1&t=${Date.now()}`, { cache: "no-store" });
     const payload = await r.json();
     setJobsPayload(payload);
     setJobsJson(JSON.stringify(payload, null, 2));
@@ -1173,6 +1190,10 @@ export default function Home() {
           fetchJobReport={fetchJobReport}
           deleteJobById={deleteJobById}
           estimatorSuiteCsv={estimatorSuiteCsv}
+          estimatorPresets={estimatorPresets}
+          selectedEstimatorPreset={selectedEstimatorPreset}
+          setSelectedEstimatorPreset={setSelectedEstimatorPreset}
+          onApplyEstimatorPreset={applyEstimatorPreset}
           setEstimatorSuiteCsv={setEstimatorSuiteCsv}
           estimatorSuiteOptions={estimatorSuiteOptions}
           updateEstimatorSuiteOptions={updateEstimatorSuiteOptions}

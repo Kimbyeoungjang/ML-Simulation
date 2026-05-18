@@ -8,6 +8,7 @@ import { rooflineMarkdown } from "@/lib/roofline";
 import { energyMarkdown } from "@/lib/energy";
 import { validityMarkdown } from "@/lib/validity";
 import { fmt } from "@/lib/math";
+import { memoryTrafficFor } from "@/lib/memoryTraffic";
 import type { DownloadFn } from "./primitives";
 import { ActionButton, Artifact, FieldLabel, MarkdownView } from "./primitives";
 import { CsvArtifactTable, JobArtifactList, JobArtifactText, JobSourceNotice } from "./jobArtifacts";
@@ -481,7 +482,6 @@ export function Graphs({ result, download, jobId, jobsPayload }: { result: any; 
   const hw = source?.request?.hardware ?? result?.request?.hardware ?? { frequencyMHz: 700 };
   const shape = op?.shape ?? {};
   const dtype = Number(shape.dtypeBytes || hw.bytesPerElement || 2);
-  const dramBytes = Math.max(1, (Number(shape.m) * Number(shape.k) + Number(shape.k) * Number(shape.n) + 2 * Number(shape.m) * Number(shape.n)) * dtype);
   const tileKey = (p: any) => `${Number(p.tileM)}x${Number(p.tileN)}x${Number(p.tileK)}`;
   const externalCandidates = Array.isArray(scaleSummary?.candidateLayers) ? scaleSummary.candidateLayers : [];
   const mainActual = scaleSummary?.layers?.[opIndex];
@@ -491,18 +491,32 @@ export function Graphs({ result, download, jobId, jobsPayload }: { result: any; 
       candidateActualByTile.set(tileKey(c), c);
     }
   }
-  const actualFor = (p: any, index: number) => candidateActualByTile.get(tileKey(p)) ?? (index === 0 ? mainActual : undefined);
+  const actualFor = (p: any, _index: number) => candidateActualByTile.get(tileKey(p));
   const actualAccessKiB = (a: any, key: "sramAccesses" | "dramAccesses") => {
     const accesses = Number(a?.[key]);
     return Number.isFinite(accesses) && accesses > 0 ? accesses * dtype / 1024 : undefined;
   };
+  const memoryFor = (p: any) => memoryTrafficFor(
+    { ...(hw as any), bytesPerElement: dtype },
+    { ...(shape as any), dtypeBytes: dtype },
+    p,
+  );
+  const estimatedSramAccessKiB = (p: any) => {
+    const m = memoryFor(p);
+    return (m.sramReadBytes + m.sramWriteBytes) / 1024;
+  };
+  const estimatedDramAccessKiB = (p: any) => {
+    const m = memoryFor(p);
+    return (m.dramReadBytes + m.dramWriteBytes) / 1024;
+  };
   const metricInfo: Record<string, { label: string; unit: string; lowerBetter: boolean; value: (p: any) => number; actualValue?: (a: any) => number | undefined; format: (v: number) => string; description: string }> = {
-    cycles: { label: "Cycle", unit: "cyc", lowerBetter: true, value: (p) => Number(p.cycles) || 0, actualValue: (a) => Number(a?.cycles) || undefined, format: (v) => Math.round(v).toLocaleString(), description: "TileForge estimator cycle과 SCALE-Sim top3 tile 실행값을 비교합니다." },
+    cycles: { label: "Cycle", unit: "cyc", lowerBetter: true, value: (p) => Number(p.cycles) || 0, actualValue: (a) => Number(a?.cycles) || undefined, format: (v) => Math.round(v).toLocaleString(), description: "TileForge learned/analytical estimator cycle과 같은 tile 후보의 SCALE-Sim top-k 실행값을 비교합니다." },
     timeUs: { label: "실행 시간", unit: "us", lowerBetter: true, value: (p) => (Number(p.cycles) || 0) / Math.max(1, Number(hw.frequencyMHz || 700)), actualValue: (a) => Number(a?.cycles) ? Number(a.cycles) / Math.max(1, Number(hw.frequencyMHz || 700)) : undefined, format: (v) => v.toFixed(3), description: "cycle을 주파수로 나눈 예상/실제 실행 시간입니다." },
-    utilization: { label: "PE 사용률", unit: "%", lowerBetter: false, value: (p) => (Number(p.utilization) || 0) * 100, actualValue: (a) => Number(a?.overallUtil ?? a?.computeUtil) || undefined, format: (v) => `${v.toFixed(1)}%`, description: "예측 PE 사용률과 SCALE-Sim Overall/Compute Util을 비교합니다." },
+    utilization: { label: "PE 사용률", unit: "%", lowerBetter: false, value: (p) => (Number(p.utilization) || 0) * 100, actualValue: (a) => Number(a?.overallUtil ?? a?.computeUtil) || undefined, format: (v) => `${v.toFixed(1)}%`, description: "예측 PE 사용률과 같은 tile 후보의 SCALE-Sim Overall/Compute Util을 비교합니다." },
     padding: { label: "패딩 비율", unit: "%", lowerBetter: true, value: (p) => (Number(p.paddingRatio) || 0) * 100, format: (v) => `${v.toFixed(1)}%`, description: "타일 경계에서 낭비되는 계산 비율입니다. SCALE-Sim에는 직접 대응되는 단일 지표가 없습니다." },
-    sram: { label: "SRAM 작업/접근", unit: "KiB", lowerBetter: true, value: (p) => (Number(p.sramBytes) || 0) / 1024, actualValue: (a) => actualAccessKiB(a, "sramAccesses"), format: (v) => `${v.toFixed(1)} KiB`, description: "파란색은 예측 작업 영역, 주황색은 SCALE-Sim SRAM access 총량입니다." },
-    dram: { label: "DRAM traffic", unit: "KiB", lowerBetter: true, value: () => dramBytes / 1024, actualValue: (a) => actualAccessKiB(a, "dramAccesses"), format: (v) => `${v.toFixed(1)} KiB`, description: "A/B/C 기준 추정 DRAM traffic과 SCALE-Sim DRAM access 총량입니다." },
+    sramFootprint: { label: "SRAM footprint", unit: "KiB", lowerBetter: true, value: (p) => (Number(p.sramBytes) || 0) / 1024, format: (v) => `${v.toFixed(1)} KiB`, description: "타일이 동시에 요구하는 로컬 SRAM 작업 영역입니다. access 총량과는 다른 물리량이므로 SCALE-Sim 막대를 표시하지 않습니다." },
+    sram: { label: "SRAM accesses", unit: "KiB", lowerBetter: true, value: estimatedSramAccessKiB, actualValue: (a) => actualAccessKiB(a, "sramAccesses"), format: (v) => `${v.toFixed(1)} KiB`, description: "파란색은 TileForge 추정 SRAM read/write traffic, 주황색은 같은 tile 후보의 SCALE-Sim SRAM access 총량입니다." },
+    dram: { label: "DRAM accesses", unit: "KiB", lowerBetter: true, value: estimatedDramAccessKiB, actualValue: (a) => actualAccessKiB(a, "dramAccesses"), format: (v) => `${v.toFixed(1)} KiB`, description: "파란색은 TileForge 추정 DRAM read/write traffic, 주황색은 같은 tile 후보의 SCALE-Sim DRAM access 총량입니다." },
     score: { label: "종합 점수", unit: "score", lowerBetter: true, value: (p) => Number(p.score ?? p.cycles) || 0, format: (v) => v.toFixed(3), description: "objective에 따른 내부 ranking 점수입니다. 외부 도구의 직접 대응값은 없습니다." },
   };
   const info = metricInfo[metric] ?? metricInfo.cycles;
@@ -536,7 +550,7 @@ export function Graphs({ result, download, jobId, jobsPayload }: { result: any; 
     <section className="graphs-panel">
       <JobSourceNotice jobId={jobId ?? ""} jobsPayload={jobsPayload} tabName="그래프" />
       <h3>타일 후보 성능 비교</h3>
-      <p className="small">파란색은 TileForge 예측, 주황색은 SCALE-Sim top3 tile 실행값입니다. padding/score처럼 SCALE-Sim 직접 대응 지표가 없는 항목은 예측값만 표시됩니다.</p>
+      <p className="small">파란색은 TileForge 예측, 주황색은 같은 tile 후보가 SCALE-Sim top-k 검증에 있을 때만 표시되는 실제값입니다. SRAM footprint와 access traffic은 서로 다른 물리량이므로 분리해서 표시합니다.</p>
       {error && <p className="small warn">선택 작업 result.json을 읽지 못해 현재 입력 미리보기를 사용합니다: {error}</p>}
       <div className="row graph-controls">
         <div>
@@ -552,8 +566,9 @@ export function Graphs({ result, download, jobId, jobsPayload }: { result: any; 
             <option value="timeUs">예상 실행 시간</option>
             <option value="utilization">PE 사용률</option>
             <option value="padding">패딩 비율</option>
-            <option value="sram">SRAM/cache 작업 영역</option>
-            <option value="dram">DRAM traffic 추정</option>
+            <option value="sramFootprint">SRAM footprint</option>
+            <option value="sram">SRAM access 추정</option>
+            <option value="dram">DRAM access 추정</option>
             <option value="score">종합 점수</option>
           </select>
         </div>
@@ -580,7 +595,7 @@ export function Graphs({ result, download, jobId, jobsPayload }: { result: any; 
           const actualMetricValue = actualMetricValues[i];
           return (
             <tr key={`${p.tileM}-${p.tileN}-${p.tileK}-${i}`}>
-              <td>{i + 1}</td><td>{p.tileM}×{p.tileN}×{p.tileK}</td><td>{info.format(info.value(p))}</td><td>{actualMetricValue ? info.format(actualMetricValue) : "-"}</td><td>{Math.round(p.cycles).toLocaleString()}</td><td>{actual?.cycles ? Math.round(actual.cycles).toLocaleString() : "-"}</td><td>{((Number(p.cycles)||0)/Math.max(1, Number(hw.frequencyMHz||700))).toFixed(3)}</td><td>{((p.utilization ?? 0) * 100).toFixed(1)}% / {actual?.overallUtil ? `${Number(actual.overallUtil).toFixed(1)}%` : "-"}</td><td>{((p.paddingRatio ?? 0) * 100).toFixed(1)}%</td><td>{((p.sramBytes ?? 0) / 1024).toFixed(1)} KiB / {actualAccessKiB(actual, "sramAccesses")?.toFixed(1) ?? "-"} KiB</td><td>{(dramBytes/1024).toFixed(1)} KiB / {actualAccessKiB(actual, "dramAccesses")?.toFixed(1) ?? "-"} KiB</td>
+              <td>{i + 1}</td><td>{p.tileM}×{p.tileN}×{p.tileK}</td><td>{info.format(info.value(p))}</td><td>{actualMetricValue ? info.format(actualMetricValue) : "-"}</td><td>{Math.round(p.cycles).toLocaleString()}</td><td>{actual?.cycles ? Math.round(actual.cycles).toLocaleString() : "-"}</td><td>{((Number(p.cycles)||0)/Math.max(1, Number(hw.frequencyMHz||700))).toFixed(3)}</td><td>{((p.utilization ?? 0) * 100).toFixed(1)}% / {actual?.overallUtil ? `${Number(actual.overallUtil).toFixed(1)}%` : "-"}</td><td>{((p.paddingRatio ?? 0) * 100).toFixed(1)}%</td><td>{((p.sramBytes ?? 0) / 1024).toFixed(1)} KiB; access {estimatedSramAccessKiB(p).toFixed(1)} / {actualAccessKiB(actual, "sramAccesses")?.toFixed(1) ?? "-"} KiB</td><td>{estimatedDramAccessKiB(p).toFixed(1)} KiB / {actualAccessKiB(actual, "dramAccesses")?.toFixed(1) ?? "-"} KiB</td>
             </tr>
           );
         })}</tbody>

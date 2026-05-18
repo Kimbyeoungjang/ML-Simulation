@@ -8,6 +8,10 @@ import { MarkdownView, MiniField } from "./primitives";
 export function EstimatorSuitePanel({
   csv,
   setCsv,
+  presets = [],
+  selectedPresetId,
+  setSelectedPresetId,
+  onApplyPreset,
   options,
   updateOptions,
   planOptions,
@@ -29,6 +33,10 @@ export function EstimatorSuitePanel({
 }: {
   csv: string;
   setCsv: (value: string) => void;
+  presets?: Array<{ id: string; name: string; description: string }>;
+  selectedPresetId?: string;
+  setSelectedPresetId?: (id: string) => void;
+  onApplyPreset?: (id: string) => void;
   options: any;
   updateOptions: (patch: any) => void;
   planOptions: any;
@@ -72,8 +80,27 @@ export function EstimatorSuitePanel({
 
 
 
+      <section className="suite-section" title="자주 쓰는 표본 계획과 학습 설정을 한 번에 적용합니다.">
+        <h4>0. Estimator 프리셋</h4>
+        <p className="small">Smoke/512개 테스트/4096개 본 실험/대량 CSV 학습 설정을 버튼 하나로 적용합니다. 프리셋은 표본 계획 값과 Tree/Neural 학습 설정을 함께 바꿉니다.</p>
+        <div className="row2">
+          <label className="mini-field">
+            <span>프리셋</span>
+            <select value={selectedPresetId ?? ""} onChange={(e) => setSelectedPresetId?.(e.target.value)}>
+              {presets.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
+            </select>
+          </label>
+          <div className="calibration-actions">
+            <button className="secondary" onClick={() => selectedPresetId && onApplyPreset?.(selectedPresetId)} disabled={busy || !selectedPresetId}>프리셋 적용</button>
+          </div>
+        </div>
+        {presets.find((preset) => preset.id === selectedPresetId)?.description && (
+          <p className="small good">{presets.find((preset) => preset.id === selectedPresetId)?.description}</p>
+        )}
+      </section>
+
       <section className="suite-section" title="학습된 Estimator Suite 모델을 일반 TileForge estimator에 적용합니다.">
-        <h4>0. 활성 Estimator Suite 적용</h4>
+        <h4>1. 활성 Estimator Suite 적용</h4>
         <p className="small">활성 모델을 선택하면 일반 타일 ranking, 총 cycle, 보고서의 cycle 값이 analytical baseline 대신 learned ensemble 보정값을 사용합니다. 서버 full-pipeline 작업에도 같은 활성 모델이 적용됩니다.</p>
         <div className="calibration-actions">
           <button className="secondary" onClick={onRefreshModels} disabled={busy}>모델 목록 새로고침</button>
@@ -108,7 +135,7 @@ export function EstimatorSuitePanel({
       </section>
 
       <section className="suite-section" title="수만 개 시뮬레이션 표본을 만들 때 사용할 파라미터 범위입니다.">
-        <h4>1. 표본 계획 자동 생성</h4>
+        <h4>2. 표본 계획 자동 생성</h4>
         <p className="small">범위 문법: <code>시작:끝:간격</code> 또는 쉼표 목록입니다. 예: <code>64:1024:64</code>, <code>64,128,256</code>, array는 <code>64x64,128x128</code>.</p>
         <div className="row4">
           <MiniField label="M range" tip="GEMM M 차원 범위입니다."><input value={planOptions.mRange} onChange={(e) => updatePlanOptions({ mRange: e.target.value })} /></MiniField>
@@ -139,7 +166,7 @@ export function EstimatorSuitePanel({
       </section>
 
       <section className="suite-section" title="여러 CSV 파일을 업로드해 하나의 대형 학습 dataset으로 병합하고 바로 학습합니다.">
-        <h4>2. 대량 CSV Dataset Manager</h4>
+        <h4>3. 대량 CSV Dataset Manager</h4>
         <p className="small">이미 수천~수만 개 SCALE-Sim 결과 CSV가 있다면 여기에 여러 파일을 한 번에 업로드하세요. 자동으로 병합, 중복 제거, measuredCycles/estimatorCycles 유효성 검사, 분포 요약을 수행하고 원하면 바로 Estimator Suite 학습까지 실행합니다.</p>
         <div className="row2">
           <label className="mini-field">
@@ -181,7 +208,7 @@ export function EstimatorSuitePanel({
       </section>
 
       <section className="suite-section" title="학습 모델 하이퍼파라미터입니다.">
-        <h4>3. 학습 설정</h4>
+        <h4>4. 학습 설정</h4>
         <div className="row4">
           <MiniField label="topK" tip="현재 설정 기반 단순 설계 CSV에 포함할 상위 tile 후보 개수입니다.">
             <input type="number" value={options.topK} onChange={(e) => updateOptions({ topK: +e.target.value })} />
