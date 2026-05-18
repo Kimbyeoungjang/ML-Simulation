@@ -2,6 +2,7 @@ import type { SearchRequest, SearchResponse, TileCandidateResult } from "@/types
 import { predictEstimatorSuiteCycles, type EstimatorSuiteModel, type EstimatorSuiteModelName } from "./estimatorSuite";
 import type { LearnedEstimatorSample } from "./learnedEstimator";
 import { mean } from "./math";
+import { generateReportMarkdown } from "./report";
 
 export interface EstimatorSuiteApplicationSummary {
   applied: boolean;
@@ -122,5 +123,14 @@ export function applyEstimatorSuiteToSearchResponse(response: SearchResponse, mo
     averageCycleFactor: mean(factors),
     warnings,
   };
-  return { ...response, results, summary, estimatorSuite };
+  const updated: SearchResponseWithEstimatorSuite = { ...response, results, summary, estimatorSuite };
+  // `estimateAll` creates artifacts before this learned correction is applied.
+  // Regenerate report.md here so the web preview and full-pipeline artifacts do
+  // not say "Learned Estimator Suite: 미적용" while the cycles were actually
+  // adjusted.
+  updated.artifacts = {
+    ...updated.artifacts,
+    reportMarkdown: generateReportMarkdown(updated),
+  };
+  return updated;
 }

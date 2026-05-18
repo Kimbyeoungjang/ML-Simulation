@@ -123,7 +123,11 @@ export function buildEstimatorSamplingPlan(base: SearchRequest, options: Estimat
   const tileKValues = parsePlanRange(options.tileKRange, base.candidates.tileK);
   const shapes = generatedShapes(base, options);
   const rows: EstimatorSamplingPlanRow[] = [];
-  outer: for (const array of arrays) for (const sramKB of srams) for (const dataflow of dataflows) for (const shape of shapes) {
+  // Keep the loop order balanced across dataflows. The previous array → SRAM →
+  // dataflow → shape order could exhaust maxSamples with WS only when the shape
+  // grid was large. Shape-first + dataflow-inside makes the first N queued rows
+  // cover WS/OS/IS together.
+  outer: for (const array of arrays) for (const sramKB of srams) for (const shape of shapes) for (const dataflow of dataflows) {
     const hw = { ...base.hardware, arrayRows: array.rows, arrayCols: array.cols, sramKB, dataflow };
     const candidates = [];
     for (const tileM of tileMValues) for (const tileN of tileNValues) for (const tileK of tileKValues) {

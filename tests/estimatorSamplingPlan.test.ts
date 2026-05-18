@@ -36,4 +36,29 @@ describe("estimator sampling plan", () => {
     expect(plan.csv).toContain("scaleSimRunName");
     expect(new Set(plan.rows.map((r) => r.id)).size).toBe(plan.rows.length);
   });
+  it("keeps early bounded samples balanced across WS/OS/IS", () => {
+    const request: SearchRequest = {
+      hardware: defaultHardware,
+      shapes: [{ id: "base", model: "demo", opName: "gemm", m: 64, n: 64, k: 64, dtypeBytes: 2 }],
+      candidates: { tileM: [16, 32], tileN: [16, 32], tileK: [16, 32] },
+      objective: "balanced",
+      maxResultsPerOp: 2,
+    };
+    const plan = buildEstimatorSamplingPlan(request, {
+      mRange: "64:512:64",
+      nRange: "64:512:64",
+      kRange: "64:512:64",
+      dataflows: "WS,OS,IS",
+      tileMRange: "16,32",
+      tileNRange: "16,32",
+      tileKRange: "16,32",
+      topKPerShape: 1,
+      maxSamples: 12,
+      includeCurrentShapes: false,
+    });
+    expect(plan.rows).toHaveLength(12);
+    expect(new Set(plan.rows.map((r) => r.dataflow))).toEqual(new Set(["WS", "OS", "IS"]));
+    expect(plan.rows.slice(0, 3).map((r) => r.dataflow).sort()).toEqual(["IS", "OS", "WS"]);
+  });
+
 });

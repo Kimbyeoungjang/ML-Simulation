@@ -199,7 +199,7 @@ export default function Home() {
     tileKRange: defaultCandidates.tileK.join(","),
     arrayRange: `${defaultHardware.arrayRows}x${defaultHardware.arrayCols}`,
     sramKbRange: String(defaultHardware.sramKB),
-    dataflows: defaultHardware.dataflow,
+    dataflows: "WS,OS,IS",
     maxSamples: 128,
     queueLimit: 128,
     topKPerShape: 1,
