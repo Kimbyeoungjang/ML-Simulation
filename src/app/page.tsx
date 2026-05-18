@@ -497,6 +497,35 @@ export default function Home() {
     }
   }
 
+
+  async function importEstimatorDatasetWeb(files: Array<{ name: string; text: string }>, train: boolean) {
+    setEstimatorSuiteBusy(true);
+    try {
+      const r = await fetch("/api/estimator-suite", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: train ? "dataset-and-train" : "dataset", files, options: estimatorSuiteOptions, train }),
+      });
+      const j = await r.json();
+      if (!r.ok || !j.ok) throw new Error(j.error || "Estimator dataset import failed");
+      setEstimatorSuiteCsv(j.csv ?? "");
+      setEstimatorSuiteResult(j);
+      if (j.model) {
+        setActiveEstimatorSuite({ runId: j.runId, model: j.model });
+        await refreshEstimatorSuiteModels();
+      }
+      const valid = j.summary?.validSamples ?? 0;
+      setServerMessage(train
+        ? `Estimator dataset ${valid.toLocaleString?.() ?? valid}개 sample 병합/학습 완료: 추천=${j.model?.recommended ?? "n/a"}`
+        : `Estimator dataset 병합 완료: 유효 sample ${valid.toLocaleString?.() ?? valid}개`);
+      setTab("estimatorSuite");
+    } catch (e: any) {
+      setServerMessage(`Estimator dataset 처리 실패: ${e?.message ?? e}`);
+    } finally {
+      setEstimatorSuiteBusy(false);
+    }
+  }
+
   async function runEstimatorSuiteWeb() {
     setEstimatorSuiteBusy(true);
     try {
@@ -1110,6 +1139,7 @@ export default function Home() {
           generateEstimatorSuiteDesign={generateEstimatorSuiteDesign}
           collectEstimatorSamplesFromJobsWeb={collectEstimatorSamplesFromJobsWeb}
           runEstimatorSuiteWeb={runEstimatorSuiteWeb}
+          importEstimatorDatasetWeb={importEstimatorDatasetWeb}
           liveJobId={liveJobId}
           createJob={createJob}
           runServerEstimate={runServerEstimate}
@@ -1159,6 +1189,7 @@ export default function Home() {
           generateEstimatorSamplingPlan={generateEstimatorSamplingPlan}
           collectEstimatorSamplesFromJobsWeb={collectEstimatorSamplesFromJobsWeb}
           runEstimatorSuiteWeb={runEstimatorSuiteWeb}
+          importEstimatorDatasetWeb={importEstimatorDatasetWeb}
           jobsJson={jobsJson}
           liveJobId={liveJobId}
           liveJob={liveJob}

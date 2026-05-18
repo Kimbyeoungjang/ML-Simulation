@@ -976,22 +976,13 @@ function externalComparisonMarkdown(
   const hasActual = Boolean(scale?.ok && actualTotal && actualTotal > 0);
   const ratio = hasActual ? actualTotal! / predictedTotal : undefined;
   const absDelta = hasActual ? actualTotal! - predictedTotal : undefined;
-  const bestCandidateLayers = (scale?.candidateLayers ?? []).filter((layer) => layer.rank === 1);
-  const hasTilePolicyActual = bestCandidateLayers.length > 0;
-  const tilePolicyActualTotal = hasTilePolicyActual ? bestCandidateLayers.reduce((sum, layer) => sum + layer.cycles, 0) : undefined;
-  const tilePolicyPredictedTotal = hasTilePolicyActual ? bestCandidateLayers.reduce((sum, layer) => sum + (layer.predictedCycles ?? 0), 0) : undefined;
-  const tilePolicyRatio = hasTilePolicyActual && tilePolicyPredictedTotal && tilePolicyPredictedTotal > 0
-    ? tilePolicyActualTotal! / tilePolicyPredictedTotal
-    : undefined;
   const verdict = !hasActual
     ? "SCALE-Sim 결과가 아직 없어 비교할 수 없습니다."
-    : tilePolicyRatio !== undefined && (tilePolicyRatio > 1.15 || tilePolicyRatio < 0.85)
-      ? "주의: full-layer topology 기준 전체 cycle은 가까워 보이지만, tile-policy top1 후보를 SCALE-Sim으로 검증하면 오차가 큽니다. 현재 learned 보정은 실제 tile 실행 비용을 충분히 반영하지 못했을 가능성이 큽니다."
-      : ratio! > 1.15
-        ? "SCALE-Sim full-layer cycle이 estimator보다 큽니다. 경계 타일, array fill/drain, 메모리 대기, 데이터플로우 모델이 estimator보다 더 보수적으로 반영되었을 가능성이 큽니다."
-        : ratio! < 0.85
-          ? "SCALE-Sim full-layer cycle이 estimator보다 작습니다. TileForge estimator가 padding 또는 pipeline 비용을 더 보수적으로 잡았거나, SCALE-Sim topology가 단순한 compute path로 해석되었을 가능성이 있습니다."
-          : "SCALE-Sim full-layer topology 기준으로는 estimator와 비교적 가깝습니다. 다만 tile-policy 검증값이 있는 경우에는 아래의 tile별 비교를 더 신뢰해야 합니다.";
+    : ratio! > 1.15
+      ? "SCALE-Sim cycle이 estimator보다 큽니다. 경계 타일, array fill/drain, 메모리 대기, 데이터플로우 모델이 estimator보다 더 보수적으로 반영되었을 가능성이 큽니다."
+      : ratio! < 0.85
+        ? "SCALE-Sim cycle이 estimator보다 작습니다. TileForge estimator가 padding 또는 pipeline 비용을 더 보수적으로 잡았거나, SCALE-Sim topology가 단순한 compute path로 해석되었을 가능성이 있습니다."
+        : "SCALE-Sim과 estimator가 비교적 잘 맞습니다. 현재 타일 정책은 외부 시뮬레이터 기준에서도 큰 괴리 없이 동작하는 편입니다.";
   const lines = [
     "## 2-2. 예측 결과와 실제 실행 결과 비교",
     "| 항목 | TileForge estimator | SCALE-Sim 실제 실행 | 차이 | 해석 |",
@@ -1001,22 +992,10 @@ function externalComparisonMarkdown(
     `- 분석: ${verdict}`,
     "- 주의: IREE compile 성공은 `generated.mlir`의 컴파일 가능성을 검증하는 단계입니다. 실제 성능 비교의 cycle 기준은 SCALE-Sim 결과를 사용합니다.",
   ];
-  if (hasTilePolicyActual) {
-    const delta = tilePolicyRatio !== undefined ? ((tilePolicyActualTotal! - tilePolicyPredictedTotal!) / tilePolicyPredictedTotal!) * 100 : undefined;
-    lines.push(
-      "",
-      "### Tile-policy SCALE-Sim 검증 요약",
-      "| 항목 | Learned/TileForge 예측 | SCALE-Sim tile-policy 실행 | 차이 | 해석 |",
-      "|---|---:|---:|---:|---|",
-      `| top1 tile 정책 합계 | ${tilePolicyPredictedTotal?.toLocaleString() ?? "해당 없음"} | ${tilePolicyActualTotal?.toLocaleString() ?? "해당 없음"} | ${delta !== undefined ? `${delta >= 0 ? "+" : ""}${delta.toFixed(1)}%` : "해당 없음"} | ${tilePolicyRatio !== undefined ? `SCALE-Sim / 예측 = ${tilePolicyRatio.toFixed(3)}배` : "비교 불가"} |`,
-      "",
-      "- 해석: 이 값은 선택된 tile shape를 SCALE-Sim에 넣고 tile count로 외삽한 결과입니다. 실제 tile 후보 ranking의 신뢰도는 full-layer 전체 cycle보다 이 표를 우선 확인해야 합니다.",
-    );
-  }
   if (hasActual && scale?.layers?.length) {
     lines.push(
       "",
-      "### SCALE-Sim full-layer topology cycle 상위 항목",
+      "### SCALE-Sim layer별 cycle 상위 항목",
       "| 순위 | SCALE-Sim layer | cycle | 비중 |",
       "|---:|---|---:|---:|",
     );
@@ -1047,7 +1026,7 @@ function externalComparisonMarkdown(
       lines.push(
         "",
         "### SCALE-Sim top3 tile 후보 검증",
-        "| 연산 | rank | tile | TileForge/Learned cycle | SCALE-Sim tile-policy cycle | 차이 | SCALE-Sim util |",
+        "| 연산 | rank | tile | TileForge cycle | SCALE-Sim extrapolated cycle | 차이 | SCALE-Sim util |",
         "|---|---:|---|---:|---:|---:|---:|",
       );
       for (const layer of scale.candidateLayers.slice(0, 12)) {

@@ -3,9 +3,10 @@ import path from "node:path";
 import { NextResponse } from "next/server";
 import { stableId } from "@/lib/determinism";
 import { buildEstimatorSuiteArtifacts, designEstimatorSuiteCsv, normalizeSuiteSplitKinds, parseEstimatorSamplesCsv } from "@/lib/estimatorSuiteArtifacts";
+import { buildEstimatorDataset, estimatorDatasetSummaryMarkdown } from "@/lib/estimatorSuiteDataset";
 import { buildEstimatorSamplingPlan, requestFromPlanRow } from "@/lib/estimatorSamplingPlan";
 import { collectEstimatorSamplesFromJobs, mergeCollectedSamplesIntoCsv } from "@/lib/estimatorSuiteJobSamples";
-import { createJob, listJobs } from "@/server/jobStore";
+import { createJobsBulk, listJobs } from "@/server/jobStore";
 import { trainEstimatorSuite } from "@/lib/estimatorSuite";
 import { activateEstimatorSuiteModel, clearActiveEstimatorSuiteModel, listEstimatorSuiteModels, readActiveEstimatorSuiteModel } from "@/server/activeEstimatorSuite";
 import { formatZodError, parseSearchRequest } from "@/lib/validation";
@@ -56,11 +57,10 @@ export async function POST(req: Request) {
       const plan = buildEstimatorSamplingPlan(request, { ...(body.options ?? {}), maxSamples });
       const queuedJobs: Array<{ id: string; name?: string; status?: string }> = [];
       if (action === "plan-and-queue" || body.enqueue === true) {
-        const queueLimit = Math.max(1, Math.min(num(body, "queueLimit", num(body, "queue-limit", maxSamples)), 1000));
-        for (const row of plan.rows.slice(0, queueLimit)) {
-          const job = await createJob("full-pipeline", requestFromPlanRow(request, row), row.scaleSimRunName);
-          queuedJobs.push({ id: job.id, name: job.name, status: job.status });
-        }
+        const queueLimit = Math.max(1, Math.min(num(body, "queueLimit", num(body, "queue-limit", maxSamples)), 50000));
+        const rowsToQueue = plan.rows.slice(0, queueLimit);
+        const jobs = await createJobsBulk(rowsToQueue.map(row => ({ kind: "full-pipeline" as const, request: requestFromPlanRow(request, row), name: row.scaleSimRunName })));
+        for (const job of jobs) queuedJobs.push({ id: job.id, name: job.name, status: job.status });
       }
       const { dir, artifacts } = await writeRunArtifacts(runId, { "estimator-suite-sampling-plan.csv": plan.csv });
       return NextResponse.json({ ok: true, action, runId, dir, artifacts, planCsv: plan.csv, rows: plan.totalRows, queuedJobs });
@@ -96,6 +96,64 @@ export async function POST(req: Request) {
         rows: collected.rows.length,
         validSamples,
         skipped: collected.skipped.slice(0, 50),
+      });
+    }
+
+    if (action === "dataset" || action === "dataset-and-train") {
+      const rawFiles = Array.isArray(body.files) ? body.files : [];
+      const files = rawFiles
+        .map((f: any, index: number) => ({ name: String(f?.name ?? `dataset_${index}.csv`), text: String(f?.text ?? "") }))
+        .filter((f: { name: string; text: string }) => f.text.trim().length > 0);
+      if (!files.length) return NextResponse.json({ ok: false, error: "CSV files are required for dataset import." }, { status: 400 });
+      const dataset = buildEstimatorDataset(files, { dedupe: body.dedupe !== false });
+      const summaryMarkdown = estimatorDatasetSummaryMarkdown(dataset.summary);
+      const filesToWrite: Record<string, string> = {
+        "estimator-suite-dataset.csv": dataset.csv,
+        "estimator-suite-dataset-summary.md": summaryMarkdown,
+      };
+      let model = null as ReturnType<typeof trainEstimatorSuite> | null;
+      let bundle = null as ReturnType<typeof buildEstimatorSuiteArtifacts> | null;
+      if (action === "dataset-and-train" || body.train === true) {
+        if (dataset.samples.length < 40) {
+          return NextResponse.json({ ok: false, error: `Estimator suite requires at least 40 valid measured samples; parsed ${dataset.samples.length}.`, summary: dataset.summary, csv: dataset.csv, reportMarkdown: summaryMarkdown }, { status: 400 });
+        }
+        model = trainEstimatorSuite(dataset.samples, {
+          trees: num(body, "trees", 160),
+          maxDepth: num(body, "maxDepth", num(body, "max-depth", 10)),
+          minLeaf: num(body, "minLeaf", num(body, "min-leaf", 4)),
+          hiddenUnits: num(body, "hiddenUnits", num(body, "hidden", 64)),
+          epochs: num(body, "epochs", 900),
+          learningRate: num(body, "learningRate", num(body, "learning-rate", 0.01)),
+          l2: num(body, "l2", 0.0001),
+          seed: num(body, "seed", 42),
+          validationFraction: num(body, "validationFraction", num(body, "validation", 0.2)),
+          maxSplitTrainSamples: num(body, "maxSplitTrainSamples", num(body, "max-split-train", 12000)),
+          maxFinalTrainSamples: num(body, "maxFinalTrainSamples", num(body, "max-final-train", 20000)),
+          splitKinds: normalizeSuiteSplitKinds(body.options?.splits ?? body.splits),
+        });
+        bundle = buildEstimatorSuiteArtifacts(model, dataset.samples);
+        Object.assign(filesToWrite, {
+          "estimator-suite-model.json": bundle.modelJson,
+          "suite-tree-residual-model.json": bundle.treeModelJson,
+          "suite-neural-residual-model.json": bundle.neuralModelJson,
+          "estimator-suite-validation.csv": bundle.validationCsv,
+          "estimator-suite-predictions.csv": bundle.predictionsCsv,
+          "estimator-suite-report.md": bundle.reportMarkdown,
+        });
+      }
+      const { dir, artifacts } = await writeRunArtifacts(runId, filesToWrite);
+      return NextResponse.json({
+        ok: true,
+        action,
+        runId,
+        dir,
+        artifacts,
+        csv: dataset.csv,
+        summary: dataset.summary,
+        reportMarkdown: bundle?.reportMarkdown ?? summaryMarkdown,
+        validationCsv: bundle?.validationCsv,
+        predictionsCsv: bundle?.predictionsCsv,
+        model,
       });
     }
 

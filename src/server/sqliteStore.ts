@@ -60,6 +60,29 @@ export function listJobsSqlite(): JobRecord[] | undefined {
   return rows.map((r: any) => JSON.parse(r.json));
 }
 
+export function countJobsSqlite(status?: string): number | undefined {
+  const d = getSqliteDb();
+  if (!d) return undefined;
+  if (!status) return Number(d.prepare(`SELECT COUNT(*) AS n FROM jobs`).get().n ?? 0);
+  return Number(d.prepare(`SELECT COUNT(*) AS n FROM jobs WHERE status=?`).get(status).n ?? 0);
+}
+
+export function selectQueuedJobsSqlite(limit = 50, excludeIds: string[] = []): JobRecord[] | undefined {
+  const d = getSqliteDb();
+  if (!d) return undefined;
+  const safeLimit = Math.max(1, Math.min(Math.floor(limit), 500));
+  let sql = `SELECT json FROM jobs WHERE status='queued'`;
+  const params: string[] = [];
+  if (excludeIds.length > 0) {
+    const ids = excludeIds.slice(0, 250);
+    sql += ` AND id NOT IN (${ids.map(() => '?').join(',')})`;
+    params.push(...ids);
+  }
+  sql += ` ORDER BY created_at ASC LIMIT ${safeLimit}`;
+  const rows = d.prepare(sql).all(...params);
+  return rows.map((r: any) => JSON.parse(r.json));
+}
+
 export function mirrorJob(job: JobRecord) { saveJobSqlite(job); }
 
 export function mirrorLog(jobId: string, message: string, createdAt: string) {

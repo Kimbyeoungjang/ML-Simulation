@@ -71,6 +71,7 @@ export function ResultsPanel(props: ResultsPanelProps) {
     generateEstimatorSamplingPlan,
     collectEstimatorSamplesFromJobsWeb,
     runEstimatorSuiteWeb,
+    importEstimatorDatasetWeb,
     jobsJson,
     liveJobId,
     liveJob,
@@ -214,6 +215,7 @@ export function ResultsPanel(props: ResultsPanelProps) {
                 onQueuePlan={() => generateEstimatorSamplingPlan(true)}
                 onCollectJobs={collectEstimatorSamplesFromJobsWeb}
                 onRun={runEstimatorSuiteWeb}
+                onImportDataset={importEstimatorDatasetWeb}
                 download={download}
               />
             )}

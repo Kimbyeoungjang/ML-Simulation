@@ -7,7 +7,7 @@ import type { SearchRequest } from "@/types/domain";
 import { hashObject } from "@/lib/hash";
 import { ensureJobRoot, getJobRoot, jobDir } from "./workspace";
 import { nowIso, stableId } from "@/lib/determinism";
-import { deleteJobSqlite, listJobsSqlite, markStageSqlite, mirrorLog, readJobSqlite, saveJobSqlite, sqlitePrimary } from "./sqliteStore";
+import { countJobsSqlite, deleteJobSqlite, listJobsSqlite, markStageSqlite, mirrorLog, readJobSqlite, saveJobSqlite, selectQueuedJobsSqlite, sqlitePrimary } from "./sqliteStore";
 import { atomicWriteFile } from "./atomic";
 import { appendJobEvent } from "./eventsLog";
 import { assertTransition, isTerminalStatus } from "@/lib/stateMachine";
@@ -40,15 +40,24 @@ function safeJobName(name: string): string {
   return name.trim().replace(/[^A-Za-z0-9가-힣_.-]+/g, "_").replace(/^_+|_+$/g, "") || "job";
 }
 
-async function uniqueJobName(base: string): Promise<string> {
+function uniqueJobNameFromSet(base: string, used: Set<string>, indexHint = 0): string {
   const safe = safeJobName(base);
+  if (!used.has(safe)) {
+    used.add(safe);
+    return safe;
+  }
+  const suffix = timestampSuffix();
+  let i = Math.max(2, indexHint + 2);
+  let candidate = `${safe}_${suffix}`;
+  while (used.has(candidate)) candidate = `${safe}_${suffix}_${i++}`;
+  used.add(candidate);
+  return candidate;
+}
+
+async function uniqueJobName(base: string): Promise<string> {
   const jobs = await listJobs().catch(() => []);
   const used = new Set(jobs.map(j => j.name).filter(Boolean) as string[]);
-  if (!used.has(safe)) return safe;
-  let candidate = `${safe}_${timestampSuffix()}`;
-  let i = 2;
-  while (used.has(candidate)) candidate = `${safe}_${timestampSuffix()}_${i++}`;
-  return candidate;
+  return uniqueJobNameFromSet(base, used);
 }
 
 export async function createJob(kind: JobKind, request: SearchRequest, requestedName?: string): Promise<JobRecord> {
@@ -65,6 +74,46 @@ export async function createJob(kind: JobKind, request: SearchRequest, requested
   await mkdir(jobDir(id), { recursive: true });
   await saveJob(rec);
   return rec;
+}
+
+export interface BulkJobInput { kind: JobKind; request: SearchRequest; name?: string; }
+
+export async function createJobsBulk(inputs: BulkJobInput[]): Promise<JobRecord[]> {
+  await ensureJobRoot();
+  if (inputs.length === 0) return [];
+  await enforceJobQuota(inputs.length);
+  const existing = await listJobs().catch(() => []);
+  const usedNames = new Set(existing.map(j => j.name).filter(Boolean) as string[]);
+  const now = nowIso();
+  const jobs: JobRecord[] = inputs.map((input, index) => {
+    const id = stableId("job");
+    const request = input.request;
+    return {
+      id,
+      kind: input.kind,
+      name: uniqueJobNameFromSet(input.name || request.hardware?.name || input.kind, usedNames, index),
+      requestHash: requestCacheKey(input.kind, request),
+      status: "queued",
+      stage: "queued",
+      progress: 0,
+      cancelRequested: false,
+      createdAt: now,
+      updatedAt: now,
+      request,
+      logs: [],
+      artifacts: [],
+      warnings: [],
+      attempts: 0,
+      maxAttempts: DEFAULT_MAX_ATTEMPTS,
+      timeoutMs: DEFAULT_TIMEOUT_MS,
+      stageHistory: [{ stage: "queued", status: "done", at: now, detail: "bulk-created" }],
+    };
+  });
+  for (const job of jobs) {
+    await mkdir(jobDir(job.id), { recursive: true });
+    await saveJob(job);
+  }
+  return jobs;
 }
 
 const jobSaveQueues = new Map<string, Promise<void>>();
@@ -112,28 +161,40 @@ export async function listJobs(): Promise<JobRecord[]> {
 }
 
 export async function hasRunningJob(): Promise<boolean> {
+  const n = sqlitePrimary() ? countJobsSqlite("running") : undefined;
+  if (n !== undefined) return n > 0;
   return (await listJobs()).some(j => j.status === "running");
 }
 
 export async function runningJobCount(): Promise<number> {
+  const n = sqlitePrimary() ? countJobsSqlite("running") : undefined;
+  if (n !== undefined) return n;
   return (await listJobs()).filter(j => j.status === "running").length;
 }
 
 export async function findQueued(excludeIds: string[] = []): Promise<JobRecord | undefined> {
-  const jobs = await listJobs();
-  const running = jobs.filter(j => j.status === "running").length;
+  const running = await runningJobCount();
   if (running >= maxParallelJobs()) return undefined;
+  const sqliteCandidates = sqlitePrimary() ? selectQueuedJobsSqlite(1, excludeIds) : undefined;
+  if (sqliteCandidates) return sqliteCandidates[0];
+  const jobs = await listJobs();
   const excluded = new Set(excludeIds);
   return jobs.reverse().find(j => j.status === "queued" && !excluded.has(j.id));
 }
 
 export async function claimQueuedJob(excludeIds: string[] = []): Promise<JobRecord | undefined> {
-  const jobs = await listJobs();
-  const running = jobs.filter(j => j.status === "running").length;
+  const running = await runningJobCount();
   if (running >= maxParallelJobs()) return undefined;
-  const excluded = new Set(excludeIds);
-  const candidates = jobs.reverse().filter(j => j.status === "queued" && !excluded.has(j.id));
-  for (const job of candidates) {
+  const sqliteCandidates = sqlitePrimary() ? selectQueuedJobsSqlite(64, excludeIds) : undefined;
+  const candidates = sqliteCandidates ?? (() => {
+    return [] as JobRecord[];
+  })();
+  const fallbackCandidates = async () => {
+    const jobs = await listJobs();
+    const excluded = new Set(excludeIds);
+    return jobs.reverse().filter(j => j.status === "queued" && !excluded.has(j.id));
+  };
+  for (const job of (sqliteCandidates ?? await fallbackCandidates())) {
     const locked = await acquireJobLock(job);
     if (!locked) continue;
     job.status = "running";
@@ -298,10 +359,12 @@ export async function deleteJob(id: string): Promise<void> {
   deleteJobSqlite(id);
 }
 
-export async function enforceJobQuota() {
+export async function enforceJobQuota(incoming = 1) {
   const { quotaConfig } = await import("@/lib/quotas");
   const quota = quotaConfig();
-  const jobs = await listJobs();
-  const queued = jobs.filter(j => j.status === "queued").length;
-  if (queued >= quota.maxQueuedJobs) throw new Error(`JOB_QUOTA_EXCEEDED: queued jobs ${queued} >= ${quota.maxQueuedJobs}`);
+  const queuedFromDb = sqlitePrimary() ? countJobsSqlite("queued") : undefined;
+  const queued = queuedFromDb ?? (await listJobs()).filter(j => j.status === "queued").length;
+  if (queued + Math.max(1, incoming) - 1 >= quota.maxQueuedJobs) {
+    throw new Error(`JOB_QUOTA_EXCEEDED: queued jobs ${queued} + incoming ${incoming} >= ${quota.maxQueuedJobs}`);
+  }
 }

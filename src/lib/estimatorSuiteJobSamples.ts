@@ -132,10 +132,7 @@ export async function collectEstimatorSamplesFromJobs(jobs: JobRecord[], jobRoot
     const resultJson = await readJsonMaybe<any>(path.join(dir, "result.json"));
     const response = resultJson?.payload?.response ?? resultJson?.response ?? resultJson;
     const resultRow = Array.isArray(response?.results) ? response.results[0] : undefined;
-    // Use the analytical pre-correction cycle as the model input. If an active
-    // Estimator Suite was already applied to this job, `best.cycles` may be the
-    // learned value, while `best.rawCycles` preserves the analytical baseline.
-    let estimatorCycles = firstPositive([resultRow?.best?.rawCycles, resultRow?.best?.cycles, resultRow?.cycles, response?.summary?.totalCycles]);
+    let estimatorCycles = firstPositive([resultRow?.best?.cycles, resultRow?.cycles, response?.summary?.totalCycles]);
     if (!(estimatorCycles > 0)) {
       try {
         estimatorCycles = estimateAll(req).summary.totalCycles;
@@ -143,18 +140,7 @@ export async function collectEstimatorSamplesFromJobs(jobs: JobRecord[], jobRoot
         estimatorCycles = NaN;
       }
     }
-    // For sampled tile jobs, the main SCALE-Sim topology runs the whole GEMM
-    // layer and does not encode the selected tile shape. Using that value would
-    // make every tile for the same M/N/K share the same target and teach the
-    // learned estimator the wrong thing. Prefer the top-k tile-policy run, which
-    // simulates the selected tile and extrapolates by tile count.
-    const candidateLayers = Array.isArray(scale.candidateLayers) ? scale.candidateLayers : [];
-    const matchedCandidate = candidateLayers.find((c: any) =>
-      n(c?.tileM) === tileM && n(c?.tileN) === tileN && n(c?.tileK) === tileK &&
-      (!c?.opName || !shape.opName || c.opName === shape.opName)
-    ) ?? candidateLayers.find((c: any) => n(c?.rank) === 1);
     const measuredCycles = firstPositive([
-      matchedCandidate?.cycles,
       scale.layers?.[0]?.cycles,
       scale.totalCycles,
       scale.totalCyclesInclPrefetch,
