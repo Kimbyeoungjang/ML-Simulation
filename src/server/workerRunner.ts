@@ -1140,6 +1140,26 @@ function formatPctDelta(actual: number, predicted: number): string {
   return `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`;
 }
 
+
+function accuracyGradeFromRatio(ratio?: number): { label: string; description: string } {
+  if (!ratio || !Number.isFinite(ratio)) return { label: "pending", description: "SCALE-Sim 결과 대기 중" };
+  const err = Math.abs(ratio - 1) * 100;
+  if (err < 5) return { label: "excellent", description: "매우 양호" };
+  if (err < 15) return { label: "good", description: "양호" };
+  if (err < 30) return { label: "warning", description: "주의" };
+  return { label: "poor", description: "재학습 필요" };
+}
+
+function normalizeName(name?: string): string {
+  return String(name || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function matchScaleLayerForResult(item: any, layers: any[]) {
+  const op = normalizeName(item?.shape?.opName);
+  const modelOp = normalizeName(`${item?.shape?.model || ""}${item?.shape?.opName || ""}`);
+  return layers.find(l => normalizeName(l.name) === op || normalizeName(l.name) === modelOp || normalizeName(l.name).includes(op) || op.includes(normalizeName(l.name)));
+}
+
 function externalComparisonMarkdown(
   res: ReturnType<typeof estimateAll>,
   scale?: ExternalRunSummary,
@@ -1148,6 +1168,7 @@ function externalComparisonMarkdown(
   const actualTotal = scale?.totalCycles;
   const hasActual = Boolean(scale?.ok && actualTotal && actualTotal > 0);
   const ratio = hasActual ? actualTotal! / predictedTotal : undefined;
+  const grade = accuracyGradeFromRatio(ratio);
   const absDelta = hasActual ? actualTotal! - predictedTotal : undefined;
   const verdict = !hasActual
     ? "SCALE-Sim 결과가 아직 없어 비교할 수 없습니다."
@@ -1161,6 +1182,7 @@ function externalComparisonMarkdown(
     "| 항목 | TileForge estimator | SCALE-Sim 실제 실행 | 차이 | 해석 |",
     "|---|---:|---:|---:|---|",
     `| 전체 cycle | ${predictedTotal.toLocaleString()} | ${hasActual ? actualTotal!.toLocaleString() : "대기 중"} | ${hasActual ? `${absDelta! >= 0 ? "+" : ""}${absDelta!.toLocaleString()} (${formatPctDelta(actualTotal!, predictedTotal)})` : "대기 중"} | ${hasActual ? `SCALE-Sim / estimator = ${ratio!.toFixed(3)}배` : "full-pipeline 완료 후 갱신"} |`,
+    `| 정확도 등급 | - | - | ${hasActual ? `${grade.label} (${grade.description})` : "대기 중"} | ${hasActual && grade.label === "poor" ? "현재 workload에서는 활성 estimator 재학습 또는 guard 확인이 필요합니다." : "-"} |`,
     "",
     `- 분석: ${verdict}`,
     "- 주의: IREE compile 성공은 `generated.mlir`의 컴파일 가능성을 검증하는 단계입니다. 실제 성능 비교의 cycle 기준은 SCALE-Sim 결과를 사용합니다.",
@@ -1195,10 +1217,27 @@ function externalComparisonMarkdown(
         `| ${index + 1} | ${item.shape.model}.${item.shape.opName} | ${item.best.cycles.toLocaleString()} | ${((item.best.cycles / predictedTotal) * 100).toFixed(1)}% |`,
       );
     }
+    lines.push(
+      "",
+      "### Full-layer op별 SCALE-Sim 비교",
+      "| 연산 | TileForge cycle | SCALE-Sim layer cycle | 차이 | 판정 |",
+      "|---|---:|---:|---:|---|",
+    );
+    for (const item of [...res.results].sort((a, b) => b.best.cycles - a.best.cycles)) {
+      const layer = matchScaleLayerForResult(item, scale.layers || []);
+      const pred = Number(item.best.cycles) || 0;
+      const actual = Number(layer?.cycles) || 0;
+      const err = actual > 0 && pred > 0 ? ((actual - pred) / pred) * 100 : undefined;
+      const opGrade = accuracyGradeFromRatio(actual > 0 && pred > 0 ? actual / pred : undefined);
+      lines.push(`| ${item.shape.model}.${item.shape.opName} | ${pred.toLocaleString()} | ${actual > 0 ? actual.toLocaleString() : "매칭 실패"} | ${err !== undefined ? `${err >= 0 ? "+" : ""}${err.toFixed(1)}%` : "-"} | ${opGrade.label} |`);
+    }
+    if (hasActual && grade.label === "poor") {
+      lines.push("", "- 경고: 전체 cycle 오차가 30%를 초과합니다. 이 실행에서 Roofline/energy 절대값과 learned ranking은 preliminary 결과로 해석하세요.");
+    }
     if (scale.candidateLayers?.length) {
       lines.push(
         "",
-        "### SCALE-Sim top-k tile 후보 micro-run 진단",
+        "### SCALE-Sim micro-run 참고 진단: 정확도 평가용 아님",
         "| 연산 | rank | tile | TileForge full-layer cycle | SCALE-Sim micro-run cycle | naive tile-count 외삽 | SCALE-Sim util | 해석 |",
         "|---|---:|---|---:|---:|---:|---:|---|",
       );

@@ -51,6 +51,14 @@ export interface EstimatorSuiteModel {
     learningRate: number;
     l2: number;
     strategy: "analytical_plus_residual_ensemble" | "hybrid_residual_and_direct_neural" | "multi_target_hybrid_estimator";
+    /** Training-domain summary used to damp neural predictions outside the sampled space. */
+    featureDomain?: {
+      numeric: Record<string, { min: number; max: number }>;
+      arrays: string[];
+      dataflows: string[];
+      workloads: string[];
+      opNames: string[];
+    };
   };
 }
 
@@ -238,6 +246,26 @@ function splitIsUsable(split: { train: LearnedEstimatorSample[]; test: LearnedEs
   return split.train.length >= 32 && split.test.length >= 8;
 }
 
+function numericRange(rows: LearnedEstimatorSample[], key: keyof LearnedEstimatorSample) {
+  const values = rows.map(r => Number(r[key])).filter(v => Number.isFinite(v));
+  if (!values.length) return { min: 0, max: 0 };
+  return { min: Math.min(...values), max: Math.max(...values) };
+}
+
+function trainingDomain(rows: LearnedEstimatorSample[]) {
+  const numericKeys: (keyof LearnedEstimatorSample)[] = [
+    "m", "n", "k", "tileM", "tileN", "tileK",
+    "arrayRows", "arrayCols", "sramKB", "frequencyMHz", "estimatorCycles",
+  ];
+  return {
+    numeric: Object.fromEntries(numericKeys.map(k => [String(k), numericRange(rows, k)])),
+    arrays: unique(rows.map(keyOfArray)).sort(),
+    dataflows: unique(rows.map(keyOfDataflow)).sort(),
+    workloads: unique(rows.map(keyOfWorkload)).sort(),
+    opNames: unique(rows.map(s => String(s.opName || "unknown"))).sort(),
+  };
+}
+
 export function trainEstimatorSuite(samples: LearnedEstimatorSample[], opts: TrainEstimatorSuiteOptions = {}): EstimatorSuiteModel {
   const clean = cleanSamples(samples);
   if (clean.length < 40) throw new Error(`Need at least 40 valid samples to train estimator suite; got ${clean.length}`);
@@ -304,7 +332,7 @@ export function trainEstimatorSuite(samples: LearnedEstimatorSample[], opts: Tra
   const directAvg = evaluateDirectNeuralEstimator(directNeural, clean);
   opts.progress?.({ stage: "validating", message: "최종 ensemble weight 계산 중", progress: 92 });
   const weights = weightsFromMetrics(baselineAvg, treeAvg, neuralAvg, directAvg);
-  const pseudoModel = { kind: "tileforge-estimator-suite-v1", createdAt: new Date().toISOString(), target: "log_measured_over_estimator", tree, neural, directNeural, multiTarget, weights, recommended: "ensemble", validationSuite, metadata: { samples: clean.length, trainSamples: finalTrainRows.length, seed, trees, maxDepth, minLeaf, hiddenUnits, epochs, learningRate, l2, strategy: "multi_target_hybrid_estimator" } } as EstimatorSuiteModel;
+  const pseudoModel = { kind: "tileforge-estimator-suite-v1", createdAt: new Date().toISOString(), target: "log_measured_over_estimator", tree, neural, directNeural, multiTarget, weights, recommended: "ensemble", validationSuite, metadata: { samples: clean.length, trainSamples: finalTrainRows.length, seed, trees, maxDepth, minLeaf, hiddenUnits, epochs, learningRate, l2, strategy: "multi_target_hybrid_estimator", featureDomain: trainingDomain(clean) } } as EstimatorSuiteModel;
   const ensembleAvg = avg(r => r.ensemble) ?? evaluateEstimatorSuite(pseudoModel, clean);
   const recommended = recommendModel(baselineAvg, treeAvg, neuralAvg, ensembleAvg, directAvg);
   opts.progress?.({ stage: "validating", message: `Estimator Suite 완료: weights analytical=${weights.analytical.toFixed(3)}, tree=${weights.tree.toFixed(3)}, neural=${weights.neural.toFixed(3)}, 추천=${recommended}`, progress: 98 });

@@ -5,6 +5,15 @@ import { energyMarkdown } from "./energy";
 import { fusionMarkdown, analyzeFusion } from "./fusion";
 import { validityMarkdown } from "./validity";
 
+function accuracyGrade(errorPct?: number) {
+  if (errorPct === undefined || !Number.isFinite(errorPct)) return { label: "대기", text: "SCALE-Sim 결과 대기 중" };
+  const e = Math.abs(errorPct);
+  if (e < 5) return { label: "excellent", text: "매우 양호" };
+  if (e < 15) return { label: "good", text: "양호" };
+  if (e < 30) return { label: "warning", text: "주의" };
+  return { label: "poor", text: "재학습 필요" };
+}
+
 export function generateReportMarkdown(res: SearchResponse): string {
   const h = res.request.hardware;
   const lines: string[] = [];
@@ -29,7 +38,9 @@ export function generateReportMarkdown(res: SearchResponse): string {
   if (suite?.applied) {
     lines.push(`- Learned Estimator Suite: 적용됨 (${suite.recommended}, samples=${suite.modelSamples?.toLocaleString?.() ?? suite.modelSamples})`);
     lines.push(`- Analytical baseline cycle: ${suite.totalAnalyticalCycles.toLocaleString()}`);
-    lines.push(`- Learned 보정 계수 평균: ×${suite.averageCycleFactor.toFixed(3)}`);
+    lines.push(`- Learned op 평균 보정 계수: ×${suite.averageCycleFactor.toFixed(3)}`);
+    lines.push(`- Learned total-weighted 보정 계수: ×${(suite.totalWeightedCycleFactor ?? (suite.totalLearnedCycles / Math.max(1, suite.totalAnalyticalCycles))).toFixed(3)}`);
+    if (suite.minDomainConfidence !== undefined && suite.minDomainConfidence < 0.8) lines.push(`- 학습 범위 confidence 최소값: ${suite.minDomainConfidence.toFixed(2)} (일부 neural 예측 완화됨)`);
   } else {
     lines.push(`- Learned Estimator Suite: 미적용`);
   }
@@ -65,7 +76,15 @@ export function generateReportMarkdown(res: SearchResponse): string {
   lines.push(`## 7. 타일 선택 이유`);
   for (const r of res.results) lines.push(`- ${r.best.explanation}`);
   lines.push("", validityMarkdown(h, res.request.shapes, res.results.map(r=>r.best)), "", fusionMarkdown(analyzeFusion(res.request.shapes)), "");
-  lines.push(`## 10. Estimator Suite 정보`, "```text", suite?.applied ? `활성 Estimator Suite가 적용되었습니다. samples=${suite.trainingSamples ?? "n/a"}, 평균 cycle factor=×${suite.averageCycleFactor?.toFixed?.(3) ?? "n/a"}` : "활성 Estimator Suite가 적용되지 않았습니다.", "```", "");
+  lines.push(`## 10. Estimator Suite 정보`, "```text", suite?.applied ? [
+    `활성 Estimator Suite가 적용되었습니다.`,
+    `recommended=${suite.recommended ?? "n/a"}`,
+    `samples=${suite.modelSamples?.toLocaleString?.() ?? suite.modelSamples ?? "n/a"}`,
+    `op 평균 cycle factor=×${suite.averageCycleFactor?.toFixed?.(3) ?? "n/a"}`,
+    `total-weighted cycle factor=×${suite.totalWeightedCycleFactor?.toFixed?.(3) ?? "n/a"}`,
+    `min domain confidence=${suite.minDomainConfidence?.toFixed?.(2) ?? "n/a"}`,
+    ...(Array.isArray(suite.warnings) && suite.warnings.length ? ["warnings:", ...suite.warnings.map((w: string) => `- ${w}`)] : []),
+  ].join("\n") : "활성 Estimator Suite가 적용되지 않았습니다.", "```", "");
   lines.push(`## 11. 하드웨어 설계 조언`);
   for (const a of res.designAdvice) lines.push(`- ${a}`);
   lines.push("", `## 12. IREE 실행 명령`);

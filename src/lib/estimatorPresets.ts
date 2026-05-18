@@ -92,6 +92,28 @@ export const estimatorPresets: EstimatorPresetConfig[] = [
     },
     trainOptions: { trees: 200, maxDepth: 10, minLeaf: 4, hiddenUnits: 64, epochs: 1000, maxFinalTrainSamples: 4096, splits: "random,workload,array,dataflow,large-shape" },
   },
+
+  {
+    id: "vit-full-8192",
+    name: "ViT full-layer 8k",
+    description: "qkv/attention_score/FFN처럼 작은 attention과 큰 GEMM이 섞인 workload를 겨냥한 full-layer 학습 프리셋입니다.",
+    planOptions: {
+      mRange: "160:224:16",
+      nRange: "128:3072:128",
+      kRange: "64:3072:128",
+      tileMRange: "32,64,96,128,192,256",
+      tileNRange: "32,64,128,192,256,384,512",
+      tileKRange: "32,64,128,192,256,384,512",
+      arrayRange: "64x64,128x128,128x256,256x128,256x256",
+      sramKbRange: "4096,8192,16384",
+      dataflows: "WS,OS,IS",
+      maxSamples: 8192,
+      queueLimit: 8192,
+      topKPerShape: 1,
+      includeCurrentShapes: true,
+    },
+    trainOptions: { trees: 220, maxDepth: 10, minLeaf: 4, hiddenUnits: 96, epochs: 1100, maxFinalTrainSamples: 8192, splits: "random,workload,array,dataflow,large-shape" },
+  },
   {
     id: "large-50000",
     name: "Large Dataset 50k",

@@ -17,6 +17,8 @@ export interface EstimatorSuiteApplicationSummary {
   totalAnalyticalCycles: number;
   totalLearnedCycles: number;
   averageCycleFactor: number;
+  totalWeightedCycleFactor: number;
+  minDomainConfidence: number;
   warnings: string[];
 }
 
@@ -25,6 +27,41 @@ export interface SearchResponseWithEstimatorSuite extends SearchResponse {
 }
 
 function clamp(x: number, lo: number, hi: number) { return Math.max(lo, Math.min(hi, x)); }
+
+
+function domainConfidence(model: EstimatorSuiteModel, sample: LearnedEstimatorSample): { confidence: number; warnings: string[] } {
+  const domain = model.metadata?.featureDomain;
+  if (!domain) return { confidence: 0.75, warnings: ["모델에 학습 범위 metadata가 없어 neural 예측을 일부 완화했습니다."] };
+  const warnings: string[] = [];
+  let confidence = 1;
+  for (const key of ["m", "n", "k", "tileM", "tileN", "tileK", "arrayRows", "arrayCols", "sramKB"] as const) {
+    const range = domain.numeric?.[key];
+    const value = Number(sample[key]);
+    if (!range || !Number.isFinite(value)) continue;
+    const span = Math.max(1, range.max - range.min);
+    if (value < range.min || value > range.max) {
+      const dist = value < range.min ? range.min - value : value - range.max;
+      const penalty = Math.min(0.35, 0.15 + 0.20 * Math.min(1, dist / span));
+      confidence *= (1 - penalty);
+      warnings.push(`${key}=${value}가 학습 범위 [${range.min}, ${range.max}] 밖입니다.`);
+    }
+  }
+  const arrayKey = `${sample.arrayRows}x${sample.arrayCols}`;
+  if (Array.isArray(domain.arrays) && domain.arrays.length && !domain.arrays.includes(arrayKey)) {
+    confidence *= 0.75;
+    warnings.push(`array ${arrayKey}는 학습 데이터에 없었습니다.`);
+  }
+  const df = String(sample.dataflow || "unknown").toUpperCase();
+  if (Array.isArray(domain.dataflows) && domain.dataflows.length && !domain.dataflows.includes(df)) {
+    confidence *= 0.65;
+    warnings.push(`dataflow ${df}는 학습 데이터에 없었습니다.`);
+  }
+  if (Array.isArray(domain.opNames) && domain.opNames.length && sample.opName && !domain.opNames.includes(String(sample.opName))) {
+    confidence *= 0.85;
+    warnings.push(`opName ${sample.opName}는 학습 데이터에 없었습니다.`);
+  }
+  return { confidence: clamp(confidence, 0.25, 1), warnings };
+}
 
 function candidateToSample(req: SearchRequest, candidate: TileCandidateResult): LearnedEstimatorSample {
   const shape = req.shapes.find(s => s.id === candidate.shapeId) ?? req.shapes.find(s => s.model === candidate.model && s.opName === candidate.opName) ?? req.shapes[0];
@@ -53,7 +90,9 @@ function candidateToSample(req: SearchRequest, candidate: TileCandidateResult): 
 function adjustCandidate(req: SearchRequest, model: EstimatorSuiteModel, candidate: TileCandidateResult): TileCandidateResult {
   const rawCycles = candidate.rawCycles && candidate.rawCycles > 0 ? candidate.rawCycles : candidate.cycles;
   const sample = candidateToSample(req, { ...candidate, cycles: rawCycles, rawCycles });
-  const learnedCycles = clamp(predictEstimatorSuiteCycles(model, sample), 1, rawCycles * 100);
+  const rawLearnedCycles = clamp(predictEstimatorSuiteCycles(model, sample), 1, rawCycles * 100);
+  const domain = domainConfidence(model, sample);
+  const learnedCycles = clamp(rawCycles * (1 - domain.confidence) + rawLearnedCycles * domain.confidence, 1, rawCycles * 100);
   const learnedMetrics = predictEstimatorSuiteMetrics(model, sample);
   const factor = learnedCycles / Math.max(1, rawCycles);
   const cycles = Math.max(1, Math.round(learnedCycles));
@@ -64,6 +103,8 @@ function adjustCandidate(req: SearchRequest, model: EstimatorSuiteModel, candida
   const score = cycles / 1e6 + (1 - utilization) * 5 + paddingRatio * 3 + Math.max(0, sramBytes - req.hardware.sramKB * 1024) / Math.max(1, req.hardware.sramKB * 1024);
   const warnings = Array.isArray(candidate.warnings) ? [...candidate.warnings] : [];
   if (factor > 1.5) warnings.push(`Learned estimator 보정 큼: ×${factor.toFixed(2)}`);
+  if (domain.confidence < 0.8) warnings.push(`학습 범위 밖 입력으로 neural 예측을 완화했습니다(confidence=${domain.confidence.toFixed(2)}).`);
+  for (const w of domain.warnings.slice(0, 3)) warnings.push(w);
   return {
     ...candidate,
     rawCycles,
@@ -71,7 +112,7 @@ function adjustCandidate(req: SearchRequest, model: EstimatorSuiteModel, candida
     cycles,
     timeUs,
     score,
-    learnedMetrics: { ...learnedMetrics, utilization },
+    learnedMetrics: { ...learnedMetrics, utilization, domainConfidence: domain.confidence },
     warnings: Array.from(new Set(warnings)),
     explanation: `${candidate.explanation} Learned estimator suite가 analytical ${rawCycles.toLocaleString()} cycles를 ${cycles.toLocaleString()} cycles로 보정했습니다(×${factor.toFixed(3)}).`,
   };
@@ -90,7 +131,7 @@ function compareAdjustedCandidates(a: TileCandidateResult, b: TileCandidateResul
 
 export function applyEstimatorSuiteToSearchResponse(response: SearchResponse, model?: EstimatorSuiteModel | null): SearchResponseWithEstimatorSuite {
   if (!model || model.kind !== "tileforge-estimator-suite-v1") {
-    return { ...response, estimatorSuite: { applied: false, adjustedCandidates: 0, totalAnalyticalCycles: response.summary.totalCycles, totalLearnedCycles: response.summary.totalCycles, averageCycleFactor: 1, warnings: ["활성 Estimator Suite 모델이 없습니다."] } };
+    return { ...response, estimatorSuite: { applied: false, adjustedCandidates: 0, totalAnalyticalCycles: response.summary.totalCycles, totalLearnedCycles: response.summary.totalCycles, averageCycleFactor: 1, totalWeightedCycleFactor: 1, minDomainConfidence: 1, warnings: ["활성 Estimator Suite 모델이 없습니다."] } };
   }
   const request = response.request;
   const warnings: string[] = [];
@@ -116,6 +157,7 @@ export function applyEstimatorSuiteToSearchResponse(response: SearchResponse, mo
   const analyticalTotal = response.results.reduce((sum, r) => sum + Math.max(1, r.best.rawCycles ?? r.best.cycles), 0);
   const learnedTotal = bests.reduce((sum, b) => sum + b.cycles, 0);
   const factors = bests.map(b => b.cycles / Math.max(1, b.rawCycles ?? b.cycles));
+  const confidences = bests.map(b => Number((b as any).learnedMetrics?.domainConfidence)).filter(v => Number.isFinite(v));
   const summary = {
     totalCycles: learnedTotal,
     totalTimeUs: bests.reduce((a, b) => a + b.timeUs, 0),
@@ -135,6 +177,8 @@ export function applyEstimatorSuiteToSearchResponse(response: SearchResponse, mo
     totalAnalyticalCycles: analyticalTotal,
     totalLearnedCycles: learnedTotal,
     averageCycleFactor: mean(factors),
+    totalWeightedCycleFactor: learnedTotal / Math.max(1, analyticalTotal),
+    minDomainConfidence: confidences.length ? Math.min(...confidences) : 1,
     warnings,
   };
   const pairs = results.map(r => ({ shape: r.shape, best: r.best }));
