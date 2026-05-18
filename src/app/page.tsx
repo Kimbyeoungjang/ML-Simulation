@@ -45,6 +45,7 @@ type Tab =
   | "graphs"
   | "report"
   | "jobs"
+  | "estimatorSuite"
   | "status";
 type InputTab =
   | "presets"
@@ -70,6 +71,7 @@ const tabLabels: Record<Tab, string> = {
   graphs: "그래프",
   report: "보고서",
   jobs: "작업",
+  estimatorSuite: "Estimator Suite",
   status: "상태",
 };
 
@@ -110,6 +112,7 @@ const tabTips: Record<Tab, string> = {
   graphs: "타일 후보별 cycle/utilization 차이를 그래프로 비교합니다.",
   report: "현재 실험 설정과 결과를 논문/보고서용 Markdown으로 확인합니다.",
   jobs: "백그라운드 작업의 상태, 로그, artifact 정보를 확인합니다.",
+  estimatorSuite: "웹에서 estimator suite 설계 CSV 생성, Tree/Neural/Ensemble 학습, 검증 리포트를 실행합니다.",
   status: "로컬 서버, 저장소, 워커, 외부 도구 상태를 JSON으로 확인합니다.",
 };
 
@@ -229,6 +232,22 @@ export default function Home() {
   const [calibrationCsv, setCalibrationCsv] = useState(
     "model,op_name,array,dataflow,predicted_cycles,measured_cycles\nvit_s,qkv,128x128,WS,1000000,1120000",
   );
+  const [estimatorSuiteCsv, setEstimatorSuiteCsv] = useState(
+    "id,model,opName,arrayRows,arrayCols,sramKB,frequencyMHz,dataflow,dtypeBytes,m,n,k,tileM,tileN,tileK,estimatorCycles,measuredCycles\n" +
+      "s0,demo,qkv,128,128,4096,700,WS,2,384,768,768,128,128,64,1000000,1120000",
+  );
+  const [estimatorSuiteOptions, setEstimatorSuiteOptions] = useState({
+    topK: 3,
+    trees: 160,
+    maxDepth: 10,
+    minLeaf: 4,
+    hiddenUnits: 64,
+    epochs: 900,
+    maxFinalTrainSamples: 20000,
+    splits: "random,workload,array,dataflow,large-shape",
+  });
+  const [estimatorSuiteResult, setEstimatorSuiteResult] = useState<any | null>(null);
+  const [estimatorSuiteBusy, setEstimatorSuiteBusy] = useState(false);
   const [calibrationRow, setCalibrationRow] = useState({
     model: "vit_s",
     opName: "qkv",
@@ -417,6 +436,51 @@ export default function Home() {
     a.click();
     URL.revokeObjectURL(url);
   };
+
+  function updateEstimatorSuiteOptions(patch: Partial<typeof estimatorSuiteOptions>) {
+    setEstimatorSuiteOptions((cur) => ({ ...cur, ...patch }));
+  }
+
+  async function generateEstimatorSuiteDesign() {
+    setEstimatorSuiteBusy(true);
+    try {
+      const r = await fetch("/api/estimator-suite", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "design", request, options: { topK: estimatorSuiteOptions.topK } }),
+      });
+      const j = await r.json();
+      if (!r.ok || !j.ok) throw new Error(j.error || "Estimator suite design failed");
+      setEstimatorSuiteCsv(j.designCsv);
+      setEstimatorSuiteResult(j);
+      setServerMessage(`Estimator suite 설계 CSV 생성: ${j.rows?.toLocaleString?.() ?? j.rows}개 후보`);
+      setTab("estimatorSuite");
+    } catch (e: any) {
+      setServerMessage(`Estimator suite 설계 실패: ${e?.message ?? e}`);
+    } finally {
+      setEstimatorSuiteBusy(false);
+    }
+  }
+
+  async function runEstimatorSuiteWeb() {
+    setEstimatorSuiteBusy(true);
+    try {
+      const r = await fetch("/api/estimator-suite", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "suite", csvText: estimatorSuiteCsv, options: estimatorSuiteOptions }),
+      });
+      const j = await r.json();
+      if (!r.ok || !j.ok) throw new Error(j.error || "Estimator suite failed");
+      setEstimatorSuiteResult(j);
+      setServerMessage(`Estimator suite 완료: ${j.model?.metadata?.samples?.toLocaleString?.() ?? j.model?.metadata?.samples} samples, 추천=${j.model?.recommended}`);
+      setTab("estimatorSuite");
+    } catch (e: any) {
+      setServerMessage(`Estimator suite 실패: ${e?.message ?? e}`);
+    } finally {
+      setEstimatorSuiteBusy(false);
+    }
+  }
 
   async function runServerEstimate() {
     const r = await fetch("/api/estimate", {
@@ -1556,6 +1620,20 @@ export default function Home() {
                 </ActionButton>
                 <ActionButton
                   className="secondary"
+                  tip="현재 workload와 tile 후보 기준으로 Estimator Suite 학습용 설계 CSV를 생성합니다. 생성 후 measuredCycles에 SCALE-Sim 결과를 채우면 웹에서 바로 학습할 수 있습니다."
+                  onClick={generateEstimatorSuiteDesign}
+                >
+                  Estimator Suite 설계 CSV 생성
+                </ActionButton>
+                <ActionButton
+                  className="secondary"
+                  tip="아래 Estimator Suite 탭의 CSV를 사용해 Tree/Neural/Ensemble residual estimator를 웹에서 학습하고 검증합니다."
+                  onClick={runEstimatorSuiteWeb}
+                >
+                  Estimator Suite 웹 학습
+                </ActionButton>
+                <ActionButton
+                  className="secondary"
                   tip="최근 작업 목록과 상태를 새로고침합니다."
                   onClick={refreshJobs}
                 >
@@ -1648,6 +1726,7 @@ export default function Home() {
                   "graphs",
                   "report",
                   "jobs",
+                  "estimatorSuite",
                   "status",
                 ] as Tab[]
               ).map((t) => (
@@ -1696,6 +1775,20 @@ export default function Home() {
                 onDeleteJob={(id) => void deleteJobById(id)}
               />
             )}
+            {tab === "estimatorSuite" && (
+              <EstimatorSuitePanel
+                csv={estimatorSuiteCsv}
+                setCsv={setEstimatorSuiteCsv}
+                options={estimatorSuiteOptions}
+                updateOptions={updateEstimatorSuiteOptions}
+                result={estimatorSuiteResult}
+                busy={estimatorSuiteBusy}
+                onDesign={generateEstimatorSuiteDesign}
+                onRun={runEstimatorSuiteWeb}
+                download={download}
+              />
+            )}
+
             {tab === "jobs" && (
               <Jobs
                 text={jobsJson || "작업 목록을 자동으로 불러오는 중입니다."}
@@ -2954,6 +3047,102 @@ function StatusTab({
     </>
   );
 }
+function EstimatorSuitePanel({
+  csv,
+  setCsv,
+  options,
+  updateOptions,
+  result,
+  busy,
+  onDesign,
+  onRun,
+  download,
+}: {
+  csv: string;
+  setCsv: (value: string) => void;
+  options: any;
+  updateOptions: (patch: any) => void;
+  result: any | null;
+  busy: boolean;
+  onDesign: () => void;
+  onRun: () => void;
+  download: DownloadFn;
+}) {
+  const model = result?.model;
+  const artifacts = Array.isArray(result?.artifacts) ? result.artifacts : [];
+  const sampleCount = model?.metadata?.samples;
+  return (
+    <div className="estimator-suite-panel">
+      <div className="info-box">
+        <b>Estimator Suite 자동화</b>
+        <p className="small">
+          웹에서 설계 CSV를 만들고, SCALE-Sim 결과를 measuredCycles에 채운 뒤 Tree residual / Neural residual / Ensemble estimator를 학습합니다. 긴 대량 실험 자체는 기존 job queue로 돌리고, 여기서는 누적된 결과 CSV를 학습 데이터로 사용합니다.
+        </p>
+      </div>
+      <div className="row4">
+        <MiniField label="topK" tip="각 op에서 학습용 설계 CSV에 포함할 상위 tile 후보 개수입니다.">
+          <input type="number" value={options.topK} onChange={(e) => updateOptions({ topK: +e.target.value })} />
+        </MiniField>
+        <MiniField label="trees" tip="Tree residual ensemble의 tree 개수입니다.">
+          <input type="number" value={options.trees} onChange={(e) => updateOptions({ trees: +e.target.value })} />
+        </MiniField>
+        <MiniField label="maxDepth" tip="Tree residual 모델의 최대 깊이입니다.">
+          <input type="number" value={options.maxDepth} onChange={(e) => updateOptions({ maxDepth: +e.target.value })} />
+        </MiniField>
+        <MiniField label="minLeaf" tip="Tree leaf 최소 sample 수입니다.">
+          <input type="number" value={options.minLeaf} onChange={(e) => updateOptions({ minLeaf: +e.target.value })} />
+        </MiniField>
+      </div>
+      <div className="row4">
+        <MiniField label="hidden" tip="Neural residual estimator의 hidden unit 개수입니다.">
+          <input type="number" value={options.hiddenUnits} onChange={(e) => updateOptions({ hiddenUnits: +e.target.value })} />
+        </MiniField>
+        <MiniField label="epochs" tip="Neural residual estimator 학습 epoch 수입니다.">
+          <input type="number" value={options.epochs} onChange={(e) => updateOptions({ epochs: +e.target.value })} />
+        </MiniField>
+        <MiniField label="maxFinalTrain" tip="최종 모델 학습에 사용할 최대 sample 수입니다. 검증에는 전체 split을 사용하되 최종 학습 시간을 제한할 수 있습니다.">
+          <input type="number" value={options.maxFinalTrainSamples} onChange={(e) => updateOptions({ maxFinalTrainSamples: +e.target.value })} />
+        </MiniField>
+        <MiniField label="splits" tip="검증 split 목록입니다. random,workload,array,dataflow,large-shape를 사용할 수 있습니다.">
+          <input value={options.splits} onChange={(e) => updateOptions({ splits: e.target.value })} />
+        </MiniField>
+      </div>
+      <div className="calibration-actions">
+        <button onClick={onDesign} disabled={busy}>{busy ? "실행 중..." : "현재 설정으로 설계 CSV 생성"}</button>
+        <button className="secondary" onClick={onRun} disabled={busy}>{busy ? "학습 중..." : "CSV로 Estimator Suite 학습"}</button>
+        <button className="secondary" onClick={() => download("estimator-suite-input.csv", csv, "text/csv")}>입력 CSV 다운로드</button>
+        {result?.reportMarkdown && <button className="secondary" onClick={() => download("estimator-suite-report.md", result.reportMarkdown, "text/markdown")}>리포트 다운로드</button>}
+        {result?.validationCsv && <button className="secondary" onClick={() => download("estimator-suite-validation.csv", result.validationCsv, "text/csv")}>검증 CSV 다운로드</button>}
+        {result?.predictionsCsv && <button className="secondary" onClick={() => download("estimator-suite-predictions.csv", result.predictionsCsv, "text/csv")}>예측 CSV 다운로드</button>}
+      </div>
+      <h4>학습/설계 CSV</h4>
+      <textarea
+        title="열: id,model,opName,arrayRows,arrayCols,sramKB,frequencyMHz,dataflow,dtypeBytes,m,n,k,tileM,tileN,tileK,estimatorCycles,measuredCycles"
+        value={csv}
+        onChange={(e) => setCsv(e.target.value)}
+        style={{ minHeight: 220 }}
+      />
+      {model && (
+        <div className="info-box">
+          <b>최근 학습 결과</b>
+          <p className="small">
+            samples {Number(sampleCount ?? 0).toLocaleString()}개, 추천 모델 <b>{model.recommended}</b>, weight = analytical {model.weights.analytical.toFixed(3)}, tree {model.weights.tree.toFixed(3)}, neural {model.weights.neural.toFixed(3)}
+          </p>
+        </div>
+      )}
+      {result?.reportMarkdown && <MarkdownView text={result.reportMarkdown} />}
+      {artifacts.length > 0 && (
+        <div className="artifact-list">
+          <h4>서버 저장 artifact</h4>
+          <ul>
+            {artifacts.map((a: any) => <li key={a.name}><code>{a.name}</code> <span className="small">{a.path}</span></li>)}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Jobs({
   text,
   download,
