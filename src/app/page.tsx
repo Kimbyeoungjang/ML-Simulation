@@ -13,7 +13,7 @@ import {
 } from "@/lib/defaults";
 import { estimateAll, sweepArrays } from "@/lib/estimator";
 import { applyEstimatorSuiteToSearchResponse } from "@/lib/estimatorSuiteApply";
-import { estimatorPresets, findEstimatorPreset } from "@/lib/estimatorPresets";
+import { estimatorPresets as builtInEstimatorPresets, findEstimatorPreset } from "@/lib/estimatorPresets";
 import type { EstimatorSuiteModel } from "@/lib/estimatorSuite";
 import { parseNumList, fmt } from "@/lib/math";
 import { hardwarePresets, workloadPresets } from "@/lib/presets";
@@ -158,6 +158,7 @@ export default function Home() {
   const [statusPayload, setStatusPayload] = useState<any | null>(null);
   const [serverReportMarkdown, setServerReportMarkdown] = useState("");
   const [serverReportJobId, setServerReportJobId] = useState("");
+  const [reportAutoFollow, setReportAutoFollow] = useState(true);
   const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(true);
   const [liveJobId, setLiveJobId] = useState("");
   const [liveJob, setLiveJob] = useState<any | null>(null);
@@ -168,6 +169,8 @@ export default function Home() {
   const [customPresets, setCustomPresets] = useState<any[]>([]);
   const [userHardwarePresets, setUserHardwarePresets] = useState<any[]>([]);
   const [userWorkloadPresets, setUserWorkloadPresets] = useState<any[]>([]);
+  const [userEstimatorPresets, setUserEstimatorPresets] = useState<any[]>([]);
+  const [estimatorPresetName, setEstimatorPresetName] = useState("");
   const [customPresetName, setCustomPresetName] = useState("");
   const [hardwarePresetName, setHardwarePresetName] = useState("");
   const [workloadPresetName, setWorkloadPresetName] = useState("");
@@ -270,6 +273,12 @@ export default function Home() {
     }
     return map;
   }, [userWorkloadPresets]);
+  const effectiveEstimatorPresets = useMemo(() => [
+    ...builtInEstimatorPresets.map((preset) => ({ ...preset, source: "builtin" })),
+    ...userEstimatorPresets
+      .filter((preset: any) => preset?.planOptions && preset?.trainOptions)
+      .map((preset: any) => ({ ...preset, id: preset.id ?? `user-${preset.name}`, source: "estimator" })),
+  ], [userEstimatorPresets]);
   const result = useMemo(() => applyEstimatorSuiteToSearchResponse(estimateAll(request), activeEstimatorSuite?.model), [JSON.stringify(request), activeEstimatorSuite?.runId]);
   const confidence = useMemo(
     () =>
@@ -325,6 +334,7 @@ export default function Home() {
       setCustomPresets(Array.isArray(data.presets) ? data.presets : []);
       setUserHardwarePresets(Array.isArray(data.hardwarePresets) ? data.hardwarePresets : []);
       setUserWorkloadPresets(Array.isArray(data.workloadPresets) ? data.workloadPresets : []);
+      setUserEstimatorPresets(Array.isArray(data.estimatorPresets) ? data.estimatorPresets : []);
     } catch (error: any) {
       setServerMessage(error?.message ?? String(error));
     }
@@ -335,11 +345,11 @@ export default function Home() {
   }
 
   useEffect(() => {
-    void refreshJobs({ switchTab: false, updateReport: true });
+    void refreshJobs({ switchTab: false, updateReport: false });
     void refreshStatus(false);
     const timer = window.setInterval(() => {
       if (!autoRefreshEnabled) return;
-      void refreshJobs({ switchTab: false, updateReport: true });
+      void refreshJobs({ switchTab: false, updateReport: false });
       void refreshStatus(false);
     }, 3000);
     return () => {
@@ -351,6 +361,7 @@ export default function Home() {
   useEffect(() => {
     setServerReportMarkdown("");
     setServerReportJobId("");
+    setReportAutoFollow(true);
   }, [JSON.stringify(request)]);
 
   function startLiveJob(id: string) {
@@ -427,7 +438,7 @@ export default function Home() {
   }
 
   function applyEstimatorPreset(id = selectedEstimatorPreset) {
-    const preset = findEstimatorPreset(id);
+    const preset = effectiveEstimatorPresets.find((p: any) => p.id === id || p.name === id) ?? findEstimatorPreset(id);
     if (!preset) {
       setServerMessage(`Estimator 프리셋을 찾지 못했습니다: ${id}`);
       return;
@@ -437,6 +448,51 @@ export default function Home() {
     setEstimatorSuiteOptions((cur) => ({ ...cur, ...preset.trainOptions }));
     setServerMessage(`Estimator 프리셋 적용: ${preset.name} - ${preset.description}`);
     setTab("estimatorSuite");
+  }
+
+
+  async function saveEstimatorPreset() {
+    const name = estimatorPresetName.trim() || `estimator_${new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-")}`;
+    if (builtInEstimatorPresets.some((preset) => preset.name === name || preset.id === name)) {
+      setServerMessage(`Estimator 기본 프리셋 '${name}'과 이름이 겹칩니다. 다른 이름을 사용하세요.`);
+      return;
+    }
+    try {
+      const r = await fetch("/api/presets", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          kind: "estimator",
+          name,
+          description: "사용자가 저장한 Estimator 표본/학습 프리셋",
+          planOptions: estimatorPlanOptions,
+          trainOptions: estimatorSuiteOptions,
+        }),
+      });
+      if (!r.ok) throw new Error(await r.text());
+      await refreshPresets();
+      setEstimatorPresetName(name);
+      setSelectedEstimatorPreset(`user-${name}`);
+      setServerMessage(`Estimator 프리셋 저장 완료: ${name}`);
+    } catch (error: any) {
+      setServerMessage(`Estimator 프리셋 저장 실패: ${error?.message ?? error}`);
+    }
+  }
+
+  async function deleteEstimatorPreset(idOrName: string) {
+    const preset = effectiveEstimatorPresets.find((p: any) => p.id === idOrName || p.name === idOrName);
+    if (!preset) return;
+    if (preset.source === "builtin") {
+      setServerMessage("기본 Estimator 프리셋은 삭제할 수 없습니다. 사용자 프리셋만 삭제하세요.");
+      return;
+    }
+    if (!window.confirm(`Estimator 프리셋 '${preset.name}'을 삭제할까요?`)) return;
+    const r = await fetch(`/api/presets?kind=estimator&name=${encodeURIComponent(preset.name)}`, { method: "DELETE" });
+    if (!r.ok) return setServerMessage(`Estimator 프리셋 삭제 실패: ${await r.text()}`);
+    await refreshPresets();
+    if (selectedEstimatorPreset === preset.id || selectedEstimatorPreset === preset.name) setSelectedEstimatorPreset("quick-512");
+    if (estimatorPresetName === preset.name) setEstimatorPresetName("");
+    setServerMessage(`Estimator 프리셋 삭제: ${preset.name}`);
   }
 
   async function generateEstimatorSuiteDesign() {
@@ -658,7 +714,7 @@ export default function Home() {
     await refreshJobs({ switchTab: true, updateReport: true });
     if (created[0]?.id && autoAttachNewJob) startLiveJob(created[0].id);
   }
-  async function fetchJobReport(id: string) {
+  async function fetchJobReport(id: string, options: { manual?: boolean } = {}) {
     if (!id) return;
     try {
       const r = await fetch(`/api/jobs/${id}/artifacts/report.md`, {
@@ -670,6 +726,7 @@ export default function Home() {
         setServerReportMarkdown(text);
         setServerReportJobId(id);
         setAnalysisJobId(id);
+        if (options.manual) setReportAutoFollow(false);
       }
     } catch {
       // report.md may not exist until the job reaches the report stage.
@@ -695,9 +752,13 @@ export default function Home() {
     const payload = await r.json();
     setJobsPayload(payload);
     setJobsJson(JSON.stringify(payload, null, 2));
-    if (updateReport) {
+    if (updateReport && reportAutoFollow) {
+      const activeCount = Number(payload?.counts?.running ?? 0) + Number(payload?.counts?.queued ?? 0);
       const id = latestCompletedJobId(payload);
-      if (id && id !== serverReportJobId) void fetchJobReport(id);
+      // Avoid polling report.md forever while the system is idle. During active
+      // runs, auto-follow the newest completed report unless the user manually
+      // selected a specific report.
+      if (activeCount > 0 && id && id !== serverReportJobId) void fetchJobReport(id);
     }
     if (switchTab) setTab("jobs");
   }
@@ -1187,13 +1248,17 @@ export default function Home() {
           jobsPayload={jobsPayload}
           serverReportMarkdown={serverReportMarkdown}
           serverReportJobId={serverReportJobId}
-          fetchJobReport={fetchJobReport}
+          fetchJobReport={(id: string) => fetchJobReport(id, { manual: true })}
           deleteJobById={deleteJobById}
           estimatorSuiteCsv={estimatorSuiteCsv}
-          estimatorPresets={estimatorPresets}
+          estimatorPresets={effectiveEstimatorPresets}
           selectedEstimatorPreset={selectedEstimatorPreset}
           setSelectedEstimatorPreset={setSelectedEstimatorPreset}
           onApplyEstimatorPreset={applyEstimatorPreset}
+          estimatorPresetName={estimatorPresetName}
+          setEstimatorPresetName={setEstimatorPresetName}
+          saveEstimatorPreset={saveEstimatorPreset}
+          deleteEstimatorPreset={deleteEstimatorPreset}
           setEstimatorSuiteCsv={setEstimatorSuiteCsv}
           estimatorSuiteOptions={estimatorSuiteOptions}
           updateEstimatorSuiteOptions={updateEstimatorSuiteOptions}

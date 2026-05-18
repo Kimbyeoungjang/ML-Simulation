@@ -3,6 +3,9 @@ import { predictEstimatorSuiteCycles, type EstimatorSuiteModel, type EstimatorSu
 import type { LearnedEstimatorSample } from "./learnedEstimator";
 import { mean } from "./math";
 import { generateReportMarkdown } from "./report";
+import { analyzeBottlenecks } from "./bottleneck";
+import { computeRoofline } from "./roofline";
+import { computeEnergy } from "./energy";
 
 export interface EstimatorSuiteApplicationSummary {
   applied: boolean;
@@ -132,7 +135,16 @@ export function applyEstimatorSuiteToSearchResponse(response: SearchResponse, mo
     averageCycleFactor: mean(factors),
     warnings,
   };
-  const updated: SearchResponseWithEstimatorSuite = { ...response, results, summary, estimatorSuite };
+  const pairs = results.map(r => ({ shape: r.shape, best: r.best }));
+  const updated: SearchResponseWithEstimatorSuite = {
+    ...response,
+    results,
+    summary,
+    bottlenecks: analyzeBottlenecks({ request, results, summary }),
+    roofline: computeRoofline(request.hardware, pairs),
+    energy: computeEnergy(request.hardware, pairs),
+    estimatorSuite,
+  };
   // `estimateAll` creates artifacts before this learned correction is applied.
   // Regenerate report.md here so the web preview and full-pipeline artifacts do
   // not say "Learned Estimator Suite: 미적용" while the cycles were actually

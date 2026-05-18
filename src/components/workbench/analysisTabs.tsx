@@ -487,6 +487,13 @@ export function Graphs({ result, download, jobId, jobsPayload }: { result: any; 
   const mainActual = scaleSummary?.layers?.[opIndex];
   const candidateActualByTile = new Map<string, any>();
   for (const c of externalCandidates) {
+    // SCALE-Sim top-k output in TileForge is a micro-run diagnostic. When the
+    // record has tileCount/tileExtrapolatedCycles, it is not a full-layer
+    // measured value for the candidate and must not be drawn as an "actual"
+    // bar. Otherwise the graph looks wildly wrong because it compares
+    // full-layer TileForge estimates with micro-run access/cycle counters.
+    const isFullLayerCandidate = !c.tileCount && !c.tileExtrapolatedCycles;
+    if (!isFullLayerCandidate) continue;
     if ((c.shapeId && c.shapeId === shape.id) || (!c.shapeId && c.opName === shape.opName)) {
       candidateActualByTile.set(tileKey(c), c);
     }
@@ -510,13 +517,13 @@ export function Graphs({ result, download, jobId, jobsPayload }: { result: any; 
     return (m.dramReadBytes + m.dramWriteBytes) / 1024;
   };
   const metricInfo: Record<string, { label: string; unit: string; lowerBetter: boolean; value: (p: any) => number; actualValue?: (a: any) => number | undefined; format: (v: number) => string; description: string }> = {
-    cycles: { label: "Cycle", unit: "cyc", lowerBetter: true, value: (p) => Number(p.cycles) || 0, actualValue: (a) => Number(a?.cycles) || undefined, format: (v) => Math.round(v).toLocaleString(), description: "TileForge learned/analytical estimator cycle과 같은 tile 후보의 SCALE-Sim top-k 실행값을 비교합니다." },
+    cycles: { label: "Cycle", unit: "cyc", lowerBetter: true, value: (p) => Number(p.cycles) || 0, actualValue: (a) => Number(a?.cycles) || undefined, format: (v) => Math.round(v).toLocaleString(), description: "TileForge learned/analytical estimator cycle입니다. 주황색 actual은 같은 tile 후보를 full-layer로 검증한 경우에만 표시합니다." },
     timeUs: { label: "실행 시간", unit: "us", lowerBetter: true, value: (p) => (Number(p.cycles) || 0) / Math.max(1, Number(hw.frequencyMHz || 700)), actualValue: (a) => Number(a?.cycles) ? Number(a.cycles) / Math.max(1, Number(hw.frequencyMHz || 700)) : undefined, format: (v) => v.toFixed(3), description: "cycle을 주파수로 나눈 예상/실제 실행 시간입니다." },
-    utilization: { label: "PE 사용률", unit: "%", lowerBetter: false, value: (p) => (Number(p.utilization) || 0) * 100, actualValue: (a) => Number(a?.overallUtil ?? a?.computeUtil) || undefined, format: (v) => `${v.toFixed(1)}%`, description: "예측 PE 사용률과 같은 tile 후보의 SCALE-Sim Overall/Compute Util을 비교합니다." },
+    utilization: { label: "PE 사용률", unit: "%", lowerBetter: false, value: (p) => (Number(p.utilization) || 0) * 100, actualValue: (a) => Number(a?.overallUtil ?? a?.computeUtil) || undefined, format: (v) => `${v.toFixed(1)}%`, description: "예측 PE 사용률입니다. SCALE-Sim actual은 같은 tile 후보를 full-layer로 검증한 경우에만 표시합니다." },
     padding: { label: "패딩 비율", unit: "%", lowerBetter: true, value: (p) => (Number(p.paddingRatio) || 0) * 100, format: (v) => `${v.toFixed(1)}%`, description: "타일 경계에서 낭비되는 계산 비율입니다. SCALE-Sim에는 직접 대응되는 단일 지표가 없습니다." },
     sramFootprint: { label: "SRAM footprint", unit: "KiB", lowerBetter: true, value: (p) => (Number(p.sramBytes) || 0) / 1024, format: (v) => `${v.toFixed(1)} KiB`, description: "타일이 동시에 요구하는 로컬 SRAM 작업 영역입니다. access 총량과는 다른 물리량이므로 SCALE-Sim 막대를 표시하지 않습니다." },
-    sram: { label: "SRAM accesses", unit: "KiB", lowerBetter: true, value: estimatedSramAccessKiB, actualValue: (a) => actualAccessKiB(a, "sramAccesses"), format: (v) => `${v.toFixed(1)} KiB`, description: "파란색은 TileForge 추정 SRAM read/write traffic, 주황색은 같은 tile 후보의 SCALE-Sim SRAM access 총량입니다." },
-    dram: { label: "DRAM accesses", unit: "KiB", lowerBetter: true, value: estimatedDramAccessKiB, actualValue: (a) => actualAccessKiB(a, "dramAccesses"), format: (v) => `${v.toFixed(1)} KiB`, description: "파란색은 TileForge 추정 DRAM read/write traffic, 주황색은 같은 tile 후보의 SCALE-Sim DRAM access 총량입니다." },
+    sram: { label: "SRAM accesses", unit: "KiB", lowerBetter: true, value: estimatedSramAccessKiB, actualValue: (a) => actualAccessKiB(a, "sramAccesses"), format: (v) => `${v.toFixed(1)} KiB`, description: "파란색은 TileForge 추정 SRAM read/write traffic입니다. SCALE-Sim micro-run access와 직접 비교하지 않습니다." },
+    dram: { label: "DRAM accesses", unit: "KiB", lowerBetter: true, value: estimatedDramAccessKiB, actualValue: (a) => actualAccessKiB(a, "dramAccesses"), format: (v) => `${v.toFixed(1)} KiB`, description: "파란색은 TileForge 추정 DRAM read/write traffic입니다. SCALE-Sim micro-run access와 직접 비교하지 않습니다." },
     score: { label: "종합 점수", unit: "score", lowerBetter: true, value: (p) => Number(p.score ?? p.cycles) || 0, format: (v) => v.toFixed(3), description: "objective에 따른 내부 ranking 점수입니다. 외부 도구의 직접 대응값은 없습니다." },
   };
   const info = metricInfo[metric] ?? metricInfo.cycles;

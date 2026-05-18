@@ -8,7 +8,7 @@ import type { SearchRequest } from "@/types/domain";
 import { hashObject } from "@/lib/hash";
 import { ensureJobRoot, getJobRoot, jobDir } from "./workspace";
 import { nowIso, stableId } from "@/lib/determinism";
-import { countJobsSqlite, deleteJobSqlite, listJobsSqlite, markStageSqlite, mirrorLog, readJobSqlite, saveJobSqlite, selectQueuedJobsSqlite, sqlitePrimary } from "./sqliteStore";
+import { countJobsSqlite, deleteJobSqlite, listDashboardJobsSqlite, listJobsSqlite, markStageSqlite, mirrorLog, readJobSqlite, saveJobSqlite, selectQueuedJobsSqlite, sqlitePrimary } from "./sqliteStore";
 import { atomicWriteFile } from "./atomic";
 import { appendJobEvent } from "./eventsLog";
 import { assertTransition, isTerminalStatus } from "@/lib/stateMachine";
@@ -404,13 +404,17 @@ export function dashboardJobs(all: JobRecord[], limit: number): JobRecord[] {
 }
 
 export async function listJobsPaged(options: ListJobsOptions = {}): Promise<{ jobs: JobRecord[]; nextCursor?: string; total: number; counts: Record<string, number>; view?: string }> {
+  const limit = Math.max(1, Math.min(options.limit ?? 50, 500));
+  if (options.dashboard && !options.cursor && !options.status && !options.since && sqlitePrimary()) {
+    const dash = listDashboardJobsSqlite(limit);
+    if (dash) return { jobs: dash.jobs.map(sanitizeJobForDisplay), total: dash.total, counts: dash.counts, view: "dashboard" };
+  }
   const all = (await listJobs()).filter(job => {
     if (options.status && job.status !== options.status) return false;
     if (options.since && job.createdAt < options.since) return false;
     return true;
   });
   const counts = jobCounts(all);
-  const limit = Math.max(1, Math.min(options.limit ?? 50, 500));
   if (options.dashboard && !options.cursor && !options.status) {
     return { jobs: dashboardJobs(all, limit).map(sanitizeJobForDisplay), total: all.length, counts, view: "dashboard" };
   }

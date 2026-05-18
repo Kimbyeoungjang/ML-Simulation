@@ -83,6 +83,35 @@ export function selectQueuedJobsSqlite(limit = 50, excludeIds: string[] = []): J
   return rows.map((r: any) => JSON.parse(r.json));
 }
 
+export function countJobsByStatusSqlite(): Record<string, number> | undefined {
+  const d = getSqliteDb();
+  if (!d) return undefined;
+  const rows = d.prepare(`SELECT status, COUNT(*) AS n FROM jobs GROUP BY status`).all();
+  const out: Record<string, number> = {};
+  for (const r of rows) out[String(r.status)] = Number(r.n ?? 0);
+  return out;
+}
+
+export function listDashboardJobsSqlite(limit = 80): { jobs: JobRecord[]; total: number; counts: Record<string, number> } | undefined {
+  const d = getSqliteDb();
+  if (!d) return undefined;
+  const safeLimit = Math.max(1, Math.min(Math.floor(limit), 500));
+  const counts = countJobsByStatusSqlite() ?? {};
+  const total = Number(d.prepare(`SELECT COUNT(*) AS n FROM jobs`).get().n ?? 0);
+  const picked = new Map<string, JobRecord>();
+  const addRows = (rows: any[]) => {
+    for (const r of rows) {
+      if (picked.size >= safeLimit) break;
+      const job = JSON.parse(r.json);
+      if (!picked.has(job.id)) picked.set(job.id, job);
+    }
+  };
+  addRows(d.prepare(`SELECT json FROM jobs WHERE status='running' ORDER BY updated_at DESC LIMIT ?`).all(safeLimit));
+  addRows(d.prepare(`SELECT json FROM jobs WHERE status='queued' ORDER BY created_at ASC LIMIT ?`).all(Math.max(10, safeLimit)));
+  addRows(d.prepare(`SELECT json FROM jobs WHERE status IN ('succeeded','succeeded_with_warnings','failed','cancelled') ORDER BY updated_at DESC LIMIT ?`).all(safeLimit));
+  return { jobs: [...picked.values()], total, counts };
+}
+
 export function mirrorJob(job: JobRecord) { saveJobSqlite(job); }
 
 export function mirrorLog(jobId: string, message: string, createdAt: string) {

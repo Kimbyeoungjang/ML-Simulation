@@ -506,6 +506,9 @@ type ScaleSimLayerSummary = {
   tileCount?: number;
   cycles: number;
   cyclesPerTile?: number;
+  scaleSimRawCycles?: number;
+  scaleSimRows?: number;
+  tileExtrapolatedCycles?: number;
   predictedCycles?: number;
   predictedTimeUs?: number;
   predictedUtilization?: number;
@@ -614,7 +617,7 @@ async function parseScaleSimLayerReports(
   const detailRows = await readCsvRowsIfExists(path.join(reportDir, "DETAILED_ACCESS_REPORT.csv"));
   return computeRows.map((row, index) => {
     const meta = metadata[index] ?? {};
-    const cyclesPerTile = numberFromRow(row, cycleColumnNames) ?? 0;
+    const rawCycles = numberFromRow(row, cycleColumnNames) ?? 0;
     const tileCount = meta.tileCount && meta.tileCount > 0 ? meta.tileCount : undefined;
     const detail = detailRows[index] ?? {};
     const sramAccesses =
@@ -632,8 +635,11 @@ async function parseScaleSimLayerReports(
         meta.name ??
         stringFromRow(row, ["Layer Name", "Layer name", "Layer", "layer", "Name", "name"]) ??
         `layer_${index + 1}`,
-      cycles: tileCount ? cyclesPerTile * tileCount : cyclesPerTile,
-      cyclesPerTile: tileCount ? cyclesPerTile : undefined,
+      cycles: rawCycles,
+      cyclesPerTile: tileCount ? rawCycles : undefined,
+      scaleSimRawCycles: rawCycles,
+      scaleSimRows: 1,
+      tileExtrapolatedCycles: tileCount ? rawCycles * tileCount : undefined,
       totalCyclesInclPrefetch: numberFromRow(row, ["Total Cycles (incl. prefetch)", "Total Cycles incl. prefetch"]),
       stallCycles: numberFromRow(row, ["Stall Cycles"]),
       overallUtil: numberFromRow(row, ["Overall Util %"]),
@@ -1188,17 +1194,22 @@ function externalComparisonMarkdown(
     if (scale.candidateLayers?.length) {
       lines.push(
         "",
-        "### SCALE-Sim top3 tile 후보 검증",
-        "| 연산 | rank | tile | TileForge cycle | SCALE-Sim extrapolated cycle | 차이 | SCALE-Sim util |",
-        "|---|---:|---|---:|---:|---:|---:|",
+        "### SCALE-Sim top-k tile 후보 micro-run 진단",
+        "| 연산 | rank | tile | TileForge full-layer cycle | SCALE-Sim micro-run cycle | naive tile-count 외삽 | SCALE-Sim util | 해석 |",
+        "|---|---:|---|---:|---:|---:|---:|---|",
       );
       for (const layer of scale.candidateLayers.slice(0, 12)) {
         const predicted = layer.predictedCycles ?? 0;
-        const delta = predicted > 0 ? ((layer.cycles - predicted) / predicted) * 100 : 0;
+        const raw = layer.scaleSimRawCycles ?? layer.cycles;
+        const extrapolated = layer.tileExtrapolatedCycles;
+        const interpretation = extrapolated && predicted > 0
+          ? "micro-run 외삽값입니다. full-layer 검증/학습 target으로 직접 쓰지 않습니다."
+          : "같은 후보의 micro-run 값입니다.";
         lines.push(
-          `| ${layer.opName ?? layer.name} | ${layer.rank ?? "-"} | ${layer.tileM}x${layer.tileN}x${layer.tileK} | ${predicted.toLocaleString()} | ${Math.round(layer.cycles).toLocaleString()} | ${predicted > 0 ? `${delta >= 0 ? "+" : ""}${delta.toFixed(1)}%` : "해당 없음"} | ${layer.overallUtil !== undefined ? `${layer.overallUtil.toFixed(1)}%` : "해당 없음"} |`,
+          `| ${layer.opName ?? layer.name} | ${layer.rank ?? "-"} | ${layer.tileM}x${layer.tileN}x${layer.tileK} | ${predicted.toLocaleString()} | ${Math.round(raw).toLocaleString()} | ${extrapolated ? Math.round(extrapolated).toLocaleString() : "-"} | ${layer.overallUtil !== undefined ? `${layer.overallUtil.toFixed(1)}%` : "해당 없음"} | ${interpretation} |`,
         );
       }
+      lines.push("", "- 주의: 위 top-k 표는 tile 후보별 micro-run 진단입니다. 전체 cycle 정확도 판정은 full-layer SCALE-Sim layer 비교를 우선합니다.");
     }
   }
   lines.push("");

@@ -12,6 +12,10 @@ export function EstimatorSuitePanel({
   selectedPresetId,
   setSelectedPresetId,
   onApplyPreset,
+  presetName,
+  setPresetName,
+  onSavePreset,
+  onDeletePreset,
   options,
   updateOptions,
   planOptions,
@@ -33,10 +37,14 @@ export function EstimatorSuitePanel({
 }: {
   csv: string;
   setCsv: (value: string) => void;
-  presets?: Array<{ id: string; name: string; description: string }>;
+  presets?: Array<{ id: string; name: string; description: string; source?: string }>;
   selectedPresetId?: string;
   setSelectedPresetId?: (id: string) => void;
   onApplyPreset?: (id: string) => void;
+  presetName?: string;
+  setPresetName?: (name: string) => void;
+  onSavePreset?: () => void;
+  onDeletePreset?: (id: string) => void;
   options: any;
   updateOptions: (patch: any) => void;
   planOptions: any;
@@ -87,15 +95,21 @@ export function EstimatorSuitePanel({
           <label className="mini-field">
             <span>프리셋</span>
             <select value={selectedPresetId ?? ""} onChange={(e) => setSelectedPresetId?.(e.target.value)}>
-              {presets.map((preset) => <option key={preset.id} value={preset.id}>{preset.name}</option>)}
+              {presets.map((preset: any) => <option key={preset.id} value={preset.id}>{preset.source === "builtin" ? "기본" : "사용자"} · {preset.name}</option>)}
             </select>
           </label>
-          <div className="calibration-actions">
-            <button className="secondary" onClick={() => selectedPresetId && onApplyPreset?.(selectedPresetId)} disabled={busy || !selectedPresetId}>프리셋 적용</button>
-          </div>
+          <label className="mini-field">
+            <span>저장 이름</span>
+            <input value={presetName ?? ""} onChange={(e) => setPresetName?.(e.target.value)} placeholder="예: vit_s_4096_train" />
+          </label>
         </div>
-        {presets.find((preset) => preset.id === selectedPresetId)?.description && (
-          <p className="small good">{presets.find((preset) => preset.id === selectedPresetId)?.description}</p>
+        <div className="calibration-actions">
+          <button className="secondary" onClick={() => selectedPresetId && onApplyPreset?.(selectedPresetId)} disabled={busy || !selectedPresetId}>프리셋 적용</button>
+          <button className="secondary" onClick={onSavePreset} disabled={busy}>현재 설정을 사용자 프리셋으로 저장</button>
+          <button className="secondary" onClick={() => selectedPresetId && onDeletePreset?.(selectedPresetId)} disabled={busy || !selectedPresetId || presets.find((preset: any) => preset.id === selectedPresetId)?.source === "builtin"}>선택 사용자 프리셋 삭제</button>
+        </div>
+        {presets.find((preset: any) => preset.id === selectedPresetId)?.description && (
+          <p className="small good">{presets.find((preset: any) => preset.id === selectedPresetId)?.description}</p>
         )}
       </section>
 

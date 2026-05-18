@@ -59,6 +59,10 @@ export function ResultsPanel(props: ResultsPanelProps) {
     selectedEstimatorPreset,
     setSelectedEstimatorPreset,
     onApplyEstimatorPreset,
+    estimatorPresetName,
+    setEstimatorPresetName,
+    saveEstimatorPreset,
+    deleteEstimatorPreset,
     setEstimatorSuiteCsv,
     estimatorSuiteOptions,
     updateEstimatorSuiteOptions,
@@ -206,6 +210,10 @@ export function ResultsPanel(props: ResultsPanelProps) {
                 selectedPresetId={selectedEstimatorPreset}
                 setSelectedPresetId={setSelectedEstimatorPreset}
                 onApplyPreset={onApplyEstimatorPreset}
+                presetName={estimatorPresetName}
+                setPresetName={setEstimatorPresetName}
+                onSavePreset={saveEstimatorPreset}
+                onDeletePreset={deleteEstimatorPreset}
                 setCsv={setEstimatorSuiteCsv}
                 options={estimatorSuiteOptions}
                 updateOptions={updateEstimatorSuiteOptions}
