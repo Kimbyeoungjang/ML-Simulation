@@ -2,6 +2,7 @@ import path from "node:path";
 import { mkdir, readFile, readdir, stat } from "node:fs/promises";
 import type { JobRecord } from "@/types/job";
 import { estimateAll } from "@/lib/estimator";
+import { applyEstimatorSuiteToSearchResponse, type SearchResponseWithEstimatorSuite } from "@/lib/estimatorSuiteApply";
 import { scaleSimTopkCandidates } from "@/lib/mlir";
 import { estimateMaybeThreaded } from "./threadedEstimate";
 import { responseToPolicyEntries } from "@/lib/policyDb";
@@ -38,6 +39,7 @@ import { assessConfidence, confidenceMarkdown } from "@/lib/confidence";
 import { readEstimateCache, writeEstimateCache, cacheKey as estimateCacheKey } from "@/lib/cache";
 import { totalCycleUncertainty } from "@/lib/uncertainty";
 import { recordArtifactSqlite } from "./sqliteStore";
+import { readActiveEstimatorSuiteModel } from "./activeEstimatorSuite";
 import {
   commandLabel,
   formatCandidateErrors,
@@ -154,7 +156,7 @@ async function runJobOnce(job: JobRecord) {
     await addLog(job, `SCALE-Sim 버전: ${versions.scalesim}`);
   if (versions.iree) await addLog(job, `IREE 버전: ${versions.iree}`);
 
-  let res: ReturnType<typeof estimateAll> | undefined;
+  let res: SearchResponseWithEstimatorSuite | undefined;
   const dir = jobDir(job.id);
   if (!(await hasStageMarker(dir, "estimate"))) {
     await updateProgress(job, "estimating", 15, "Estimator 실행 중");
@@ -167,9 +169,13 @@ async function runJobOnce(job: JobRecord) {
       await writeEstimateCache(job.request, res);
       await addLog(job, `Estimator cache 저장: ${estimateCacheKey(job.request)}`);
     }
+    const activeModel = await readActiveEstimatorSuiteModel();
+    res = applyEstimatorSuiteToSearchResponse(res, activeModel);
+    if (res.estimatorSuite?.applied) await addLog(job, `활성 Estimator Suite 적용: analytical=${res.estimatorSuite.totalAnalyticalCycles.toLocaleString()} → learned=${res.estimatorSuite.totalLearnedCycles.toLocaleString()} cycles`);
     await writeStageMarker(dir, "estimate", {
       totalCycles: res.summary.totalCycles,
       cacheKey: estimateCacheKey(job.request),
+      estimatorSuite: res.estimatorSuite,
     });
     await markStageDone(job, "estimating", "Estimator 완료");
   } else {
@@ -180,6 +186,9 @@ async function runJobOnce(job: JobRecord) {
       "완료된 estimator 단계를 재사용합니다",
     );
     res = (await readEstimateCache(job.request)) ?? await estimateMaybeThreaded(job.request);
+    const activeModel = await readActiveEstimatorSuiteModel();
+    res = applyEstimatorSuiteToSearchResponse(res, activeModel);
+    if (res.estimatorSuite?.applied) await addLog(job, `활성 Estimator Suite 적용: analytical=${res.estimatorSuite.totalAnalyticalCycles.toLocaleString()} → learned=${res.estimatorSuite.totalLearnedCycles.toLocaleString()} cycles`);
   }
 
   await updateProgress(

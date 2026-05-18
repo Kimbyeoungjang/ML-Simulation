@@ -7,6 +7,7 @@ import { buildEstimatorSamplingPlan, requestFromPlanRow } from "@/lib/estimatorS
 import { collectEstimatorSamplesFromJobs, mergeCollectedSamplesIntoCsv } from "@/lib/estimatorSuiteJobSamples";
 import { createJob, listJobs } from "@/server/jobStore";
 import { trainEstimatorSuite } from "@/lib/estimatorSuite";
+import { activateEstimatorSuiteModel, clearActiveEstimatorSuiteModel, listEstimatorSuiteModels, readActiveEstimatorSuiteModel } from "@/server/activeEstimatorSuite";
 import { formatZodError, parseSearchRequest } from "@/lib/validation";
 import { getJobRoot, getWorkspaceRoot } from "@/server/workspace";
 
@@ -25,6 +26,16 @@ async function writeRunArtifacts(runId: string, files: Record<string, string>) {
     artifacts.push({ name, path: file });
   }
   return { dir, artifacts };
+}
+
+export async function GET() {
+  try {
+    const payload = await listEstimatorSuiteModels();
+    const activeModel = await readActiveEstimatorSuiteModel();
+    return NextResponse.json({ ok: true, ...payload, activeModel });
+  } catch (error) {
+    return NextResponse.json({ ok: false, error: formatZodError(error) }, { status: 400 });
+  }
 }
 
 export async function POST(req: Request) {
@@ -55,6 +66,18 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: true, action, runId, dir, artifacts, planCsv: plan.csv, rows: plan.totalRows, queuedJobs });
     }
 
+
+    if (action === "activate") {
+      const runIdToActivate = String(body.runId ?? "").trim();
+      if (!runIdToActivate) return NextResponse.json({ ok: false, error: "runId is required to activate estimator suite model." }, { status: 400 });
+      const activated = await activateEstimatorSuiteModel(runIdToActivate);
+      return NextResponse.json({ ok: true, action, activeRunId: activated.runId, activePath: activated.path, model: activated.model });
+    }
+
+    if (action === "clear-active") {
+      await clearActiveEstimatorSuiteModel();
+      return NextResponse.json({ ok: true, action });
+    }
 
     if (action === "collect-jobs") {
       const csvText = String(body.csvText ?? body.csv ?? "");

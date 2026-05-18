@@ -19,6 +19,7 @@ export function generateReportMarkdown(res: SearchResponse): string {
   lines.push(`- 메모리 대역폭: ${h.memoryBandwidthGBs ?? "미설정"} GB/s`);
   lines.push(`- 디스패치 오버헤드: ${h.dispatchOverheadUs ?? "미설정"} us`);
   lines.push("");
+  const suite = (res as any).estimatorSuite;
   lines.push(`## 2. 전체 요약`);
   lines.push(`- 전체 예상 사이클: ${res.summary.totalCycles.toLocaleString()}`);
   lines.push(`- 전체 예상 실행 시간: ${res.summary.totalTimeUs.toFixed(3)} us`);
@@ -26,12 +27,19 @@ export function generateReportMarkdown(res: SearchResponse): string {
   lines.push(`- 평균 패딩 비율: ${(res.summary.meanPaddingRatio*100).toFixed(2)}%`);
   lines.push(`- 병목 연산: ${res.summary.bottleneckOp}`);
   lines.push(`- 예상 에너지: ${res.energy?.totalEnergyUJ.toFixed(2) ?? "해당 없음"} uJ`);
+  if (suite?.applied) {
+    lines.push(`- Learned Estimator Suite: 적용됨 (${suite.recommended}, samples=${suite.modelSamples?.toLocaleString?.() ?? suite.modelSamples})`);
+    lines.push(`- Analytical baseline cycle: ${suite.totalAnalyticalCycles.toLocaleString()}`);
+    lines.push(`- Learned 보정 계수 평균: ×${suite.averageCycleFactor.toFixed(3)}`);
+  } else {
+    lines.push(`- Learned Estimator Suite: 미적용`);
+  }
   lines.push("");
   lines.push(`## 2-1. 실제 외부 도구 반영 상태`);
   lines.push(`**최종 판정: 대기 중**`);
   lines.push("");
   lines.push(`- **TileForge estimator**: 적용됨`);
-  lines.push(`  - 근거: 전체 예상 cycle ${res.summary.totalCycles.toLocaleString()}`);
+  lines.push(`  - 근거: 전체 예상 cycle ${res.summary.totalCycles.toLocaleString()}${suite?.applied ? ` (analytical ${suite.totalAnalyticalCycles.toLocaleString()}에서 learned 보정)` : ""}`);
   lines.push(`- **SCALE-Sim**: 대기 중`);
   lines.push(`  - 근거: full-pipeline 완료 후 실제 COMPUTE_REPORT.csv 파싱값으로 자동 갱신됩니다.`);
   lines.push(`- **IREE compile**: 대기 중`);
@@ -40,19 +48,19 @@ export function generateReportMarkdown(res: SearchResponse): string {
   lines.push(`  - 근거: full-pipeline이 완료되면 이 보고서와 상세 검증 부록이 함께 갱신됩니다.`);
   lines.push("");
   lines.push(`## 2-2. 예측 결과와 실제 실행 결과 비교`);
-  lines.push(`| 항목 | TileForge estimator | SCALE-Sim 실제 실행 | 차이 | 해석 |`);
+  lines.push(`| 항목 | Analytical estimator | Learned estimator | SCALE-Sim 실제 실행 | 해석 |`);
   lines.push(`|---|---:|---:|---:|---|`);
-  lines.push(`| 전체 cycle | ${res.summary.totalCycles.toLocaleString()} | 대기 중 | 대기 중 | full-pipeline 완료 후 SCALE-Sim 결과로 자동 갱신됩니다. |`);
+  lines.push(`| 전체 cycle | ${suite?.applied ? suite.totalAnalyticalCycles.toLocaleString() : res.summary.totalCycles.toLocaleString()} | ${res.summary.totalCycles.toLocaleString()} | 대기 중 | ${suite?.applied ? "활성 Estimator Suite 모델이 ranking/report cycle에 반영되었습니다." : "Learned 모델 미적용 상태입니다."} |`);
   lines.push("");
   lines.push(`- 분석: 현재 보고서는 estimator 미리보기입니다. full-pipeline 완료 후에는 SCALE-Sim cycle, 차이, 비율, layer별 cycle 상위 항목이 이 섹션에 자동으로 표시됩니다.`);
   lines.push(`- 주의: IREE compile 성공은 컴파일 가능성 검증이며 cycle 측정값은 SCALE-Sim 결과를 기준으로 비교합니다.`);
   lines.push("");
   lines.push(`## 3. 최적 타일 정책`);
-  lines.push(`| 모델 | 연산 | M | N | K | 타일 | 사이클 | PE 사용률 | 패딩 | SRAM KiB |`);
-  lines.push(`|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|`);
+  lines.push(`| 모델 | 연산 | M | N | K | 타일 | Analytical cycle | 최종 cycle | PE 사용률 | 패딩 | SRAM KiB |`);
+  lines.push(`|---|---|---:|---:|---:|---|---:|---:|---:|---:|---:|`);
   for (const r of res.results) {
     const s = r.shape, b = r.best;
-    lines.push(`| ${s.model} | ${s.opName} | ${s.m} | ${s.n} | ${s.k} | ${b.tileM}x${b.tileN}x${b.tileK} | ${b.cycles.toLocaleString()} | ${(b.utilization*100).toFixed(1)}% | ${(b.paddingRatio*100).toFixed(1)}% | ${(b.sramBytes/1024).toFixed(1)} |`);
+    lines.push(`| ${s.model} | ${s.opName} | ${s.m} | ${s.n} | ${s.k} | ${b.tileM}x${b.tileN}x${b.tileK} | ${(b.rawCycles ?? b.cycles).toLocaleString()} | ${b.cycles.toLocaleString()} | ${(b.utilization*100).toFixed(1)}% | ${(b.paddingRatio*100).toFixed(1)}% | ${(b.sramBytes/1024).toFixed(1)} |`);
   }
   lines.push("", bottleneckMarkdown(res.bottlenecks), "", rooflineMarkdown(res.roofline), "", energyMarkdown(res.energy), "");
   lines.push(`## 7. 타일 선택 이유`);

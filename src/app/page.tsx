@@ -12,6 +12,8 @@ import {
   defaultShapes,
 } from "@/lib/defaults";
 import { estimateAll, sweepArrays } from "@/lib/estimator";
+import { applyEstimatorSuiteToSearchResponse } from "@/lib/estimatorSuiteApply";
+import type { EstimatorSuiteModel } from "@/lib/estimatorSuite";
 import { parseNumList, fmt } from "@/lib/math";
 import { hardwarePresets, workloadPresets } from "@/lib/presets";
 import { assessConfidence, confidenceMarkdown } from "@/lib/confidence";
@@ -205,6 +207,8 @@ export default function Home() {
   });
   const [estimatorSuiteResult, setEstimatorSuiteResult] = useState<any | null>(null);
   const [estimatorSuiteBusy, setEstimatorSuiteBusy] = useState(false);
+  const [estimatorSuiteModels, setEstimatorSuiteModels] = useState<any[]>([]);
+  const [activeEstimatorSuite, setActiveEstimatorSuite] = useState<{ runId?: string; model?: EstimatorSuiteModel } | null>(null);
   const [calibrationRow, setCalibrationRow] = useState({
     model: "vit_s",
     opName: "qkv",
@@ -264,7 +268,7 @@ export default function Home() {
     }
     return map;
   }, [userWorkloadPresets]);
-  const result = useMemo(() => estimateAll(request), [JSON.stringify(request)]);
+  const result = useMemo(() => applyEstimatorSuiteToSearchResponse(estimateAll(request), activeEstimatorSuite?.model), [JSON.stringify(request), activeEstimatorSuite?.runId]);
   const confidence = useMemo(
     () =>
       assessConfidence(result, {
@@ -290,7 +294,26 @@ export default function Home() {
 
   useEffect(() => {
     void refreshPresets();
+    void refreshEstimatorSuiteModels();
   }, []);
+
+  async function refreshEstimatorSuiteModels() {
+    try {
+      const r = await fetch("/api/estimator-suite", { cache: "no-store" });
+      const j = await r.json();
+      if (!r.ok || !j.ok) throw new Error(j.error || "Estimator suite model 목록을 불러오지 못했습니다.");
+      setEstimatorSuiteModels(Array.isArray(j.models) ? j.models : []);
+      if (j.activeRunId && j.activeModel) {
+        const active = (Array.isArray(j.models) ? j.models : []).find((m: any) => m.runId === j.activeRunId);
+        setActiveEstimatorSuite({ runId: j.activeRunId, model: j.activeModel });
+        if (active) setServerMessage((prev) => prev || `활성 Estimator Suite 모델: ${j.activeRunId}`);
+      } else {
+        setActiveEstimatorSuite(null);
+      }
+    } catch (error: any) {
+      setServerMessage(error?.message ?? String(error));
+    }
+  }
 
   async function refreshPresets() {
     try {
@@ -485,10 +508,53 @@ export default function Home() {
       const j = await r.json();
       if (!r.ok || !j.ok) throw new Error(j.error || "Estimator suite failed");
       setEstimatorSuiteResult(j);
-      setServerMessage(`Estimator suite 완료: ${j.model?.metadata?.samples?.toLocaleString?.() ?? j.model?.metadata?.samples} samples, 추천=${j.model?.recommended}`);
+      setActiveEstimatorSuite({ runId: j.runId, model: j.model });
+      await refreshEstimatorSuiteModels();
+      setServerMessage(`Estimator suite 완료: ${j.model?.metadata?.samples?.toLocaleString?.() ?? j.model?.metadata?.samples} samples, 추천=${j.model?.recommended}. 이 브라우저 미리보기에도 즉시 적용했습니다.`);
       setTab("estimatorSuite");
     } catch (e: any) {
       setServerMessage(`Estimator suite 실패: ${e?.message ?? e}`);
+    } finally {
+      setEstimatorSuiteBusy(false);
+    }
+  }
+
+  async function activateEstimatorSuiteModelWeb(runId: string) {
+    setEstimatorSuiteBusy(true);
+    try {
+      const r = await fetch("/api/estimator-suite", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "activate", runId }),
+      });
+      const j = await r.json();
+      if (!r.ok || !j.ok) throw new Error(j.error || "Estimator suite activate failed");
+      setActiveEstimatorSuite({ runId: j.activeRunId, model: j.model });
+      await refreshEstimatorSuiteModels();
+      setServerMessage(`활성 Estimator Suite 모델 적용: ${j.activeRunId}`);
+      setTab("estimatorSuite");
+    } catch (e: any) {
+      setServerMessage(`Estimator suite 활성화 실패: ${e?.message ?? e}`);
+    } finally {
+      setEstimatorSuiteBusy(false);
+    }
+  }
+
+  async function clearActiveEstimatorSuiteModelWeb() {
+    setEstimatorSuiteBusy(true);
+    try {
+      const r = await fetch("/api/estimator-suite", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "clear-active" }),
+      });
+      const j = await r.json();
+      if (!r.ok || !j.ok) throw new Error(j.error || "Estimator suite clear failed");
+      setActiveEstimatorSuite(null);
+      await refreshEstimatorSuiteModels();
+      setServerMessage("활성 Estimator Suite 모델을 해제했습니다. Analytical estimator 기준으로 돌아갑니다.");
+    } catch (e: any) {
+      setServerMessage(`Estimator suite 해제 실패: ${e?.message ?? e}`);
     } finally {
       setEstimatorSuiteBusy(false);
     }
@@ -1084,6 +1150,11 @@ export default function Home() {
           updateEstimatorPlanOptions={updateEstimatorPlanOptions}
           estimatorSuiteResult={estimatorSuiteResult}
           estimatorSuiteBusy={estimatorSuiteBusy}
+          estimatorSuiteModels={estimatorSuiteModels}
+          activeEstimatorSuite={activeEstimatorSuite}
+          refreshEstimatorSuiteModels={refreshEstimatorSuiteModels}
+          activateEstimatorSuiteModel={activateEstimatorSuiteModelWeb}
+          clearActiveEstimatorSuiteModel={clearActiveEstimatorSuiteModelWeb}
           generateEstimatorSuiteDesign={generateEstimatorSuiteDesign}
           generateEstimatorSamplingPlan={generateEstimatorSamplingPlan}
           collectEstimatorSamplesFromJobsWeb={collectEstimatorSamplesFromJobsWeb}

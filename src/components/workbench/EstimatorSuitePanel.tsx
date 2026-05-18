@@ -12,6 +12,11 @@ export function EstimatorSuitePanel({
   updatePlanOptions,
   result,
   busy,
+  models,
+  active,
+  onRefreshModels,
+  onActivateModel,
+  onClearActiveModel,
   onDesign,
   onPlan,
   onQueuePlan,
@@ -27,6 +32,11 @@ export function EstimatorSuitePanel({
   updatePlanOptions: (patch: any) => void;
   result: any | null;
   busy: boolean;
+  models: any[];
+  active: { runId?: string; model?: any } | null;
+  onRefreshModels: () => void;
+  onActivateModel: (runId: string) => void;
+  onClearActiveModel: () => void;
   onDesign: () => void;
   onPlan: () => void;
   onQueuePlan: () => void;
@@ -46,6 +56,43 @@ export function EstimatorSuitePanel({
           웹에서 표본 계획을 만들고, 필요하면 각 표본을 full-pipeline 큐에 자동 등록합니다. 작업이 끝난 뒤 SCALE-Sim measuredCycles가 채워진 CSV를 사용해 Tree residual / Neural residual / Ensemble estimator를 학습합니다.
         </p>
       </div>
+
+
+
+      <section className="suite-section" title="학습된 Estimator Suite 모델을 일반 TileForge estimator에 적용합니다.">
+        <h4>0. 활성 Estimator Suite 적용</h4>
+        <p className="small">활성 모델을 선택하면 일반 타일 ranking, 총 cycle, 보고서의 cycle 값이 analytical baseline 대신 learned ensemble 보정값을 사용합니다. 서버 full-pipeline 작업에도 같은 활성 모델이 적용됩니다.</p>
+        <div className="calibration-actions">
+          <button className="secondary" onClick={onRefreshModels} disabled={busy}>모델 목록 새로고침</button>
+          <button className="secondary" onClick={onClearActiveModel} disabled={busy || !active?.runId}>활성 모델 해제</button>
+        </div>
+        {active?.runId ? (
+          <p className="small good">현재 활성 모델: <code>{active.runId}</code>{active.model?.recommended ? ` (${active.model.recommended})` : ""}</p>
+        ) : (
+          <p className="small warn">활성 Estimator Suite 모델이 없습니다. 현재 미리보기는 analytical estimator 기준입니다.</p>
+        )}
+        {Array.isArray(models) && models.length > 0 ? (
+          <div className="table-wrap">
+            <table className="mini-table">
+              <thead><tr><th>상태</th><th>runId</th><th>samples</th><th>추천</th><th>생성 시각</th><th>동작</th></tr></thead>
+              <tbody>
+                {models.slice(0, 12).map((m: any) => (
+                  <tr key={m.runId}>
+                    <td>{m.runId === active?.runId || m.active ? "활성" : "-"}</td>
+                    <td><code>{m.runId}</code></td>
+                    <td>{Number(m.samples ?? 0).toLocaleString()}</td>
+                    <td>{m.recommended ?? "-"}</td>
+                    <td>{m.createdAt ?? "-"}</td>
+                    <td><button className="secondary" onClick={() => onActivateModel(m.runId)} disabled={busy || m.runId === active?.runId}>적용</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="small">아직 저장된 estimator-suite-model.json이 없습니다. 학습을 먼저 실행하세요.</p>
+        )}
+      </section>
 
       <section className="suite-section" title="수만 개 시뮬레이션 표본을 만들 때 사용할 파라미터 범위입니다.">
         <h4>1. 표본 계획 자동 생성</h4>

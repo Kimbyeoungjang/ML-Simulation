@@ -62,6 +62,11 @@ export function ResultsPanel(props: ResultsPanelProps) {
     updateEstimatorPlanOptions,
     estimatorSuiteResult,
     estimatorSuiteBusy,
+    estimatorSuiteModels,
+    activeEstimatorSuite,
+    refreshEstimatorSuiteModels,
+    activateEstimatorSuiteModel,
+    clearActiveEstimatorSuiteModel,
     generateEstimatorSuiteDesign,
     generateEstimatorSamplingPlan,
     collectEstimatorSamplesFromJobsWeb,
@@ -112,6 +117,13 @@ export function ResultsPanel(props: ResultsPanelProps) {
               tip="전체 사이클에서 가장 큰 비중을 차지하는 연산입니다."
               value={result.summary.bottleneckOp}
             />
+            {result.estimatorSuite?.applied && (
+              <Metric
+                title="Learned 보정"
+                tip="활성 Estimator Suite가 analytical estimator cycle을 보정한 평균 계수입니다."
+                value={`×${result.estimatorSuite.averageCycleFactor.toFixed(3)}`}
+              />
+            )}
           </div>
           <div className={`panel alt ${tab === "jobs" ? "jobs-panel" : ""}`} style={{ marginTop: 16 }}>
             <ResultContextBar
@@ -192,6 +204,11 @@ export function ResultsPanel(props: ResultsPanelProps) {
                 updatePlanOptions={updateEstimatorPlanOptions}
                 result={estimatorSuiteResult}
                 busy={estimatorSuiteBusy}
+                models={estimatorSuiteModels}
+                active={activeEstimatorSuite}
+                onRefreshModels={refreshEstimatorSuiteModels}
+                onActivateModel={activateEstimatorSuiteModel}
+                onClearActiveModel={clearActiveEstimatorSuiteModel}
                 onDesign={generateEstimatorSuiteDesign}
                 onPlan={() => generateEstimatorSamplingPlan(false)}
                 onQueuePlan={() => generateEstimatorSamplingPlan(true)}
