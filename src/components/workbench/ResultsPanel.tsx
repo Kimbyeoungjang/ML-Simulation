@@ -1,4 +1,3 @@
-import { EstimatorSuitePanel } from "@/components/workbench/EstimatorSuitePanel";
 import { Jobs } from "@/components/workbench/JobsPanel";
 import {
   ArraySweep,
@@ -27,7 +26,6 @@ type Tab =
   | "graphs"
   | "report"
   | "jobs"
-  | "estimatorSuite"
   | "status";
 
 type ResultsPanelProps = Record<string, any>;
@@ -41,6 +39,7 @@ export function ResultsPanel(props: ResultsPanelProps) {
     result,
     uncertainty,
     confidence,
+    confidenceSource,
     arraySweep,
     download,
     analysisJobId,
@@ -56,32 +55,7 @@ export function ResultsPanel(props: ResultsPanelProps) {
     serverReportJobId,
     fetchJobReport,
     deleteJobById,
-    estimatorSuiteCsv,
-    estimatorPresets,
-    selectedEstimatorPreset,
-    setSelectedEstimatorPreset,
-    onApplyEstimatorPreset,
-    estimatorPresetName,
-    setEstimatorPresetName,
-    saveEstimatorPreset,
-    deleteEstimatorPreset,
-    setEstimatorSuiteCsv,
-    estimatorSuiteOptions,
-    updateEstimatorSuiteOptions,
-    estimatorPlanOptions,
-    updateEstimatorPlanOptions,
-    estimatorSuiteResult,
-    estimatorSuiteBusy,
-    estimatorSuiteModels,
     activeEstimatorSuite,
-    refreshEstimatorSuiteModels,
-    activateEstimatorSuiteModel,
-    clearActiveEstimatorSuiteModel,
-    generateEstimatorSuiteDesign,
-    generateEstimatorSamplingPlan,
-    collectEstimatorSamplesFromJobsWeb,
-    runEstimatorSuiteWeb,
-    importEstimatorDatasetWeb,
     jobsJson,
     liveJobId,
     liveJob,
@@ -106,7 +80,7 @@ export function ResultsPanel(props: ResultsPanelProps) {
   } = props;
 
   return (
-        <section className={`results-section ${tab === "jobs" ? "jobs-wide" : ""}`} title="오른쪽 패널에서 추정 결과, 분석 탭, 내보내기 산출물을 확인합니다.">
+        <section className="results-section" title="오른쪽 패널에서 추정 결과, 분석 탭, 내보내기 산출물을 확인합니다.">
           <div className="cards">
             <Metric
               title="총 사이클"
@@ -120,8 +94,8 @@ export function ResultsPanel(props: ResultsPanelProps) {
             />
             <Metric
               title="신뢰도"
-              tip="입력 유효성, Estimator Suite 학습 샘플, 경고 수 등을 종합한 결과 신뢰도입니다."
-              value={`${confidence.level} (${(confidence.score * 100).toFixed(0)}%)`}
+              tip={confidenceSource === "selected-job" ? "선택한 작업의 confidence.md와 동일한 신뢰도입니다." : "현재 입력 미리보기 기준 신뢰도입니다. 작업을 선택하면 report/confidence.md 기준으로 표시됩니다."}
+              value={`${confidence.level} (${(confidence.score * 100).toFixed(0)}%)${confidenceSource === "selected-job" ? " · 작업" : " · 미리보기"}`}
             />
             <Metric
               title="주요 병목"
@@ -155,7 +129,6 @@ export function ResultsPanel(props: ResultsPanelProps) {
                   "graphs",
                   "report",
                   "jobs",
-                  "estimatorSuite",
                   "status",
                 ] as Tab[]
               ).map((t) => (
@@ -197,39 +170,6 @@ export function ResultsPanel(props: ResultsPanelProps) {
                 onDeleteJob={(id) => void deleteJobById(id)}
               />
             )}
-            {tab === "estimatorSuite" && (
-              <EstimatorSuitePanel
-                csv={estimatorSuiteCsv}
-                presets={estimatorPresets}
-                selectedPresetId={selectedEstimatorPreset}
-                setSelectedPresetId={setSelectedEstimatorPreset}
-                onApplyPreset={onApplyEstimatorPreset}
-                presetName={estimatorPresetName}
-                setPresetName={setEstimatorPresetName}
-                onSavePreset={saveEstimatorPreset}
-                onDeletePreset={deleteEstimatorPreset}
-                setCsv={setEstimatorSuiteCsv}
-                options={estimatorSuiteOptions}
-                updateOptions={updateEstimatorSuiteOptions}
-                planOptions={estimatorPlanOptions}
-                updatePlanOptions={updateEstimatorPlanOptions}
-                result={estimatorSuiteResult}
-                busy={estimatorSuiteBusy}
-                models={estimatorSuiteModels}
-                active={activeEstimatorSuite}
-                onRefreshModels={refreshEstimatorSuiteModels}
-                onActivateModel={activateEstimatorSuiteModel}
-                onClearActiveModel={clearActiveEstimatorSuiteModel}
-                onDesign={generateEstimatorSuiteDesign}
-                onPlan={() => generateEstimatorSamplingPlan(false)}
-                onQueuePlan={() => generateEstimatorSamplingPlan(true)}
-                onCollectJobs={collectEstimatorSamplesFromJobsWeb}
-                onRun={runEstimatorSuiteWeb}
-                onImportDataset={importEstimatorDatasetWeb}
-                download={download}
-              />
-            )}
-
             {tab === "jobs" && (
               <Jobs
                 text={jobsJson || "작업 목록을 자동으로 불러오는 중입니다."}

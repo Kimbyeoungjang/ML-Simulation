@@ -42,13 +42,16 @@ describe("estimator suite job sample collection", () => {
 
     const result = await collectEstimatorSamplesFromJobs([j], root);
     expect(result.skipped).toHaveLength(0);
-    expect(result.rows).toHaveLength(1);
-    expect(result.rows[0].measuredCycles).toBe(88888);
-    expect(result.rows[0].targetScope).toBe("tile-policy");
-    expect(result.rows[0].measuredSource).toBe("candidate.tileExtrapolatedCycles");
-    expect(result.rows[0].measuredSramBytes).toBe(4000);
-    expect(result.rows[0].measuredDramBytes).toBe(6000);
-    expect(result.rows[0].measuredUtilization).toBeCloseTo(0.333);
+    expect(result.rows).toHaveLength(2);
+    const tileRow = result.rows.find((r) => r.targetScope === "tile-policy")!;
+    const fullRow = result.rows.find((r) => r.targetScope === "full-layer")!;
+    expect(tileRow.measuredCycles).toBe(88888);
+    expect(tileRow.measuredSource).toBe("candidate.tileExtrapolatedCycles");
+    expect(tileRow.measuredSramBytes).toBe(4000);
+    expect(tileRow.measuredDramBytes).toBe(6000);
+    expect(tileRow.measuredUtilization).toBeCloseTo(0.333);
+    expect(fullRow.measuredCycles).toBe(77777);
+    expect(fullRow.measuredSource).toBe("layers.cycles");
 
     const merged = mergeCollectedSamplesIntoCsv("id,model,opName,arrayRows,arrayCols,sramKB,frequencyMHz,dataflow,dtypeBytes,m,n,k,tileM,tileN,tileK,estimatorCycles,measuredCycles,measuredSramBytes,measuredDramBytes,measuredUtilization\nqkv,vit,attention_qkv,128,128,8192,700,WS,2,197,2304,384,128,256,128,50000,,,,\n", result.rows);
     expect(merged).toContain("targetScope");

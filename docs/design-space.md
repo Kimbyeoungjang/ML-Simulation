@@ -159,3 +159,17 @@ The active-validation table can now be exported as `design-space-validation-plan
 The validation plan is now available in both CSV and JSON. The JSON export is intended for scripts that automatically launch the next SCALE-Sim batch, while the CSV remains convenient for manual inspection. Each row includes a short `rationale` field such as `high uncertainty`, `low domain confidence`, `near marginal knee`, or `SRAM pressure`.
 
 This small explanation layer is useful for experiment tracking: when a candidate is later added to the training set, the report can show why it was selected rather than only its rank. It also helps detect bad active-learning batches quickly. For example, if every candidate is selected only for low utilization, the sweep probably needs broader memory or array coverage before retraining.
+
+## vNext memory-axis fixes
+
+SRAM and DRAM axes are now treated as different design questions instead of ordinary speedup axes.
+
+- **SRAM axis:** the graph searches for the smallest safe capacity. The full-layer estimator now reports the required layer working-set footprint without capping it by the configured SRAM capacity, so sub-baseline SRAM points correctly show `sramOverflowRatio > 0` when they do not fit. If performance is flat and there is no overflow, smaller SRAM can be the recommended cost sweet spot.
+- **DRAM axis:** the sweep scales the active SCALE-Sim `dramBandwidth`/`bandwidth` setting when present, instead of injecting a new unrelated `hardware.memoryBandwidthGBs=1` baseline. The full-layer estimator also applies a DRAM roofline lower bound, so low-bandwidth points slow down while high-bandwidth points flatten once the workload is no longer DRAM-bound.
+- **Full-layer access graphs:** SRAM/DRAM access comparisons use the full-layer `memoryTrafficFor()` model. They no longer reuse tile-policy `learnedMetrics.sramBytes`/`dramBytes`, because those fields represent tile-ranking auxiliary targets rather than full-layer access counters.
+
+The SVG x-axis is now logarithmic for multiplicative factors. This makes low-memory points such as `0.125x`, `0.25x`, `0.5x` readable without compressing the high-end hardware expansion region.
+
+## Graph-tab responsiveness
+
+The React graph panel now builds design-space rows only after the `Design-space sweet spot` mode is selected. Opening the graph tab in the default full-layer comparison mode no longer precomputes every hardware/workload sweep point. This avoids the short UI stall that previously happened when simply opening the graph menu.

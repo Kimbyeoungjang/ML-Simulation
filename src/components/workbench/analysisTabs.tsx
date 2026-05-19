@@ -527,6 +527,9 @@ export function Graphs({
   const [fullLayerMetric, setFullLayerMetric] = useState("cycles");
   const [graphMode, setGraphMode] = useState("fullLayer");
   const [designMetric, setDesignMetric] = useState<DesignMetric>("score");
+  const [designRows, setDesignRows] = useState<any[]>([]);
+  const [designPending, setDesignPending] = useState(false);
+  const [chartZoom, setChartZoom] = useState(1);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -582,13 +585,46 @@ export function Graphs({
     : [];
   const mainActual = scaleSummary?.layers?.[opIndex];
   void mainActual;
-  const designRows = useMemo(
-    () => buildDesignSpaceRows(source, activeEstimatorSuite),
-    [source, activeEstimatorSuite?.runId],
+  const designSourceKey = useMemo(
+    () =>
+      graphMode === "designSpace"
+        ? JSON.stringify({
+            request: source?.request,
+            summary: source?.summary,
+            suite: activeEstimatorSuite?.runId,
+          })
+        : "",
+    [graphMode, source, activeEstimatorSuite?.runId],
   );
+
+  useEffect(() => {
+    if (graphMode !== "designSpace") {
+      setDesignRows([]);
+      setDesignPending(false);
+      return;
+    }
+    let cancelled = false;
+    setDesignPending(true);
+    const timer = window.setTimeout(() => {
+      try {
+        const rows = buildDesignSpaceRows(source, activeEstimatorSuite);
+        if (!cancelled) setDesignRows(rows);
+      } finally {
+        if (!cancelled) setDesignPending(false);
+      }
+    }, 20);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [graphMode, designSourceKey]);
+
   const designSvg = useMemo(
-    () => buildDesignSpaceSvg(designRows, designMetric),
-    [designRows, designMetric],
+    () =>
+      graphMode === "designSpace" && designRows.length
+        ? buildDesignSpaceSvg(designRows, designMetric)
+        : "",
+    [graphMode, designRows, designMetric],
   );
   const designBest = useMemo(() => bestDesignRow(designRows), [designRows]);
   const designPareto = useMemo(
@@ -710,44 +746,40 @@ export function Graphs({
     mapping: {
       label: "Mapping efficiency",
       unit: "%",
-      predicted: () => undefined,
+      predicted: (r) => Number(r.row?.best?.fullLayerMappingEfficiency),
       actual: (r) => Number(r.actual?.mappingEfficiency),
       format: (v) => `${v.toFixed(1)}%`,
-      note: "SCALE-Sim 전용 지표입니다. estimator의 직접 대응값이 없어 actual만 표시합니다.",
+      note: "SCALE-Sim mapping efficiency와 full-layer estimator의 간단한 mapping 예측을 비교합니다.",
     },
     stall: {
       label: "Stall cycles",
       unit: "cyc",
-      predicted: () => undefined,
+      predicted: (r) => Number(r.row?.best?.fullLayerStallCycles),
       actual: (r) => Number(r.actual?.stallCycles),
       format: (v) => Math.round(v).toLocaleString(),
-      note: "SCALE-Sim 전용 stall cycle입니다. estimator의 직접 대응값이 없어 actual만 표시합니다.",
+      note: "full-layer SRAM/DRAM pressure 기반 stall cycle 예측과 SCALE-Sim stall을 비교합니다.",
     },
     sramAccess: {
       label: "SRAM access",
       unit: "KiB",
       predicted: (r) => {
-        const lm = Number(r.row?.best?.learnedMetrics?.sramBytes);
-        if (Number.isFinite(lm) && lm > 0) return lm / 1024;
         const m = bestMemoryTrafficFor(r.row);
         return (m.sramReadBytes + m.sramWriteBytes) / 1024;
       },
       actual: (r) => layerAccessKiB(r.actual, "sramAccesses", r.row),
       format: (v) => `${v.toFixed(1)} KiB`,
-      note: "가능하면 multi-target learned SRAM을, 없으면 memoryTraffic 추정값을 SCALE-Sim access와 비교합니다.",
+      note: "Full-layer systolic reuse 기준 SRAM access 추정값입니다. tile-policy learned sramBytes와 섞지 않습니다.",
     },
     dramAccess: {
       label: "DRAM access",
       unit: "KiB",
       predicted: (r) => {
-        const lm = Number(r.row?.best?.learnedMetrics?.dramBytes);
-        if (Number.isFinite(lm) && lm > 0) return lm / 1024;
         const m = bestMemoryTrafficFor(r.row);
         return (m.dramReadBytes + m.dramWriteBytes) / 1024;
       },
       actual: (r) => layerAccessKiB(r.actual, "dramAccesses", r.row),
       format: (v) => `${v.toFixed(1)} KiB`,
-      note: "가능하면 multi-target learned DRAM을, 없으면 memoryTraffic 추정값을 SCALE-Sim access와 비교합니다.",
+      note: "Full-layer systolic reuse 기준 DRAM access 추정값입니다. tile micro-run access와 섞지 않습니다.",
     },
     sramFootprint: {
       label: "SRAM footprint",
@@ -1055,17 +1087,31 @@ export function Graphs({
         )}
       </div>
 
+      <div className="graph-zoom-controls">
+        <span className="small">그래프 확대</span>
+        <button className="secondary" onClick={() => setChartZoom((z) => Math.max(0.65, Number((z - 0.15).toFixed(2))))}>−</button>
+        <span className="zoom-value">{Math.round(chartZoom * 100)}%</span>
+        <button className="secondary" onClick={() => setChartZoom((z) => Math.min(2.25, Number((z + 0.15).toFixed(2))))}>+</button>
+        <button className="secondary" onClick={() => setChartZoom(1)}>초기화</button>
+      </div>
+
       {graphMode === "designSpace" && (
         <>
           <p className="small">
             TPU 배열/클럭/SRAM/DRAM bandwidth를 변화시키는 하드웨어 축과, 고정
             하드웨어에서 M/N/K를 변화시키는 워크로드 축을 같은 기준으로
-            그립니다. M/N/K 축은 총 cycle이 아니라 ops/cycle 기준으로
-            정규화합니다. 추천값은 consensus, ROI, 예측 confidence에 더해
-            uncertainty/risk를 함께 봐서 비싼 확장이나 학습 범위 밖
-            extrapolation만 계속 선택되는 문제를 줄입니다. 활성 Estimator
-            Suite가 있으면 ensemble 보정 결과로 sweep합니다.
+            그립니다. SRAM 축은 “최소 안전 용량”, DRAM 축은 “대역폭 knee”를
+            찾도록 저용량/저대역 구간까지 함께 평가합니다. M/N/K 축은 총
+            cycle이 아니라 ops/cycle 기준으로 정규화합니다. 활성 Estimator
+            Suite가 full-layer target일 때만 hardware-design cycle 보정에
+            사용하고, tile-policy 모델은 ranking 보조로만 사용합니다.
           </p>
+          {designPending && (
+            <div className="info-box">
+              <b>Design-space 계산 중</b>
+              <p className="small">그래프 탭 진입 후 UI가 멈추지 않도록 백그라운드 tick에서 sweep을 계산합니다.</p>
+            </div>
+          )}
           <div className="graph-actions">
             <ActionButton
               tip="하드웨어/워크로드 sweet-spot 그래프를 SVG로 다운로드합니다."
@@ -1165,63 +1211,56 @@ export function Graphs({
           <div className="chart-scroll">
             <div
               className="chart-svg"
+              style={{ transform: `scale(${chartZoom})`, transformOrigin: "top left", marginBottom: chartZoom > 1 ? `${(chartZoom - 1) * 180}px` : undefined }}
               dangerouslySetInnerHTML={{ __html: designSvg }}
             />
           </div>
-          <h3>축별 sweet spot 후보</h3>
-          <table className="compact-table">
+          <h3>축별 핵심 sweet spot</h3>
+          <table className="compact-table sweetspot-table">
             <thead>
               <tr>
                 <th>축</th>
                 <th>권장값</th>
-                <th>총 cycle</th>
-                <th>Norm speedup</th>
-                <th>Risk speedup</th>
-                <th>Work scale</th>
-                <th>TOPS</th>
-                <th>활용률</th>
-                <th>Cost</th>
-                <th>Score</th>
-                <th>Consensus</th>
-                <th>ROI</th>
-                <th>Conf.</th>
-                <th>Unc.</th>
-                <th>Recommend</th>
-                <th>Risk rec.</th>
-                <th>Validate</th>
-                <th>Knee</th>
+                <th>의미</th>
+                <th>Speedup</th>
+                <th>Cycle</th>
+                <th>Risk</th>
+                <th>주의</th>
               </tr>
             </thead>
             <tbody>
-              {bestByAxis.map((r: any) => (
-                <tr key={r.axis}>
-                  <td>{r.axis}</td>
-                  <td>{r.label}</td>
-                  <td>{Math.round(r.totalCycles).toLocaleString()}</td>
-                  <td>{niceNumber(r.speedup)}×</td>
-                  <td>{niceNumber(r.riskAdjustedSpeedup)}×</td>
-                  <td>×{niceNumber(r.workScale)}</td>
-                  <td>{niceNumber(r.throughput)}</td>
-                  <td>{(r.meanUtilization * 100).toFixed(1)}%</td>
-                  <td>×{niceNumber(r.cost)}</td>
-                  <td>{niceNumber(r.score)}</td>
-                  <td>{niceNumber(r.agreementScore)}</td>
-                  <td>{niceNumber(r.roiScore)}</td>
-                  <td>
-                    {((r.predictionConfidence ?? 1) * 100).toFixed(0)}%
-                    {r.outOfDomain ? "*" : ""}
-                  </td>
-                  <td>±{r.uncertaintyPct.toFixed(1)}%</td>
-                  <td>{niceNumber(r.recommendationScore)}</td>
-                  <td>{niceNumber(r.riskAdjustedRecommendationScore)}</td>
-                  <td>{niceNumber(r.validationPriority)}</td>
-                  <td>{r.isKnee ? "knee" : "-"}</td>
-                </tr>
-              ))}
+              {bestByAxis.map((r: any) => {
+                const axisMeaning: Record<string, string> = {
+                  array: "PE 수 확장 효율",
+                  frequency: "클럭 향상 효율",
+                  sram: "최소 안전 SRAM",
+                  dram: "대역폭 knee",
+                  "shape-m": "M 변화 시 ops/cycle",
+                  "shape-n": "N 변화 시 ops/cycle",
+                  "shape-k": "K 변화 시 ops/cycle",
+                };
+                const notes = [
+                  r.isKnee ? "knee" : "",
+                  r.sramOverflowRatio > 0 ? "SRAM overflow" : "",
+                  r.outOfDomain ? "OOD" : "",
+                ].filter(Boolean).join(" · ");
+                return (
+                  <tr key={r.axis}>
+                    <td>{r.axis}</td>
+                    <td>{r.label}</td>
+                    <td>{axisMeaning[r.axis] ?? "sweet spot"}</td>
+                    <td>{niceNumber(r.speedup)}×</td>
+                    <td>{Math.round(r.totalCycles).toLocaleString()}</td>
+                    <td>±{r.uncertaintyPct.toFixed(1)}%</td>
+                    <td>{notes || "-"}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
           {designValidationRows.length > 0 && (
-            <>
+            <details className="inline-details">
+              <summary>다음 SCALE-Sim 검증 추천 후보 보기</summary>
               <h3>다음 SCALE-Sim 검증 추천 후보</h3>
               <p className="small">
                 검증 우선순위는 예측 불확실성, 학습 domain 밖 여부, 추천 잠재력,
@@ -1267,7 +1306,7 @@ export function Graphs({
                   })}
                 </tbody>
               </table>
-            </>
+            </details>
           )}
         </>
       )}
@@ -1296,6 +1335,7 @@ export function Graphs({
           <div className="chart-scroll">
             <div
               className="chart-svg"
+              style={{ transform: `scale(${chartZoom})`, transformOrigin: "top left", marginBottom: chartZoom > 1 ? `${(chartZoom - 1) * 180}px` : undefined }}
               dangerouslySetInnerHTML={{ __html: fullLayerSvg }}
             />
           </div>
@@ -1422,6 +1462,7 @@ export function Graphs({
           <div className="chart-scroll">
             <div
               className="chart-svg"
+              style={{ transform: `scale(${chartZoom})`, transformOrigin: "top left", marginBottom: chartZoom > 1 ? `${(chartZoom - 1) * 180}px` : undefined }}
               dangerouslySetInnerHTML={{ __html: svg }}
             />
           </div>

@@ -51,7 +51,11 @@ function inc(map: Record<string, number>, key: string) {
 
 function rowSignature(row: Record<string, string>) {
   const explicit = first(row, ["id", "sampleId"]);
-  if (explicit) return `id:${explicit}`;
+  if (explicit) {
+    const scope = first(row, ["targetScope", "target_scope", "measurementScope", "scope"], "mixed");
+    const source = first(row, ["measuredSource", "measured_source"], "");
+    return `id:${explicit}|${scope}|${source}`;
+  }
   const pieces = [
     first(row, ["model"], "csv"),
     first(row, ["opName", "op_name", "layer"], "op"),
@@ -65,6 +69,8 @@ function rowSignature(row: Record<string, string>) {
     first(row, ["tileM", "tm", "tile_m"]),
     first(row, ["tileN", "tn", "tile_n"]),
     first(row, ["tileK", "tk", "tile_k"]),
+    first(row, ["targetScope", "target_scope", "measurementScope", "scope"], "mixed"),
+    first(row, ["measuredSource", "measured_source"], ""),
   ];
   return `cfg:${pieces.join("|")}`;
 }

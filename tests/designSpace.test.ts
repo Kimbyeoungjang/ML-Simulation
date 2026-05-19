@@ -77,6 +77,8 @@ function learnedSample(i: number): LearnedEstimatorSample {
     measuredCycles: Math.round(
       estimatorCycles * (1.08 + (tileK > 64 ? 0.06 : 0)),
     ),
+    targetScope: "full-layer",
+    measuredSource: "synthetic-full-layer",
   };
 }
 

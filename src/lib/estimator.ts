@@ -9,6 +9,7 @@ import { Reservoir, TopK } from "./topk";
 import { pruneTileCandidates } from "./pruning";
 import { hashObject } from "./hash";
 import { assertSearchResponseInvariant, assertTileCandidateInvariant, runInvariant } from "./invariants";
+import { estimateFullLayerCycles } from "./fullLayerEstimator";
 
 export function estimateAll(req: SearchRequest, options: { includeArtifacts?: boolean } = {}): SearchResponse {
   const cache = new Map<string, OpSearchResult>();
@@ -87,9 +88,50 @@ export function estimateForShape(hw: HardwareConfig, shape: MatmulShape, cand: T
   const sorted = top.toSorted();
   if (!sorted.length) throw new Error(`No tile candidates generated for ${shape.opName}`);
   const pareto = markPareto(paretoPool.toSorted()).sort(compareCandidates);
-  const best = sorted[0];
+  const best = toHardwareDesignBest(hw, shape, sorted[0], scaleSim);
   for (const c of sorted) c.isPareto = pareto.some(p => p.tileM === c.tileM && p.tileN === c.tileN && p.tileK === c.tileK);
   return { shape, best, candidates: sorted, pareto, heatmap: reservoir.toArray() };
+}
+
+function mappingEfficiencyPercent(hw: HardwareConfig, shape: MatmulShape) {
+  const ar = Math.max(1, Number(hw.arrayRows || 1));
+  const ac = Math.max(1, Number(hw.arrayCols || 1));
+  const kFit = Math.min(1, Math.max(1, Number(shape.k || 1)) / ar);
+  const nFit = Math.min(1, Math.max(1, Number(shape.n || 1)) / ac);
+  return (hw.dataflow === "OS" ? nFit : kFit) * 100;
+}
+
+function toHardwareDesignBest(hw: HardwareConfig, shape: MatmulShape, candidate: TileCandidateResult, scaleSim?: ScaleSimOverrides): TileCandidateResult {
+  const full = estimateFullLayerCycles(hw, shape, scaleSim);
+  const tilePolicyCycles = candidate.tilePolicyCycles ?? candidate.cycles;
+  const tilePolicyRawCycles = candidate.tilePolicyRawCycles ?? candidate.rawCycles ?? candidate.cycles;
+  const tileScratchBytes = candidate.tileScratchBytes ?? candidate.sramBytes;
+  const cycles = Math.max(1, Math.round(full.cycles));
+  const warnings = Array.isArray(candidate.warnings) ? [...candidate.warnings] : [];
+  if (full.stallCycles > Math.max(1024, full.computeCycles * 0.08)) {
+    warnings.push(`full-layer stall ${Math.round(full.stallCycles).toLocaleString()} cycles 예측`);
+  }
+  return {
+    ...candidate,
+    tilePolicyCycles,
+    tilePolicyRawCycles,
+    tileScratchBytes,
+    fullLayerRawCycles: full.cycles,
+    fullLayerCycles: cycles,
+    fullLayerComputeCycles: full.computeCycles,
+    fullLayerStallCycles: full.stallCycles,
+    fullLayerMappingEfficiency: mappingEfficiencyPercent(hw, shape),
+    fullLayerSramBytes: full.sramBytes,
+    fullLayerDramBytes: full.dramBytes,
+    predictionTarget: "full-layer",
+    rawCycles: full.cycles,
+    cycles,
+    timeUs: cycles / Math.max(1, hw.frequencyMHz),
+    utilization: full.utilization,
+    sramBytes: Math.max(tileScratchBytes, full.sramBytes),
+    warnings: Array.from(new Set(warnings)),
+    explanation: `${candidate.explanation} Hardware-design cycle은 full-layer systolic model(${full.formula}) 기준 ${cycles.toLocaleString()} cycles입니다. Tile-policy cost ${Math.round(tilePolicyCycles).toLocaleString()} cycles는 후보 ranking 참고값입니다.`,
+  };
 }
 
 function compareCandidates(a: TileCandidateResult, b: TileCandidateResult): number {

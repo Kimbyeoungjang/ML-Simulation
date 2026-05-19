@@ -45,6 +45,7 @@ import { activateEstimatorSuiteModel, readActiveEstimatorSuiteModel } from "./ac
 import { trainEstimatorSuite } from "@/lib/estimatorSuite";
 import { buildEstimatorSuiteArtifacts, normalizeSuiteSplitKinds, parseEstimatorSamplesCsv } from "@/lib/estimatorSuiteArtifacts";
 import { buildEstimatorDataset, estimatorDatasetSummaryMarkdown } from "@/lib/estimatorSuiteDataset";
+import { buildValidationReport, type ValidationSample } from "@/lib/verification";
 
 import {
   commandLabel,
@@ -1238,7 +1239,7 @@ function externalComparisonMarkdown(
       lines.push(
         "",
         "### SCALE-Sim micro-run 참고 진단: 정확도 평가용 아님",
-        "| 연산 | rank | tile | TileForge full-layer cycle | SCALE-Sim micro-run cycle | naive tile-count 외삽 | SCALE-Sim util | 해석 |",
+        "| 연산 | rank | tile | TileForge tile-policy cycle | SCALE-Sim micro-run cycle | naive tile-count 외삽 | SCALE-Sim util | 해석 |",
         "|---|---:|---|---:|---:|---:|---:|---|",
       );
       for (const layer of scale.candidateLayers.slice(0, 12)) {
@@ -1362,6 +1363,21 @@ function externalReportMarkdown(
   );
 }
 
+
+function validationSamplesFromScale(res: ReturnType<typeof estimateAll>, scale?: ExternalRunSummary): ValidationSample[] {
+  if (!scale?.ok || !Array.isArray(scale.layers)) return [];
+  return res.results.map((item) => {
+    const layer = matchScaleLayerForResult(item, scale.layers || []);
+    return {
+      model: item.shape.model,
+      opName: item.shape.opName,
+      predictedCycles: item.best.fullLayerRawCycles ?? item.best.rawCycles ?? item.best.cycles,
+      calibratedCycles: item.best.fullLayerCycles ?? item.best.cycles,
+      scaleSimCycles: layer?.cycles,
+    };
+  }).filter((row) => row.scaleSimCycles && row.scaleSimCycles > 0);
+}
+
 async function appendExternalReport(
   job: JobRecord,
   res: ReturnType<typeof estimateAll>,
@@ -1404,12 +1420,19 @@ async function appendExternalReport(
     externalCycleRatio: scale?.cycleRatio,
   });
   await atomicWriteFile(path.join(dir, "confidence.md"), confidenceMarkdown(confidence));
+  const validationSamples = validationSamplesFromScale(res, scale);
+  if (validationSamples.length) {
+    const validation = buildValidationReport(res, validationSamples);
+    await atomicWriteFile(path.join(dir, "validation_report.md"), validation.markdown);
+    await atomicWriteFile(path.join(dir, "validation_report.csv"), validation.csv);
+  }
   job.artifacts = [
     ...new Set([
       ...(job.artifacts ?? []),
       "external_validation_report.md",
       "report.md",
       "confidence.md",
+      ...(validationSamples.length ? ["validation_report.md", "validation_report.csv"] : []),
     ]),
   ];
   await saveJob(job);

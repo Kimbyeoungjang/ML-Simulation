@@ -16,7 +16,7 @@ import { estimatorPresets as builtInEstimatorPresets, findEstimatorPreset } from
 import type { EstimatorSuiteModel } from "@/lib/estimatorSuite";
 import { parseNumList, fmt } from "@/lib/math";
 import { hardwarePresets, workloadPresets } from "@/lib/presets";
-import { assessConfidence, confidenceMarkdown } from "@/lib/confidence";
+import { assessConfidence, confidenceMarkdown, type ConfidenceAssessment } from "@/lib/confidence";
 import { totalCycleUncertainty } from "@/lib/uncertainty";
 import type {
   Conv2DShape,
@@ -44,16 +44,14 @@ type Tab =
   | "graphs"
   | "report"
   | "jobs"
-  | "estimatorSuite"
   | "status";
 type InputTab =
-  | "presets"
   | "hardware"
   | "tiling"
-  | "scalesim"
   | "workload"
-  | "conv"
-  | "tools";
+  | "run"
+  | "tools"
+  | "settings";
 
 const tabLabels: Record<Tab, string> = {
   policy: "타일 정책",
@@ -66,29 +64,36 @@ const tabLabels: Record<Tab, string> = {
   graphs: "그래프",
   report: "보고서",
   jobs: "작업",
-  estimatorSuite: "Estimator Suite",
   status: "상태",
 };
 
 const inputTabLabels: Record<InputTab, string> = {
-  presets: "프리셋",
   hardware: "하드웨어",
   tiling: "타일링",
-  scalesim: "SCALE-Sim",
   workload: "워크로드",
-  conv: "Conv 변환",
-  tools: "도구/실행",
+  run: "실행",
+  tools: "도구",
+  settings: "설정",
 };
 
 const inputTabTips: Record<InputTab, string> = {
-  presets: "자주 쓰는 하드웨어/워크로드 프리셋을 선택합니다.",
-  hardware: "배열 크기, 주파수, SRAM, 데이터플로우, 에너지/메모리 파라미터를 설정합니다.",
-  tiling: "tileM/tileN/tileK 후보와 최적화 목표를 설정합니다.",
-  scalesim: "SCALE-Sim의 SRAM/DRAM bandwidth, layout, bank 파라미터를 세부 설정합니다.",
-  workload: "CSV, ONNX, JSON에서 GEMM workload shape를 가져옵니다.",
-  conv: "Conv2D 파라미터를 im2col GEMM shape로 변환합니다.",
-  tools: "서버 추정, 프로젝트 저장, full-pipeline 실행, 상태 진단을 수행합니다.",
+  hardware: "배열 크기, 주파수, SRAM, 데이터플로우를 정합니다.",
+  tiling: "tileM/tileN/tileK 후보와 최적화 목표를 정합니다.",
+  workload: "GEMM, CSV, ONNX, Conv2D 변환으로 workload를 구성합니다.",
+  run: "SCALE-Sim/IREE full-pipeline 작업을 큐에 등록하고 상태를 확인합니다.",
+  tools: "프리셋, 프로젝트 파일, Estimator Suite 바로가기를 관리합니다.",
+  settings: ".env 기반 외부 도구 경로와 작업 설정을 관리합니다.",
 };
+
+const envSettingKeys = [
+  "TILEFORGE_SCALE_SIM_CMD",
+  "TILEFORGE_IREE_COMPILE_CMD",
+  "TILEFORGE_MAX_PARALLEL_JOBS",
+  "TILEFORGE_WORKSPACE_DIR",
+  "TILEFORGE_JOB_STORE",
+  "TILEFORGE_CACHE_DIR",
+  "TILEFORGE_EXTERNAL_TIMEOUT_MS",
+];
 
 const tabTips: Record<Tab, string> = {
   policy: "각 연산별 최적 타일 후보와 예상 사이클, 활용률을 확인합니다.",
@@ -101,14 +106,32 @@ const tabTips: Record<Tab, string> = {
   graphs: "타일 후보별 cycle/utilization 차이를 그래프로 비교합니다.",
   report: "현재 실험 설정과 결과를 논문/보고서용 Markdown으로 확인합니다.",
   jobs: "백그라운드 작업의 상태, 로그, artifact 정보를 확인합니다.",
-  estimatorSuite: "웹에서 estimator suite 설계 CSV 생성, Tree/Neural/Ensemble 학습, 검증 리포트를 실행합니다.",
   status: "로컬 서버, 저장소, 워커, 외부 도구 상태를 JSON으로 확인합니다.",
 };
+
+
+function confidenceFromMarkdown(text: string): ConfidenceAssessment | null {
+  const first = text.split(/\r?\n/).find((line) => line.includes("신뢰도:"));
+  if (!first) return null;
+  const pct = Number(first.match(/\((\d+(?:\.\d+)?)%\)/)?.[1]);
+  const uncertainty = Number(text.match(/예상 불확실성:\s*±(\d+(?:\.\d+)?)%/)?.[1]);
+  const level = first.includes("높음") ? "high" : first.includes("보통") ? "medium" : "low";
+  const reasons = text
+    .split(/\r?\n/)
+    .filter((line) => line.trim().startsWith("- "))
+    .map((line) => line.replace(/^\s*-\s*/, ""));
+  return {
+    level,
+    score: Number.isFinite(pct) ? Math.max(0, Math.min(1, pct / 100)) : level === "high" ? 0.82 : level === "medium" ? 0.6 : 0.35,
+    uncertaintyPct: Number.isFinite(uncertainty) ? uncertainty : level === "high" ? 12 : level === "medium" ? 24 : 40,
+    reasons,
+  };
+}
 
 export default function Home() {
   const [hardware, setHardware] = useState<HardwareConfig>(defaultHardware);
   const [dataflowModes, setDataflowModes] = useState<Dataflow[]>([defaultHardware.dataflow]);
-  const [inputTab, setInputTab] = useState<InputTab>("presets");
+  const [inputTab, setInputTab] = useState<InputTab>("hardware");
   const [shapes, setShapes] = useState<MatmulShape[]>(defaultShapes);
   const [objective, setObjective] = useState<Objective>("balanced");
   const [tileM, setTileM] = useState(defaultCandidates.tileM.join(", "));
@@ -144,15 +167,19 @@ export default function Home() {
   });
   const [tab, setTab] = useState<Tab>("policy");
   const [serverMessage, setServerMessage] = useState("");
+  const [envValues, setEnvValues] = useState<Record<string, string>>({});
+  const [envMessage, setEnvMessage] = useState("");
   const [jobsJson, setJobsJson] = useState("");
   const [jobsPayload, setJobsPayload] = useState<any | null>(null);
-  const [jobsViewMode, setJobsViewMode] = useState<"dashboard" | "paged">("dashboard");
+  const [jobsViewMode, setJobsViewMode] = useState<"dashboard" | "paged">("paged");
   const [jobsPage, setJobsPage] = useState(1);
   const [jobsPageSize, setJobsPageSize] = useState(100);
   const [statusJson, setStatusJson] = useState("");
   const [statusPayload, setStatusPayload] = useState<any | null>(null);
   const [serverReportMarkdown, setServerReportMarkdown] = useState("");
   const [serverReportJobId, setServerReportJobId] = useState("");
+  const [selectedJobConfidence, setSelectedJobConfidence] = useState<ConfidenceAssessment | null>(null);
+  const [selectedJobConfidenceId, setSelectedJobConfidenceId] = useState("");
   const [reportAutoFollow, setReportAutoFollow] = useState(true);
   const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(true);
   const [liveJobId, setLiveJobId] = useState("");
@@ -263,10 +290,15 @@ export default function Home() {
   const confidence = useMemo(
     () =>
       assessConfidence(result, {
+        externalValidated: Boolean(result.artifacts?.validationCsv),
         estimatorSuiteSamples: result.estimatorSuite?.applied ? result.estimatorSuite.modelSamples ?? 0 : 0,
       }),
-    [JSON.stringify(result.summary), result.estimatorSuite?.applied, result.estimatorSuite?.modelSamples],
+    [JSON.stringify(result.summary), result.estimatorSuite?.applied, result.estimatorSuite?.modelSamples, Boolean(result.artifacts?.validationCsv)],
   );
+  const displayConfidence =
+    selectedJobConfidence && selectedJobConfidenceId === analysisJobId
+      ? selectedJobConfidence
+      : confidence;
   const uncertainty = useMemo(
     () => totalCycleUncertainty(result),
     [JSON.stringify(result.summary)],
@@ -287,6 +319,34 @@ export default function Home() {
     void refreshPresets();
     void refreshEstimatorSuiteModels();
   }, []);
+
+  async function refreshEnvSettings() {
+    try {
+      const r = await fetch("/api/env");
+      const j = await r.json();
+      if (!r.ok || !j.ok) throw new Error(j.error || "env read failed");
+      setEnvValues(j.values ?? {});
+      setEnvMessage("설정을 다시 읽었습니다.");
+    } catch (error: any) {
+      setEnvMessage(`설정 읽기 실패: ${error?.message ?? error}`);
+    }
+  }
+
+  async function saveEnvSettings() {
+    try {
+      const r = await fetch("/api/env", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ values: envValues }),
+      });
+      const j = await r.json();
+      if (!r.ok || !j.ok) throw new Error(j.error || "env save failed");
+      setEnvValues(j.values ?? envValues);
+      setEnvMessage(".env를 저장했습니다. 실행 중인 작업에는 다음 실행부터 반영됩니다.");
+    } catch (error: any) {
+      setEnvMessage(`설정 저장 실패: ${error?.message ?? error}`);
+    }
+  }
 
   async function refreshEstimatorSuiteModels() {
     try {
@@ -427,7 +487,6 @@ export default function Home() {
     setEstimatorPlanOptions((cur) => ({ ...cur, ...preset.planOptions }));
     setEstimatorSuiteOptions((cur) => ({ ...cur, ...preset.trainOptions }));
     setServerMessage(`Estimator 프리셋 적용: ${preset.name} - ${preset.description}`);
-    setTab("estimatorSuite");
   }
 
 
@@ -488,8 +547,7 @@ export default function Home() {
       setEstimatorSuiteCsv(j.designCsv);
       setEstimatorSuiteResult(j);
       setServerMessage(`Estimator suite 설계 CSV 생성: ${j.rows?.toLocaleString?.() ?? j.rows}개 후보`);
-      setTab("estimatorSuite");
-    } catch (e: any) {
+      } catch (e: any) {
       setServerMessage(`Estimator suite 설계 실패: ${e?.message ?? e}`);
     } finally {
       setEstimatorSuiteBusy(false);
@@ -516,7 +574,7 @@ export default function Home() {
       setEstimatorSuiteResult(j);
       const queued = Array.isArray(j.queuedJobs) ? j.queuedJobs.length : 0;
       setServerMessage(enqueue ? `Estimator 표본 계획 ${j.rows}개 생성, full-pipeline 작업 ${queued}개 큐 등록` : `Estimator 표본 계획 CSV 생성: ${j.rows}개 후보`);
-      setTab(enqueue ? "jobs" : "estimatorSuite");
+      if (enqueue) setTab("jobs");
       if (enqueue) await refreshJobs({ switchTab: true, updateReport: false });
       if (enqueue && j.queuedJobs?.[0]?.id && autoAttachNewJob) startLiveJob(j.queuedJobs[0].id);
     } catch (e: any) {
@@ -540,8 +598,7 @@ export default function Home() {
       setEstimatorSuiteCsv(j.csv ?? "");
       setEstimatorSuiteResult(j);
       setServerMessage(`완료 작업에서 estimator 학습 sample ${j.validSamples ?? 0}개 준비됨: 새로 수집 ${j.rows ?? 0}개`);
-      setTab("estimatorSuite");
-    } catch (e: any) {
+      } catch (e: any) {
       setServerMessage(`Estimator sample 수집 실패: ${e?.message ?? e}`);
     } finally {
       setEstimatorSuiteBusy(false);
@@ -570,8 +627,7 @@ export default function Home() {
         setEstimatorSuiteResult(j);
         const valid = j.summary?.validSamples ?? 0;
         setServerMessage(`Estimator dataset 병합 완료: 유효 sample ${valid.toLocaleString?.() ?? valid}개`);
-        setTab("estimatorSuite");
-      }
+          }
     } catch (e: any) {
       setServerMessage(`Estimator dataset 처리 실패: ${e?.message ?? e}`);
     } finally {
@@ -614,8 +670,7 @@ export default function Home() {
       setActiveEstimatorSuite({ runId: j.activeRunId, model: j.model });
       await refreshEstimatorSuiteModels();
       setServerMessage(`활성 Estimator Suite 모델 적용: ${j.activeRunId}`);
-      setTab("estimatorSuite");
-    } catch (e: any) {
+      } catch (e: any) {
       setServerMessage(`Estimator suite 활성화 실패: ${e?.message ?? e}`);
     } finally {
       setEstimatorSuiteBusy(false);
@@ -706,6 +761,19 @@ export default function Home() {
         setServerReportMarkdown(text);
         setServerReportJobId(id);
         setAnalysisJobId(id);
+        try {
+          const cr = await fetch(`/api/jobs/${id}/artifacts/confidence.md`, {
+            cache: "no-store",
+          });
+          if (cr.ok) {
+            const parsed = confidenceFromMarkdown(await cr.text());
+            setSelectedJobConfidence(parsed);
+            setSelectedJobConfidenceId(parsed ? id : "");
+          }
+        } catch {
+          setSelectedJobConfidence(null);
+          setSelectedJobConfidenceId("");
+        }
         if (options.manual) setReportAutoFollow(false);
       }
     } catch {
@@ -1064,13 +1132,16 @@ export default function Home() {
             탐색하는 로컬 웹 워크벤치입니다.
           </p>
         </div>
-        <Link
-          className="help-link"
-          href="/help"
-          title="예제별 사용 방법과 각 입력 항목의 의미를 자세히 설명한 도움말 페이지로 이동합니다."
-        >
-          도움말 열기
-        </Link>
+        <div className="topbar-actions">
+          <Link className="button-like secondary" href="/estimator-suite" title="Estimator Suite 학습/평가 전용 페이지로 이동합니다.">Estimator Suite</Link>
+          <Link
+            className="button-like secondary"
+            href="/help"
+            title="예제별 사용 방법과 각 입력 항목의 의미를 자세히 설명한 도움말 페이지로 이동합니다."
+          >
+            도움말
+          </Link>
+        </div>
       </header>
       <div className="grid">
         <InputSettingsPanel
@@ -1130,7 +1201,6 @@ export default function Home() {
           importEstimatorDatasetWeb={importEstimatorDatasetWeb}
           liveJobId={liveJobId}
           createJob={createJob}
-          runServerEstimate={runServerEstimate}
           saveProject={saveProject}
           loadProject={loadProject}
           refreshJobs={refreshJobs}
@@ -1139,6 +1209,12 @@ export default function Home() {
           cancelJob={cancelJob}
           deleteJobPrompt={deleteJobPrompt}
           watchJob={watchJob}
+          envValues={envValues}
+          setEnvValues={setEnvValues}
+          envKeys={envSettingKeys}
+          refreshEnvSettings={refreshEnvSettings}
+          saveEnvSettings={saveEnvSettings}
+          envMessage={envMessage}
           serverMessage={serverMessage}
         />
 
@@ -1149,7 +1225,8 @@ export default function Home() {
           setTab={setTab}
           result={result}
           uncertainty={uncertainty}
-          confidence={confidence}
+          confidence={displayConfidence}
+          confidenceSource={selectedJobConfidence && selectedJobConfidenceId === analysisJobId ? "selected-job" : "preview"}
           arraySweep={arraySweep}
           download={download}
           analysisJobId={analysisJobId}

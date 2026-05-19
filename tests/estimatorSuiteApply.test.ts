@@ -28,6 +28,8 @@ describe("estimator suite application", () => {
     expect(adjusted.estimatorSuite?.applied).toBe(true);
     expect(adjusted.results[0].best.rawCycles).toBeGreaterThan(0);
     expect(adjusted.summary.totalCycles).toBe(adjusted.results[0].best.cycles);
+    expect(adjusted.results[0].best.predictionTarget).toBe("full-layer");
+    expect(adjusted.results[0].best.tilePolicyCycles).toBeGreaterThan(0);
     expect(adjusted.estimatorSuite?.totalAnalyticalCycles).toBeGreaterThan(0);
     expect(adjusted.artifacts.reportMarkdown).toContain("Learned Estimator Suite: 적용됨");
     expect(adjusted.artifacts.reportMarkdown).not.toContain("Learned Estimator Suite: 미적용");

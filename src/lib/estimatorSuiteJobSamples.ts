@@ -85,16 +85,38 @@ function scaleLayerOpMatches(layer: any, shape: any) {
   return !shape?.opName || layer?.opName === shape.opName || layer?.name === shape.opName || layer?.shapeId === shape.id;
 }
 
-function pickMeasuredScaleLayer(scale: any, shape: any, tileM: number, tileN: number, tileK: number) {
+type PickedMeasuredScaleTarget = {
+  layer: any;
+  measuredCycles: number;
+  targetScope: "full-layer" | "tile-policy";
+  measuredSource: string;
+};
+
+function pickMeasuredScaleTargets(scale: any, shape: any, tileM: number, tileN: number, tileK: number): PickedMeasuredScaleTarget[] {
   const layers = Array.isArray(scale?.layers) ? scale.layers : [];
   const candidates = Array.isArray(scale?.candidateLayers) ? scale.candidateLayers : [];
   const sameOp = (l: any) => scaleLayerOpMatches(l, shape);
+  const targets: PickedMeasuredScaleTarget[] = [];
 
   const exactCandidate =
     candidates.find((l: any) => sameTile(l, tileM, tileN, tileK) && sameOp(l)) ||
     candidates.find((l: any) => sameTile(l, tileM, tileN, tileK));
-  if (exactCandidate && n(exactCandidate.tileExtrapolatedCycles) > 0) {
-    return { layer: exactCandidate, measuredCycles: n(exactCandidate.tileExtrapolatedCycles), targetScope: "tile-policy" as const, measuredSource: "candidate.tileExtrapolatedCycles" };
+  const candidate = candidates.find((l: any) => sameOp(l)) || candidates[0];
+  const tilePolicyLayer = exactCandidate || candidate;
+  if (tilePolicyLayer && n(tilePolicyLayer.tileExtrapolatedCycles) > 0) {
+    targets.push({
+      layer: tilePolicyLayer,
+      measuredCycles: n(tilePolicyLayer.tileExtrapolatedCycles),
+      targetScope: "tile-policy",
+      measuredSource: exactCandidate ? "candidate.tileExtrapolatedCycles" : "candidate.tileExtrapolatedCycles.fallback",
+    });
+  } else if (tilePolicyLayer && n(tilePolicyLayer.cycles) > 0) {
+    targets.push({
+      layer: tilePolicyLayer,
+      measuredCycles: n(tilePolicyLayer.cycles),
+      targetScope: "tile-policy",
+      measuredSource: exactCandidate ? "candidate.cycles" : "candidate.cycles.fallback",
+    });
   }
 
   const fullLayer =
@@ -102,28 +124,23 @@ function pickMeasuredScaleLayer(scale: any, shape: any, tileM: number, tileN: nu
     layers.find((l: any) => sameTile(l, tileM, tileN, tileK)) ||
     layers[0];
   if (fullLayer && n(fullLayer.cycles) > 0) {
-    return { layer: fullLayer, measuredCycles: n(fullLayer.cycles), targetScope: "full-layer" as const, measuredSource: "layers.cycles" };
-  }
-  if (fullLayer && n(fullLayer.scaleSimRawCycles) > 0) {
-    return { layer: fullLayer, measuredCycles: n(fullLayer.scaleSimRawCycles), targetScope: "full-layer" as const, measuredSource: "layers.scaleSimRawCycles" };
-  }
-
-  if (exactCandidate && n(exactCandidate.cycles) > 0) {
-    return { layer: exactCandidate, measuredCycles: n(exactCandidate.cycles), targetScope: "tile-policy" as const, measuredSource: "candidate.cycles" };
-  }
-
-  const candidate = candidates.find((l: any) => sameOp(l)) || candidates[0];
-  if (candidate && n(candidate.cycles) > 0) {
-    return { layer: candidate, measuredCycles: n(candidate.cycles), targetScope: "tile-policy" as const, measuredSource: "candidate.cycles" };
+    targets.push({ layer: fullLayer, measuredCycles: n(fullLayer.cycles), targetScope: "full-layer", measuredSource: "layers.cycles" });
+  } else if (fullLayer && n(fullLayer.scaleSimRawCycles) > 0) {
+    targets.push({ layer: fullLayer, measuredCycles: n(fullLayer.scaleSimRawCycles), targetScope: "full-layer", measuredSource: "layers.scaleSimRawCycles" });
+  } else if (n(scale?.totalCycles) > 0) {
+    targets.push({ layer: undefined, measuredCycles: n(scale.totalCycles), targetScope: "full-layer", measuredSource: "scale.totalCycles" });
+  } else if (n(scale?.totalCyclesInclPrefetch) > 0) {
+    targets.push({ layer: undefined, measuredCycles: n(scale.totalCyclesInclPrefetch), targetScope: "full-layer", measuredSource: "scale.totalCyclesInclPrefetch" });
   }
 
-  if (n(scale?.totalCycles) > 0) {
-    return { layer: undefined, measuredCycles: n(scale.totalCycles), targetScope: "full-layer" as const, measuredSource: "scale.totalCycles" };
-  }
-  if (n(scale?.totalCyclesInclPrefetch) > 0) {
-    return { layer: undefined, measuredCycles: n(scale.totalCyclesInclPrefetch), targetScope: "full-layer" as const, measuredSource: "scale.totalCyclesInclPrefetch" };
-  }
-  return { layer: undefined, measuredCycles: NaN, targetScope: "mixed" as const, measuredSource: "none" };
+  const seen = new Set<string>();
+  return targets.filter((target) => {
+    if (!(target.measuredCycles > 0)) return false;
+    const key = `${target.targetScope}:${target.measuredSource}:${target.measuredCycles}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 
@@ -172,11 +189,37 @@ function csvRowKey(row: Record<string, string>) {
     row.tileM || row.tm || row.tile_m || "",
     row.tileN || row.tn || row.tile_n || "",
     row.tileK || row.tk || row.tile_k || "",
+    row.targetScope || row.target_scope || row.scope || "mixed",
+  ].join("|");
+}
+
+function collectedRowKey(row: CollectedEstimatorSampleRow) {
+  return [
+    row.id,
+    row.model,
+    row.opName,
+    row.arrayRows,
+    row.arrayCols,
+    row.sramKB,
+    row.dataflow,
+    row.m,
+    row.n,
+    row.k,
+    row.tileM,
+    row.tileN,
+    row.tileK,
+    row.targetScope,
   ].join("|");
 }
 
 function rowAliases(row: Record<string, string>) {
-  return new Set([row.id, row.scaleSimRunName, row.opName, row.op_name].filter(Boolean));
+  const scope = row.targetScope || row.target_scope || row.scope || "mixed";
+  return new Set([
+    row.id,
+    row.scaleSimRunName,
+    row.id ? `${row.id}:${scope}` : "",
+    row.scaleSimRunName ? `${row.scaleSimRunName}:${scope}` : "",
+  ].filter(Boolean));
 }
 
 function jobAliases(job: JobRecord) {
@@ -240,9 +283,7 @@ export async function collectEstimatorSamplesFromJobs(jobs: JobRecord[], jobRoot
         }
       }
 
-      const measured = pickMeasuredScaleLayer(scale, shape, tileM, tileN, tileK);
-      const matchedLayer = measured.layer;
-      const measuredCycles = measured.measuredCycles;
+      const measuredTargets = pickMeasuredScaleTargets(scale, shape, tileM, tileN, tileK);
       const dtypeBytes = shape.dtypeBytes ?? hw.bytesPerElement ?? 2;
       const traffic = memoryTrafficFor(hw, shape, {
         shapeId: shape.id, model: shape.model, opName: shape.opName,
@@ -251,9 +292,6 @@ export async function collectEstimatorSamplesFromJobs(jobs: JobRecord[], jobRoot
         paddingRatio: 0, sramBytes: estimatorSramBytes > 0 ? estimatorSramBytes : 0,
         boundaryPenalty: 0, score: 0, isPareto: false, warnings: [], explanation: ""
       });
-      const measuredSramBytes = accessBytes(firstPositive([matchedLayer?.sramAccessBytes, matchedLayer?.sramBytes, matchedLayer?.sramAccesses]), dtypeBytes);
-      const measuredDramBytes = accessBytes(firstPositive([matchedLayer?.dramAccessBytes, matchedLayer?.dramBytes, matchedLayer?.dramAccesses]), dtypeBytes);
-      const measuredUtilization = utilizationFraction(firstFinite([matchedLayer?.computeUtil, matchedLayer?.overallUtil, matchedLayer?.mappingEfficiency]));
       const estimatorDramBytes = firstPositive([
         traffic.dramReadBytes + traffic.dramWriteBytes,
         best?.dramBytes,
@@ -264,42 +302,50 @@ export async function collectEstimatorSamplesFromJobs(jobs: JobRecord[], jobRoot
         traffic.sramReadBytes + traffic.sramWriteBytes,
         estimatorSramBytes,
       ]);
-      if (!(estimatorCycles > 0) || !(measuredCycles > 0)) {
+      if (!(estimatorCycles > 0) || !measuredTargets.length) {
         skipped.push({ jobId: job.id, name: job.name, reason: `shape=${shape.id}: missing positive estimatorCycles or measuredCycles` });
         continue;
       }
-      rows.push({
-        id: shape.id || job.name || job.id,
-        model: shape.model || "sampling_plan",
-        opName: shape.opName || shape.id || "op",
-        arrayRows: hw.arrayRows,
-        arrayCols: hw.arrayCols,
-        sramKB: hw.sramKB,
-        frequencyMHz: hw.frequencyMHz,
-        memoryBandwidthGBs: hw.memoryBandwidthGBs,
-        dispatchOverheadUs: hw.dispatchOverheadUs,
-        dataflow: hw.dataflow,
-        dtypeBytes,
-        m: shape.m,
-        n: shape.n,
-        k: shape.k,
-        tileM,
-        tileN,
-        tileK,
-        estimatorCycles: Math.round(estimatorCycles),
-        measuredCycles: Math.round(measuredCycles),
-        estimatorSramBytes: estimatorSramTrafficBytes > 0 ? Math.round(estimatorSramTrafficBytes) : undefined,
-        measuredSramBytes,
-        estimatorDramBytes: estimatorDramBytes > 0 ? Math.round(estimatorDramBytes) : undefined,
-        measuredDramBytes,
-        estimatorUtilization: estimatorUtilization === undefined ? undefined : estimatorUtilization,
-        measuredUtilization,
-        targetScope: measured.targetScope,
-        measuredSource: measured.measuredSource,
-        scaleSimRunName: req.scaleSim?.runName || job.name || job.id,
-        jobId: job.id,
-        jobName: job.name || job.id,
-      });
+      for (const measured of measuredTargets) {
+        const matchedLayer = measured.layer;
+        const measuredCycles = measured.measuredCycles;
+        const measuredSramBytes = accessBytes(firstPositive([matchedLayer?.sramAccessBytes, matchedLayer?.sramBytes, matchedLayer?.sramAccesses]), dtypeBytes);
+        const measuredDramBytes = accessBytes(firstPositive([matchedLayer?.dramAccessBytes, matchedLayer?.dramBytes, matchedLayer?.dramAccesses]), dtypeBytes);
+        const measuredUtilization = utilizationFraction(firstFinite([matchedLayer?.computeUtil, matchedLayer?.overallUtil, matchedLayer?.mappingEfficiency]));
+        const baseId = shape.id || shape.opName || job.name || job.id;
+        rows.push({
+          id: `${baseId}_${measured.targetScope}`,
+          model: shape.model || "sampling_plan",
+          opName: shape.opName || shape.id || "op",
+          arrayRows: hw.arrayRows,
+          arrayCols: hw.arrayCols,
+          sramKB: hw.sramKB,
+          frequencyMHz: hw.frequencyMHz,
+          memoryBandwidthGBs: hw.memoryBandwidthGBs,
+          dispatchOverheadUs: hw.dispatchOverheadUs,
+          dataflow: hw.dataflow,
+          dtypeBytes,
+          m: shape.m,
+          n: shape.n,
+          k: shape.k,
+          tileM,
+          tileN,
+          tileK,
+          estimatorCycles: Math.round(estimatorCycles),
+          measuredCycles: Math.round(measuredCycles),
+          estimatorSramBytes: estimatorSramTrafficBytes > 0 ? Math.round(estimatorSramTrafficBytes) : undefined,
+          measuredSramBytes,
+          estimatorDramBytes: estimatorDramBytes > 0 ? Math.round(estimatorDramBytes) : undefined,
+          measuredDramBytes,
+          estimatorUtilization: estimatorUtilization === undefined ? undefined : estimatorUtilization,
+          measuredUtilization,
+          targetScope: measured.targetScope,
+          measuredSource: measured.measuredSource,
+          scaleSimRunName: `${req.scaleSim?.runName || job.name || job.id}_${measured.targetScope}`,
+          jobId: job.id,
+          jobName: job.name || job.id,
+        });
+      }
     }
   }
   return { rows, skipped };
@@ -312,23 +358,14 @@ export function mergeCollectedSamplesIntoCsv(csvText: string, collected: Collect
   const byId = new Map<string, CollectedEstimatorSampleRow>();
   const byKey = new Map<string, CollectedEstimatorSampleRow>();
   for (const row of collected) {
-    const aliases = [row.id, row.scaleSimRunName, row.opName, row.jobName, row.jobId].filter(Boolean);
-    for (const a of aliases) byId.set(String(a), row);
-    byKey.set([
+    const aliases = [
       row.id,
-      row.model,
-      row.opName,
-      row.arrayRows,
-      row.arrayCols,
-      row.sramKB,
-      row.dataflow,
-      row.m,
-      row.n,
-      row.k,
-      row.tileM,
-      row.tileN,
-      row.tileK,
-    ].join("|"), row);
+      row.scaleSimRunName,
+      `${row.id}:${row.targetScope}`,
+      `${row.scaleSimRunName}:${row.targetScope}`,
+    ].filter(Boolean);
+    for (const a of aliases) byId.set(String(a), row);
+    byKey.set(collectedRowKey(row), row);
   }
   const used = new Set<string>();
   const merged = existing.map((r) => {
@@ -339,7 +376,7 @@ export function mergeCollectedSamplesIntoCsv(csvText: string, collected: Collect
     }
     match = match ?? byKey.get(csvRowKey(r));
     if (!match) return r;
-    used.add(match.jobId);
+    used.add(collectedRowKey(match));
     return {
       ...r,
       id: r.id || match.id,
@@ -374,6 +411,6 @@ export function mergeCollectedSamplesIntoCsv(csvText: string, collected: Collect
       jobName: match.jobName,
     };
   });
-  for (const row of collected) if (!used.has(row.jobId)) merged.push(row as unknown as Record<string, string>);
+  for (const row of collected) if (!used.has(collectedRowKey(row))) merged.push(row as unknown as Record<string, string>);
   return toEstimatorCsv(merged as unknown as Record<string, unknown>[]);
 }

@@ -81,6 +81,10 @@ export interface TileCandidateResult {
   tileM: number; tileN: number; tileK: number;
   cycles: number; rawCycles?: number; calibrationFactor?: number; timeUs: number; utilization: number; paddingRatio: number; sramBytes: number;
   learnedMetrics?: { sramBytes?: number; dramBytes?: number; utilization?: number; domainConfidence?: number; availableTargets?: string[] };
+  /** Tile-search cost before projecting to whole-layer hardware-design cycles. */
+  tilePolicyCycles?: number; tilePolicyRawCycles?: number; tileScratchBytes?: number;
+  /** Whole-layer cycle estimate used for hardware-design comparison. */
+  fullLayerCycles?: number; fullLayerRawCycles?: number; fullLayerComputeCycles?: number; fullLayerStallCycles?: number; fullLayerMappingEfficiency?: number; fullLayerSramBytes?: number; fullLayerDramBytes?: number; predictionTarget?: "full-layer" | "tile-policy";
   boundaryPenalty: number; score: number; isPareto: boolean; warnings: string[]; explanation: string;
 }
 export interface OpSearchResult { shape: MatmulShape; best: TileCandidateResult; candidates: TileCandidateResult[]; pareto: TileCandidateResult[]; heatmap: HeatmapPoint[]; }

@@ -2,6 +2,15 @@
 
 TileForge Workbench는 GEMM/Conv 연산을 systolic array에서 실행할 때 어떤 하드웨어 설정과 타일 정책이 유리한지 빠르게 탐색하는 로컬 웹 워크벤치입니다. TileForge estimator로 후보를 빠르게 좁힌 뒤, 필요하면 SCALE-Sim과 IREE를 실제로 실행해 예측값을 교차 검증합니다.
 
+### Scoped Estimator Suite pipeline
+
+Full-layer SCALE-Sim results and tile micro-run extrapolations are different targets. Use the scoped pipeline to split them before training:
+
+- `full-layer`: SCALE-Sim full topology `COMPUTE_REPORT.csv` layer cycles for external validation/full-workload reports.
+- `tile-policy`: tile micro-run × tile-count extrapolation for tile ranking and design-space sweet spots.
+
+The API actions `split-dataset` and `scope-pipeline` write separate datasets, models, predictions, and reports under `datasets/full-layer`, `datasets/tile-policy`, `estimator-suite/full-layer`, and `estimator-suite/tile-policy`. See `docs/scoped-estimator-pipeline.md`.
+
 ## 핵심 기능
 
 - GEMM `M x N x K` workload 분석

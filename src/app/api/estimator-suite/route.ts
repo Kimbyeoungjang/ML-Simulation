@@ -8,6 +8,7 @@ import { buildEstimatorSamplingPlan, requestFromPlanRow } from "@/lib/estimatorS
 import { collectEstimatorSamplesFromJobs, mergeCollectedSamplesIntoCsv } from "@/lib/estimatorSuiteJobSamples";
 import { createJob, createJobsBulk, listJobs, saveJob } from "@/server/jobStore";
 import { trainEstimatorSuite } from "@/lib/estimatorSuite";
+import { buildScopedEstimatorDatasets, buildScopedEstimatorPipeline } from "@/lib/estimatorSuitePipelines";
 import { activateEstimatorSuiteModel, clearActiveEstimatorSuiteModel, listEstimatorSuiteModels, readActiveEstimatorSuiteModel } from "@/server/activeEstimatorSuite";
 import { formatZodError, parseSearchRequest } from "@/lib/validation";
 import { getJobRoot, getWorkspaceRoot, jobDir } from "@/server/workspace";
@@ -156,6 +157,49 @@ export async function POST(req: Request) {
         summary: dataset.summary,
         reportMarkdown: summaryMarkdown,
       });
+    }
+
+
+    if (action === "split-dataset" || action === "scope-pipeline" || action === "split-and-train") {
+      const rawFiles = Array.isArray(body.files) ? body.files : [];
+      const fromCsv = String(body.csvText ?? body.csv ?? "");
+      const files = [
+        ...rawFiles.map((f: any, index: number) => ({ name: String(f?.name ?? `dataset_${index}.csv`), text: String(f?.text ?? "") })),
+        ...(fromCsv.trim() ? [{ name: "input.csv", text: fromCsv }] : []),
+      ].filter((f: { name: string; text: string }) => f.text.trim().length > 0);
+      if (!files.length) return NextResponse.json({ ok: false, error: "CSV files are required for scoped estimator pipeline." }, { status: 400 });
+
+      if (action === "split-dataset") {
+        const scoped = buildScopedEstimatorDatasets(files, { dedupe: body.dedupe !== false });
+        const { dir, artifacts } = await writeRunArtifacts(runId, {
+          "datasets/merged/samples.csv": scoped.mergedCsv,
+          "datasets/merged/report.md": scoped.mergedReportMarkdown,
+          "datasets/full-layer/samples.csv": scoped.scopes["full-layer"].csv,
+          "datasets/full-layer/report.md": scoped.scopes["full-layer"].reportMarkdown,
+          "datasets/tile-policy/samples.csv": scoped.scopes["tile-policy"].csv,
+          "datasets/tile-policy/report.md": scoped.scopes["tile-policy"].reportMarkdown,
+        });
+        return NextResponse.json({ ok: true, action, runId, dir, artifacts, summary: scoped.mergedSummary, scopes: Object.fromEntries(Object.entries(scoped.scopes).map(([k, v]) => [k, v.summary])), reportMarkdown: scoped.mergedReportMarkdown });
+      }
+
+      const pipeline = buildScopedEstimatorPipeline(files, {
+        dedupe: body.dedupe !== false,
+        minSamplesPerScope: num(body, "minSamplesPerScope", num(body, "min-samples-per-scope", 40)),
+        trees: num(body, "trees", 160),
+        maxDepth: num(body, "maxDepth", num(body, "max-depth", 10)),
+        minLeaf: num(body, "minLeaf", num(body, "min-leaf", 4)),
+        hiddenUnits: num(body, "hiddenUnits", num(body, "hidden", 64)),
+        epochs: num(body, "epochs", 900),
+        learningRate: num(body, "learningRate", num(body, "learning-rate", 0.01)),
+        l2: num(body, "l2", 0.0001),
+        seed: num(body, "seed", 42),
+        validationFraction: num(body, "validationFraction", num(body, "validation", 0.2)),
+        maxSplitTrainSamples: num(body, "maxSplitTrainSamples", num(body, "max-split-train", 12000)),
+        maxFinalTrainSamples: num(body, "maxFinalTrainSamples", num(body, "max-final-train", 20000)),
+        splitKinds: normalizeSuiteSplitKinds(body.options?.splits ?? body.splits),
+      });
+      const { dir, artifacts } = await writeRunArtifacts(runId, pipeline.files);
+      return NextResponse.json({ ok: true, action, runId, dir, artifacts, summary: pipeline.mergedSummary, scopes: Object.fromEntries(Object.entries(pipeline.scopes).map(([k, v]) => [k, v.summary])), training: Object.fromEntries(Object.entries(pipeline.training).map(([k, v]) => [k, { status: v.status, samples: v.samples, reason: v.reason, model: v.model }])), reportMarkdown: pipeline.combinedReportMarkdown });
     }
 
     const csvText = String(body.csvText ?? body.csv ?? "");

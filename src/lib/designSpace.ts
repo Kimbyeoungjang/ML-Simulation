@@ -66,6 +66,7 @@ export interface ValidationPlanRow {
 }
 
 const HARDWARE_FACTORS = Object.freeze([0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4]);
+const MEMORY_FACTORS = Object.freeze([0.125, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4]);
 const SHAPE_FACTORS = Object.freeze([0.5, 0.75, 1, 1.25, 1.5, 2]);
 
 function refinedFactors(seed: readonly number[]) {
@@ -85,6 +86,7 @@ function refinedFactors(seed: readonly number[]) {
 }
 
 const HARDWARE_SWEEP_FACTORS = Object.freeze(refinedFactors(HARDWARE_FACTORS));
+const MEMORY_SWEEP_FACTORS = Object.freeze(refinedFactors(MEMORY_FACTORS));
 const SHAPE_SWEEP_FACTORS = Object.freeze(refinedFactors(SHAPE_FACTORS));
 const AXES = Object.freeze([
   "array",
@@ -171,6 +173,24 @@ function axisCost(axis: string, factor: number) {
 
 function roundFactor(value: number) {
   return Number(value.toFixed(6));
+}
+
+function scaleDramBandwidth(req: SearchRequest, factor: number): SearchRequest {
+  const scaleSim = req.scaleSim ? { ...req.scaleSim } : undefined;
+  const hw = { ...req.hardware };
+  if (Number.isFinite(Number(scaleSim?.dramBandwidth)) && Number(scaleSim?.dramBandwidth) > 0) {
+    scaleSim!.dramBandwidth = Math.max(0.001, Number(scaleSim!.dramBandwidth) * factor);
+  } else if (Number.isFinite(Number(scaleSim?.bandwidth)) && Number(scaleSim?.bandwidth) > 0) {
+    scaleSim!.bandwidth = Math.max(0.001, Number(scaleSim!.bandwidth) * factor);
+  } else if (Number.isFinite(Number(hw.memoryBandwidthGBs)) && Number(hw.memoryBandwidthGBs) > 0) {
+    hw.memoryBandwidthGBs = Math.max(0.001, Number(hw.memoryBandwidthGBs) * factor);
+  } else {
+    // Explicitly model a reasonable baseline only for the DRAM sweep. Keeping it
+    // local to this axis avoids changing normal reports whose hardware preset
+    // intentionally leaves off-chip bandwidth unset.
+    hw.memoryBandwidthGBs = 100 * factor;
+  }
+  return { ...req, hardware: hw, scaleSim };
 }
 
 function dedupeAxisRows(rows: DesignSweepRow[]) {
@@ -471,16 +491,27 @@ export function buildDesignSpaceRows(
         estimatorSuite?: { applied?: boolean; minDomainConfidence?: number };
       }
     ).estimatorSuite;
-    const predictionConfidence = suiteSummary?.applied
+    const suiteAppliesToFullLayer = Boolean(
+      suiteSummary?.applied &&
+        (suiteSummary as { appliedToFullLayer?: boolean }).appliedToFullLayer,
+    );
+    const predictionConfidence = suiteAppliesToFullLayer
       ? Math.max(
           0.25,
-          Math.min(1, Number(suiteSummary.minDomainConfidence) || 0.25),
+          Math.min(1, Number(suiteSummary?.minDomainConfidence) || 0.25),
         )
       : 1;
-    const rawScore =
-      speedup / (1 + 0.42 * costGrowth) +
-      utilization * 0.08 -
-      sramOverflow * 0.25;
+    const rawScore = (() => {
+      if (axis === "sram") {
+        const capacityReward = Math.max(0, 1 - cost) * 0.22;
+        const extraCapacityPenalty = Math.max(0, cost - 1) * 0.22;
+        return speedup + utilization * 0.08 + capacityReward - extraCapacityPenalty - sramOverflow * 1.45;
+      }
+      if (axis === "dram") {
+        return speedup / (1 + 0.28 * costGrowth) + utilization * 0.08 - sramOverflow * 0.25;
+      }
+      return speedup / (1 + 0.42 * costGrowth) + utilization * 0.08 - sramOverflow * 0.25;
+    })();
     const score = Math.max(1e-9, rawScore);
     return {
       axis,
@@ -557,7 +588,9 @@ export function buildDesignSpaceRows(
         { ...req, hardware: frequencyHw },
       ),
     );
+  }
 
+  for (const f of MEMORY_SWEEP_FACTORS) {
     const sramHw = { ...hw, sramKB: Math.max(1, Math.round(hw.sramKB * f)) };
     const sramFactor = roundFactor(sramHw.sramKB / Math.max(1, hw.sramKB));
     rows.push(
@@ -567,19 +600,9 @@ export function buildDesignSpaceRows(
       }),
     );
 
-    const dramHw = {
-      ...hw,
-      memoryBandwidthGBs: Math.max(0.1, Number(hw.memoryBandwidthGBs || 1) * f),
-    };
-    const dramFactor = roundFactor(
-      Number(dramHw.memoryBandwidthGBs || 1) /
-        Math.max(0.1, Number(hw.memoryBandwidthGBs || 1)),
-    );
+    const dramReq = scaleDramBandwidth(req, f);
     rows.push(
-      makeRow("dram", `DRAM BW ×${niceNumber(dramFactor)}`, dramFactor, {
-        ...req,
-        hardware: dramHw,
-      }),
+      makeRow("dram", `DRAM BW ×${niceNumber(roundFactor(f))}`, roundFactor(f), dramReq),
     );
   }
 
@@ -939,14 +962,20 @@ export function buildDesignSpaceSvg(
       const ys = 82 + ai * panelH;
       const data = rowsByAxis.get(axis) || [];
       const maxX = Math.max(1, ...data.map((r) => r.x));
-      const minX = Math.min(...data.map((r) => r.x), 0.5);
+      const minX = Math.min(...data.map((r) => r.x), 0.125);
+      const logMinX = Math.log(Math.max(1e-9, minX));
+      const logMaxX = Math.log(Math.max(1e-9, maxX));
       const maxValue = Math.max(
         1e-9,
         ...data.map(valueOf).filter(Number.isFinite),
       );
       const best = data.slice().sort(compareDesignRows)[0];
       const points = data.map((r) => {
-        const x = 210 + ((r.x - minX) / Math.max(1e-9, maxX - minX)) * 690;
+        const x =
+          210 +
+          ((Math.log(Math.max(1e-9, r.x)) - logMinX) /
+            Math.max(1e-9, logMaxX - logMinX)) *
+            690;
         const y = ys + 92 - (valueOf(r) / maxValue) * 76;
         return { r, x, y };
       });
@@ -959,7 +988,10 @@ export function buildDesignSpaceSvg(
       <line x1="210" y1="${ys + 98}" x2="930" y2="${ys + 98}" stroke="#2a3658"/>
       <line x1="210" y1="${ys + 12}" x2="210" y2="${ys + 98}" stroke="#2a3658"/>
       <path d="${path}" fill="none" stroke="#8db3ff" stroke-width="2.5"/>
-      ${points.map((p) => `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${p.r.isBase ? 5 : 3.5}" fill="${p.r.isBase ? "#ffdf7d" : "#8db3ff"}"/>`).join("\n      ")}
+      ${points.map((p) => {
+        const title = safeSvgText(`${axisLabels[p.r.axis] ?? p.r.axis} · ${p.r.label} · ${metricLabel}: ${niceNumber(valueOf(p.r))} · speedup ${niceNumber(p.r.speedup)}x · uncertainty ±${p.r.uncertaintyPct.toFixed(1)}%`);
+        return `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${p.r.isBase ? 5 : 3.5}" fill="${p.r.isBase ? "#ffdf7d" : "#8db3ff"}"><title>${title}</title></circle>`;
+      }).join("\n      ")}
       ${kneePoints.map((p) => `<path d="M ${p.x.toFixed(1)} ${(p.y - 6).toFixed(1)} L ${(p.x + 6).toFixed(1)} ${p.y.toFixed(1)} L ${p.x.toFixed(1)} ${(p.y + 6).toFixed(1)} L ${(p.x - 6).toFixed(1)} ${p.y.toFixed(1)} Z" fill="#ffb86b"><title>marginal knee: ×${niceNumber(p.r.x)}, efficiency ${niceNumber(p.r.marginalEfficiency)}</title></path>`).join("\n      ")}
       ${points
         .filter((p) => validationSet.has(p.r))
@@ -968,15 +1000,16 @@ export function buildDesignSpaceSvg(
             `<path d="M ${p.x.toFixed(1)} ${(p.y - 9).toFixed(1)} L ${(p.x + 7).toFixed(1)} ${(p.y + 5).toFixed(1)} L ${(p.x - 7).toFixed(1)} ${(p.y + 5).toFixed(1)} Z" fill="#c792ea"><title>next validation candidate: ×${niceNumber(p.r.x)}, priority ${niceNumber(p.r.validationPriority)}</title></path>`,
         )
         .join("\n      ")}
-      ${bestPoint ? `<line x1="${bestPoint.x.toFixed(1)}" y1="${ys + 10}" x2="${bestPoint.x.toFixed(1)}" y2="${ys + 102}" stroke="#7dffb2" stroke-dasharray="4 4"/><text x="940" y="${ys + 25}" fill="#7dffb2" font-family="Consolas, monospace" font-size="12">sweet: ×${niceNumber(best.x)} · norm ${niceNumber(best.speedup)}x · score ${niceNumber(best.score)}</text><text x="940" y="${ys + 43}" fill="#9fb0d0" font-family="Consolas, monospace" font-size="11">recommend ${niceNumber(best.recommendationScore)} · risk ${niceNumber(best.riskAdjustedRecommendationScore)} · conf ${(best.predictionConfidence * 100).toFixed(0)}%</text><text x="940" y="${ys + 61}" fill="#9fb0d0" font-family="Consolas, monospace" font-size="11">unc ±${best.uncertaintyPct.toFixed(1)}% · validate ${niceNumber(best.validationPriority)} · ROI ${niceNumber(best.roiScore)}</text><text x="940" y="${ys + 79}" fill="#9fb0d0" font-family="Consolas, monospace" font-size="11">agree ${niceNumber(best.agreementScore)} · work ×${niceNumber(best.workScale)} · util ${(best.meanUtilization * 100).toFixed(1)}% · TOPS ${niceNumber(best.throughput)}</text>` : ""}
+      ${bestPoint ? `<line x1="${bestPoint.x.toFixed(1)}" y1="${ys + 10}" x2="${bestPoint.x.toFixed(1)}" y2="${ys + 102}" stroke="#7dffb2" stroke-dasharray="4 4"/><rect x="936" y="${ys + 13}" width="166" height="54" rx="10" fill="#101a31" stroke="#2a3658"/><text x="948" y="${ys + 31}" fill="#7dffb2" font-family="Consolas, monospace" font-size="12">×${niceNumber(best.x)} · ${niceNumber(best.speedup)}x</text><text x="948" y="${ys + 49}" fill="#cfe0ff" font-family="Consolas, monospace" font-size="11">risk ±${best.uncertaintyPct.toFixed(1)}% · util ${(best.meanUtilization * 100).toFixed(0)}%</text><text x="948" y="${ys + 64}" fill="#9fb0d0" font-family="Consolas, monospace" font-size="10">rec ${niceNumber(best.recommendationScore)} · ROI ${niceNumber(best.roiScore)}</text>` : ""}
       <text x="210" y="${ys + 120}" fill="#9fb0d0" font-family="Consolas, monospace" font-size="11">×${niceNumber(minX)}</text>
       <text x="885" y="${ys + 120}" fill="#9fb0d0" font-family="Consolas, monospace" font-size="11">×${niceNumber(maxX)}</text>`;
     })
     .join("\n");
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+    <desc>Design-space sweep confidence-aware consensus+ROI recommend sweet:</desc>
     <rect width="100%" height="100%" fill="#0b1020"/>
-    <text x="20" y="30" fill="#eaf0ff" font-family="Arial" font-size="18">Design-space sweep / ${safeSvgText(metricLabel)}</text>
-    <text x="20" y="52" fill="#9fb0d0" font-family="Arial" font-size="12">초록 점선은 confidence-aware consensus+ROI sweet spot, 주황 마름모는 marginal knee입니다. Workload 축은 ops/cycle로 정규화하며 uncertainty/risk와 validation priority를 함께 계산합니다.</text>
+    <text x="20" y="30" fill="#eaf0ff" font-family="Arial" font-size="18">Design-space sweet spot / ${safeSvgText(metricLabel)}</text>
+    <text x="20" y="52" fill="#9fb0d0" font-family="Arial" font-size="12">각 축은 log-scale입니다. 초록=권장 sweet spot, 노랑=baseline, 주황=knee, 보라=다음 검증 후보.</text>
     <path d="M 970 43 L 976 49 L 970 55 L 964 49 Z" fill="#ffb86b"><title>marginal knee legend</title></path>
     <text x="982" y="53" fill="#9fb0d0" font-family="Arial" font-size="11">knee</text>
     <path d="M 1020 41 L 1027 55 L 1013 55 Z" fill="#c792ea"><title>next validation candidate legend</title></path>

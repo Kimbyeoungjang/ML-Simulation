@@ -117,7 +117,7 @@ export function Jobs({
         </summary>
         <pre
           className="pre"
-          title="최근 작업 목록 또는 실시간 작업 상태 JSON입니다."
+          title="작업 큐 목록과 선택한 작업 상태입니다."
         >
           {text}
         </pre>
@@ -167,7 +167,7 @@ export function QueueSummary({
   const queuedTotal = Number(counts.queued ?? queued.length);
   const runningTotal = Number(counts.running ?? running.length);
   const recentDone = jobs.filter((j: any) => ["succeeded", "succeeded_with_warnings", "failed", "cancelled"].includes(j.status)).slice(0, 20);
-  const visible = [...running, ...queued, ...recentDone];
+  const visible = jobs;
   const visibleIds = visible.map((j: any) => j.id);
   const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id: string) => selectedJobIds.includes(id));
   const toggleOne = (id: string) => setSelectedJobIds(selectedJobIds.includes(id) ? selectedJobIds.filter((x) => x !== id) : [...selectedJobIds, id]);
@@ -180,14 +180,14 @@ export function QueueSummary({
           <span className="badge">running {runningTotal}</span>
           <span className="badge">queued {queuedTotal}</span>
           <span className="badge">total {payload?.total ?? jobs.length}</span>
-          {payload?.view === "dashboard" && <span className="badge ok-badge">live dashboard</span>}
+          {payload?.view === "dashboard" && <span className="badge ok-badge">상태 우선</span>}
           <span className="badge">selected {selectedJobIds.length}</span>
           <button className="secondary" onClick={toggleAll} disabled={visible.length === 0}>{allVisibleSelected ? "전체 해제" : "표시 작업 전체 선택"}</button>
           <button className="secondary" onClick={() => onCancelSelected(selectedJobIds)} disabled={selectedJobIds.length === 0}>선택 중지</button>
           <button className="secondary danger-button" onClick={() => onDeleteSelected(selectedJobIds)} disabled={selectedJobIds.length === 0}>선택 삭제</button>
           <select value={jobsViewMode} onChange={(e) => { setJobsViewMode(e.target.value as "dashboard" | "paged"); setJobsPage(1); }} title="대량 작업 큐 표시 방식">
-            <option value="dashboard">실시간 요약</option>
-            <option value="paged">페이지 목록</option>
+            <option value="dashboard">상태 우선</option>
+            <option value="paged">작업 목록</option>
           </select>
           <select value={jobsPageSize} onChange={(e) => setJobsPageSize(Number(e.target.value))} title="한 페이지에 표시할 작업 수">
             {[50, 100, 200, 500, 1000].map((n) => <option key={n} value={n}>{n}개</option>)}
