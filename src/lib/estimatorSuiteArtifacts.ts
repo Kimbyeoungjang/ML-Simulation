@@ -32,10 +32,12 @@ function csvEscape(v: unknown) {
 export function toEstimatorCsv(rows: Record<string, unknown>[]) {
   if (!rows.length) return "";
   const header = Array.from(new Set(rows.flatMap((r) => Object.keys(r))));
-  return [
-    header.join(","),
-    ...rows.map((r) => header.map((h) => csvEscape(r[h])).join(",")),
-  ].join("\n") + "\n";
+  return (
+    [
+      header.join(","),
+      ...rows.map((r) => header.map((h) => csvEscape(r[h])).join(",")),
+    ].join("\n") + "\n"
+  );
 }
 
 function parseCsvLine(line: string) {
@@ -99,12 +101,36 @@ function optNum(row: Record<string, string>, names: string[]) {
   return undefined;
 }
 
-export function sampleFromEstimatorRow(row: Record<string, string>): LearnedEstimatorSample | undefined {
-  const measuredCycles = num(row, ["measuredCycles", "scaleSimCycles", "scalesimCycles", "totalCycles", "cycles_measured", "measured_cycles"]);
-  const estimatorCycles = num(row, ["estimatorCycles", "predictedCycles", "tileforgeCycles", "cycles_estimator", "predicted_cycles"]);
-  const m = num(row, ["m", "M"]), n = num(row, ["n", "N"]), k = num(row, ["k", "K"]);
-  const tileM = num(row, ["tileM", "tm", "tile_m"]), tileN = num(row, ["tileN", "tn", "tile_n"]), tileK = num(row, ["tileK", "tk", "tile_k"]);
-  if (![measuredCycles, estimatorCycles, m, n, k, tileM, tileN, tileK].every((v) => Number.isFinite(v) && v > 0)) return undefined;
+export function sampleFromEstimatorRow(
+  row: Record<string, string>,
+): LearnedEstimatorSample | undefined {
+  const measuredCycles = num(row, [
+    "measuredCycles",
+    "scaleSimCycles",
+    "scalesimCycles",
+    "totalCycles",
+    "cycles_measured",
+    "measured_cycles",
+  ]);
+  const estimatorCycles = num(row, [
+    "estimatorCycles",
+    "predictedCycles",
+    "tileforgeCycles",
+    "cycles_estimator",
+    "predicted_cycles",
+  ]);
+  const m = num(row, ["m", "M"]),
+    n = num(row, ["n", "N"]),
+    k = num(row, ["k", "K"]);
+  const tileM = num(row, ["tileM", "tm", "tile_m"]),
+    tileN = num(row, ["tileN", "tn", "tile_n"]),
+    tileK = num(row, ["tileK", "tk", "tile_k"]);
+  if (
+    ![measuredCycles, estimatorCycles, m, n, k, tileM, tileN, tileK].every(
+      (v) => Number.isFinite(v) && v > 0,
+    )
+  )
+    return undefined;
   return {
     id: str(row, ["id", "sampleId"], ""),
     model: str(row, ["model"], "csv"),
@@ -112,34 +138,112 @@ export function sampleFromEstimatorRow(row: Record<string, string>): LearnedEsti
     arrayRows: num(row, ["arrayRows", "array_rows"], defaultHardware.arrayRows),
     arrayCols: num(row, ["arrayCols", "array_cols"], defaultHardware.arrayCols),
     sramKB: num(row, ["sramKB", "sram_kb"], defaultHardware.sramKB),
-    frequencyMHz: num(row, ["frequencyMHz", "freqMHz", "frequency_mhz"], defaultHardware.frequencyMHz),
-    memoryBandwidthGBs: optNum(row, ["memoryBandwidthGBs", "memoryBandwidthGBps", "memoryBandwidth", "memory_bandwidth_gbs"]),
-    dispatchOverheadUs: optNum(row, ["dispatchOverheadUs", "dispatch_us", "dispatchOverhead"]),
+    frequencyMHz: num(
+      row,
+      ["frequencyMHz", "freqMHz", "frequency_mhz"],
+      defaultHardware.frequencyMHz,
+    ),
+    memoryBandwidthGBs: optNum(row, [
+      "memoryBandwidthGBs",
+      "memoryBandwidthGBps",
+      "memoryBandwidth",
+      "memory_bandwidth_gbs",
+    ]),
+    dispatchOverheadUs: optNum(row, [
+      "dispatchOverheadUs",
+      "dispatch_us",
+      "dispatchOverhead",
+    ]),
     dataflow: str(row, ["dataflow"], defaultHardware.dataflow),
     dtypeBytes: num(row, ["dtypeBytes", "dtype_bytes"], 2),
-    m, n, k, tileM, tileN, tileK, estimatorCycles, measuredCycles,
-    estimatorSramBytes: optNum(row, ["estimatorSramBytes", "predictedSramBytes", "tileforgeSramBytes", "sramBytes", "sram_bytes_estimator"]),
-    measuredSramBytes: optNum(row, ["measuredSramBytes", "scaleSimSramBytes", "scalesimSramBytes", "sramAccessBytes", "sramBytesMeasured", "sram_bytes_measured"]),
-    estimatorDramBytes: optNum(row, ["estimatorDramBytes", "predictedDramBytes", "tileforgeDramBytes", "dramBytes", "dram_bytes_estimator"]),
-    measuredDramBytes: optNum(row, ["measuredDramBytes", "scaleSimDramBytes", "scalesimDramBytes", "dramAccessBytes", "dramBytesMeasured", "dram_bytes_measured"]),
-    estimatorUtilization: optNum(row, ["estimatorUtilization", "predictedUtilization", "tileforgeUtilization", "utilization", "util_estimator"]),
-    measuredUtilization: optNum(row, ["measuredUtilization", "scaleSimUtilization", "scalesimUtilization", "actualUtilization", "utilMeasured", "util_measured"]),
+    m,
+    n,
+    k,
+    tileM,
+    tileN,
+    tileK,
+    estimatorCycles,
+    measuredCycles,
+    estimatorSramBytes: optNum(row, [
+      "estimatorSramBytes",
+      "predictedSramBytes",
+      "tileforgeSramBytes",
+      "sramBytes",
+      "sram_bytes_estimator",
+    ]),
+    measuredSramBytes: optNum(row, [
+      "measuredSramBytes",
+      "scaleSimSramBytes",
+      "scalesimSramBytes",
+      "sramAccessBytes",
+      "sramBytesMeasured",
+      "sram_bytes_measured",
+    ]),
+    estimatorDramBytes: optNum(row, [
+      "estimatorDramBytes",
+      "predictedDramBytes",
+      "tileforgeDramBytes",
+      "dramBytes",
+      "dram_bytes_estimator",
+    ]),
+    measuredDramBytes: optNum(row, [
+      "measuredDramBytes",
+      "scaleSimDramBytes",
+      "scalesimDramBytes",
+      "dramAccessBytes",
+      "dramBytesMeasured",
+      "dram_bytes_measured",
+    ]),
+    estimatorUtilization: optNum(row, [
+      "estimatorUtilization",
+      "predictedUtilization",
+      "tileforgeUtilization",
+      "utilization",
+      "util_estimator",
+    ]),
+    measuredUtilization: optNum(row, [
+      "measuredUtilization",
+      "scaleSimUtilization",
+      "scalesimUtilization",
+      "actualUtilization",
+      "utilMeasured",
+      "util_measured",
+    ]),
   };
 }
 
-export function parseEstimatorSamplesCsv(text: string): LearnedEstimatorSample[] {
-  return parseEstimatorCsv(text).map(sampleFromEstimatorRow).filter(Boolean) as LearnedEstimatorSample[];
+export function parseEstimatorSamplesCsv(
+  text: string,
+): LearnedEstimatorSample[] {
+  return parseEstimatorCsv(text)
+    .map(sampleFromEstimatorRow)
+    .filter(Boolean) as LearnedEstimatorSample[];
 }
 
-export function designEstimatorSuiteCsv(request: SearchRequest, options: { topK?: number } = {}) {
-  const topK = Math.max(1, Math.floor(options.topK ?? request.maxResultsPerOp ?? 3));
+export function designEstimatorSuiteCsv(
+  request: SearchRequest,
+  options: { topK?: number } = {},
+) {
+  const topK = Math.max(
+    1,
+    Math.floor(options.topK ?? request.maxResultsPerOp ?? 3),
+  );
   const rows: Record<string, unknown>[] = [];
   for (const shape of request.shapes) {
     const candidates = [];
     for (const tileM of request.candidates.tileM) {
       for (const tileN of request.candidates.tileN) {
         for (const tileK of request.candidates.tileK) {
-          candidates.push(estimateTile(request.hardware, shape, tileM, tileN, tileK, request.objective));
+          candidates.push(
+            estimateTile(
+              request.hardware,
+              shape,
+              tileM,
+              tileN,
+              tileK,
+              request.objective,
+            ),
+          );
         }
       }
     }
@@ -163,7 +267,9 @@ export function designEstimatorSuiteCsv(request: SearchRequest, options: { topK?
         tileK: tile.tileK,
         estimatorCycles: tile.cycles,
         estimatorSramBytes: tile.sramBytes,
-        estimatorDramBytes: (shape.m * shape.k + shape.k * shape.n + shape.m * shape.n) * (shape.dtypeBytes || request.hardware.bytesPerElement || 2),
+        estimatorDramBytes:
+          (shape.m * shape.k + shape.k * shape.n + shape.m * shape.n) *
+          (shape.dtypeBytes || request.hardware.bytesPerElement || 2),
         estimatorUtilization: tile.utilization,
         measuredCycles: "",
         measuredSramBytes: "",
@@ -176,23 +282,52 @@ export function designEstimatorSuiteCsv(request: SearchRequest, options: { topK?
   return toEstimatorCsv(rows);
 }
 
-export function normalizeSuiteSplitKinds(value: unknown): EstimatorSuiteSplitKind[] {
-  const allowed = new Set<EstimatorSuiteSplitKind>(["random", "workload", "array", "dataflow", "large-shape"]);
-  const raw = Array.isArray(value) ? value : String(value ?? "random,workload,array,dataflow,large-shape").split(/[, ]+/);
-  const out = raw.map((v) => String(v).trim()).filter((v): v is EstimatorSuiteSplitKind => allowed.has(v as EstimatorSuiteSplitKind));
+export function normalizeSuiteSplitKinds(
+  value: unknown,
+): EstimatorSuiteSplitKind[] {
+  const allowed = new Set<EstimatorSuiteSplitKind>([
+    "random",
+    "workload",
+    "array",
+    "dataflow",
+    "large-shape",
+  ]);
+  const raw = Array.isArray(value)
+    ? value
+    : String(value ?? "random,workload,array,dataflow,large-shape").split(
+        /[, ]+/,
+      );
+  const out = raw
+    .map((v) => String(v).trim())
+    .filter((v): v is EstimatorSuiteSplitKind =>
+      allowed.has(v as EstimatorSuiteSplitKind),
+    );
   return out.length ? out : ["random"];
 }
 
-export function buildEstimatorSuiteArtifacts(model: EstimatorSuiteModel, samples: LearnedEstimatorSample[]): EstimatorSuiteArtifactBundle {
+export function buildEstimatorSuiteArtifacts(
+  model: EstimatorSuiteModel,
+  samples: LearnedEstimatorSample[],
+): EstimatorSuiteArtifactBundle {
   const rows = model.validationSuite;
-  const metricRows = rows.map((r) => `| ${r.kind} | ${r.testSamples} | ${r.baseline.learnedMapePct.toFixed(2)}% | ${r.tree.learnedMapePct.toFixed(2)}% | ${r.neural.learnedMapePct.toFixed(2)}% | ${r.ensemble.learnedMapePct.toFixed(2)}% | ${r.ensemble.p90AbsPct.toFixed(2)}% | ${r.recommended} |`).join("\n");
-  const multiRows = multiTargetSummaryRows(model.multiTarget).map(r => `| ${r.target} | ${r.samples} | ${r.mapePct.toFixed(2)}% | ${r.p90AbsPct.toFixed(2)}% |`).join("\n");
+  const metricRows = rows
+    .map(
+      (r) =>
+        `| ${r.kind} | ${r.testSamples} | ${r.baseline.learnedMapePct.toFixed(2)}% | ${r.tree.learnedMapePct.toFixed(2)}% | ${r.neural.learnedMapePct.toFixed(2)}% | ${r.ensemble.learnedMapePct.toFixed(2)}% | ${r.ensemble.p90AbsPct.toFixed(2)}% | ${r.recommended} |`,
+    )
+    .join("\n");
+  const multiRows = multiTargetSummaryRows(model.multiTarget)
+    .map(
+      (r) =>
+        `| ${r.target} | ${r.samples} | ${r.mapePct.toFixed(2)}% | ${r.p90AbsPct.toFixed(2)}% |`,
+    )
+    .join("\n");
   const reportMarkdown = [
     `# TileForge Web Estimator Suite Report`,
     ``,
     `추천 최종 모델: **${model.recommended}**`,
     ``,
-    `이 suite는 cycle에 대해 analytical baseline, Tree residual, Neural residual, Direct neural을 함께 학습하고 validation 성능으로 ensemble weight를 정합니다. CSV에 SRAM/DRAM/utilization measured column이 있으면 해당 지표는 별도 multi-target direct model로 학습합니다.`,
+    `이 suite는 cycle에 대해 analytical baseline, Tree residual, Neural residual, Direct neural을 함께 학습하고 validation 성능으로 ensemble weight를 정합니다. 현재 예측 경로는 split holdout에서 튜닝된 log-space stacked ensemble과 out-of-fold residual calibration을 사용하며, 학습 범위 밖 입력은 domain guard로 analytical baseline 쪽으로 완화합니다. CSV에 SRAM/DRAM/utilization measured column이 있으면 해당 지표는 별도 multi-target direct model로 학습합니다.`,
     ``,
     `## Dataset`,
     ``,
@@ -201,6 +336,11 @@ export function buildEstimatorSuiteArtifacts(model: EstimatorSuiteModel, samples
     `- Target: ${model.target}`,
     ``,
     `## Final ensemble weights`,
+    ``,
+    `- Blend mode: ${model.blend?.mode ?? "linear-legacy"}`,
+    `- Domain guard: ${model.blend?.domainGuard?.enabled ? `enabled, minConfidence=${model.blend.domainGuard.minConfidence.toFixed(2)}` : "disabled"}`,
+    `- Adaptive stacking: ${model.blend?.adaptiveWeights ? `${model.blend.adaptiveWeights.mode}, buckets=${model.blend.adaptiveWeights.buckets.length}, validation MAPE=${model.blend.adaptiveWeights.validation?.learnedMapePct.toFixed(2) ?? "n/a"}%` : "disabled"}`,
+    `- Cycle calibration: ${model.calibration ? `${model.calibration.mode}, global×${Math.exp(model.calibration.globalLogBias).toFixed(3)}, buckets=${model.calibration.buckets.length} (regime=${model.calibration.buckets.filter((b) => b.kind.includes("regime")).length}), trend=${model.calibration.scaleTrend ? `slope=${model.calibration.scaleTrend.slope.toFixed(3)}, blend=${model.calibration.scaleTrend.blend.toFixed(2)}` : "off"}, resource=${model.calibration.resourceTrend ? `features=${model.calibration.resourceTrend.featureNames.join("/")}, blend=${model.calibration.resourceTrend.blend.toFixed(2)}` : "off"}, tiling=${model.calibration.tilingTrend ? `features=${model.calibration.tilingTrend.featureNames.join("/")}, blend=${model.calibration.tilingTrend.blend.toFixed(2)}` : "off"}, local=${model.calibration.local?.prototypes.length ?? 0}, clamp=±${model.calibration.clampLogBias.toFixed(3)} log` : "disabled"}`,
     ``,
     `| Component | Weight |`,
     `|---|---:|`,
@@ -231,8 +371,15 @@ export function buildEstimatorSuiteArtifacts(model: EstimatorSuiteModel, samples
     modelJson: JSON.stringify(model, null, 2),
     treeModelJson: JSON.stringify(model.tree, null, 2),
     neuralModelJson: JSON.stringify(model.neural, null, 2),
-    validationCsv: toEstimatorCsv(summarizeSuiteValidation(model) as unknown as Record<string, unknown>[]),
-    predictionsCsv: toEstimatorCsv(estimatorSuitePredictionRows(samples, model) as unknown as Record<string, unknown>[]),
+    validationCsv: toEstimatorCsv(
+      summarizeSuiteValidation(model) as unknown as Record<string, unknown>[],
+    ),
+    predictionsCsv: toEstimatorCsv(
+      estimatorSuitePredictionRows(samples, model) as unknown as Record<
+        string,
+        unknown
+      >[],
+    ),
     reportMarkdown,
   };
 }

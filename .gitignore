@@ -16,9 +16,11 @@ coverage/
 .tileforge/
 .tileforge_jobs/
 release/
+benchmarks/results/
 external/
 
 # generated external-tool outputs
+reports/*.json
 COMPUTE_REPORT.csv
 *.vmfb
 *.log

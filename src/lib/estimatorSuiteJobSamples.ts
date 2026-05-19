@@ -84,17 +84,24 @@ function pickScaleLayer(scale: any, shape: any, tileM: number, tileN: number, ti
   const candidates = Array.isArray(scale?.candidateLayers) ? scale.candidateLayers : [];
   const sameOp = (l: any) => !shape?.opName || l.opName === shape.opName || l.name === shape.opName;
 
-  // Estimator Suite is used for full-layer prediction/reporting. Therefore the
-  // training target must come from the full-layer SCALE-Sim topology first.
-  // candidateLayers are micro-run diagnostics and must never silently become the
-  // main measuredCycles target unless a full-layer row is unavailable.
+  const exactCandidate =
+    candidates.find((l: any) => sameTile(l, tileM, tileN, tileK) && sameOp(l)) ||
+    candidates.find((l: any) => sameTile(l, tileM, tileN, tileK));
+
+  // Prefer a tile-specific candidate when it carries a full-layer extrapolation.
+  // SCALE-Sim candidate runs are usually one-tile micro-runs, but workerRunner
+  // stores tileExtrapolatedCycles when the micro-run can be scaled to the layer.
+  // That is the best supervised target for a sampled tile policy. Otherwise,
+  // fall back to full-layer topology rows before using diagnostic candidates.
+  if (exactCandidate && n(exactCandidate.tileExtrapolatedCycles) > 0) return exactCandidate;
+
   return (
     layers.find((l: any) => sameTile(l, tileM, tileN, tileK) && sameOp(l)) ||
     layers.find((l: any) => sameOp(l)) ||
     layers.find((l: any) => sameTile(l, tileM, tileN, tileK)) ||
     layers[0] ||
-    candidates.find((l: any) => sameTile(l, tileM, tileN, tileK) && sameOp(l)) ||
-    candidates.find((l: any) => sameTile(l, tileM, tileN, tileK)) ||
+    exactCandidate ||
+    candidates.find((l: any) => sameOp(l)) ||
     candidates[0]
   );
 }
@@ -201,6 +208,7 @@ export async function collectEstimatorSamplesFromJobs(jobs: JobRecord[], jobRoot
     }
     const matchedLayer = pickScaleLayer(scale, shape, tileM, tileN, tileK);
     const measuredCycles = firstPositive([
+      matchedLayer?.tileExtrapolatedCycles,
       matchedLayer?.cycles,
       matchedLayer?.scaleSimRawCycles,
       scale.totalCycles,

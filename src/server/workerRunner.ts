@@ -378,7 +378,7 @@ async function runEstimatorSuiteTrainingJob(job: JobRecord) {
     addLogImmediate(job, `활성 Estimator Suite로 적용 완료: ${job.id}`);
   }
   await saveJob(job);
-  updateProgressImmediate(job, "done", 100, `Estimator Suite 학습 완료: samples=${model.metadata.samples}, train=${model.metadata.trainSamples}, recommended=${model.recommended}, weights a=${model.weights.analytical.toFixed(3)}, tree=${model.weights.tree.toFixed(3)}, residual-neural=${model.weights.neural.toFixed(3)}, direct-neural=${(model.weights.directNeural ?? 0).toFixed(3)}`);
+  updateProgressImmediate(job, "done", 100, `Estimator Suite 학습 완료: samples=${model.metadata.samples}, train=${model.metadata.trainSamples}, recommended=${model.recommended}, blend=${model.blend?.mode ?? "linear-legacy"}, weights a=${model.weights.analytical.toFixed(3)}, tree=${model.weights.tree.toFixed(3)}, residual-neural=${model.weights.neural.toFixed(3)}, direct-neural=${(model.weights.directNeural ?? 0).toFixed(3)}`);
   await updateJobStatus(job, "succeeded", "Estimator Suite 학습 job 완료");
 }
 

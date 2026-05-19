@@ -9,9 +9,27 @@ import { energyMarkdown } from "@/lib/energy";
 import { validityMarkdown } from "@/lib/validity";
 import { fmt } from "@/lib/math";
 import { memoryTrafficFor } from "@/lib/memoryTraffic";
+import {
+  bestDesignRow,
+  bestDesignRowsByAxis,
+  bestRiskAdjustedDesignRow,
+  buildDesignSpaceRows,
+  buildDesignSpaceSvg,
+  exportValidationPlanCsv,
+  exportValidationPlanJson,
+  niceNumber,
+  paretoDesignRows,
+  validationPlanRows,
+  type DesignMetric,
+} from "@/lib/designSpace";
 import type { DownloadFn } from "./primitives";
 import { ActionButton, Artifact, FieldLabel, MarkdownView } from "./primitives";
-import { CsvArtifactTable, JobArtifactList, JobArtifactText, JobSourceNotice } from "./jobArtifacts";
+import {
+  CsvArtifactTable,
+  JobArtifactList,
+  JobArtifactText,
+  JobSourceNotice,
+} from "./jobArtifacts";
 
 export function Metric({
   title,
@@ -30,11 +48,31 @@ export function Metric({
     </div>
   );
 }
-export function Policy({ result, download, jobId, jobsPayload }: { result: any; download: DownloadFn; jobId?: string; jobsPayload?: any | null }) {
+export function Policy({
+  result,
+  download,
+  jobId,
+  jobsPayload,
+}: {
+  result: any;
+  download: DownloadFn;
+  jobId?: string;
+  jobsPayload?: any | null;
+}) {
   return (
     <>
-      <JobSourceNotice jobId={jobId ?? ""} jobsPayload={jobsPayload} tabName="타일 정책" />
-      {jobId && <CsvArtifactTable jobId={jobId} path="best_tile_policy.csv" title="선택 작업의 best_tile_policy.csv" />}
+      <JobSourceNotice
+        jobId={jobId ?? ""}
+        jobsPayload={jobsPayload}
+        tabName="타일 정책"
+      />
+      {jobId && (
+        <CsvArtifactTable
+          jobId={jobId}
+          path="best_tile_policy.csv"
+          title="선택 작업의 best_tile_policy.csv"
+        />
+      )}
       <ActionButton
         tip="최적 타일 정책 표를 CSV로 저장합니다."
         onClick={() =>
@@ -248,7 +286,9 @@ export function Energy({ result, jobId }: { result: any; jobId?: string }) {
         Fusion 후보
       </h3>
       <section title="연산 fusion 가능성 요약입니다.">
-        <MarkdownView text={fusionMarkdown(analyzeFusion(result.request.shapes))} />
+        <MarkdownView
+          text={fusionMarkdown(analyzeFusion(result.request.shapes))}
+        />
       </section>
       <h3 title="설정값과 결과가 말이 되는지 기본 검사를 수행합니다.">
         유효성 검사
@@ -316,11 +356,25 @@ export function ArraySweep({
     </>
   );
 }
-export function Iree({ result, download, jobId }: { result: any; download: DownloadFn; jobId?: string }) {
+export function Iree({
+  result,
+  download,
+  jobId,
+}: {
+  result: any;
+  download: DownloadFn;
+  jobId?: string;
+}) {
   return (
     <>
       <JobSourceNotice jobId={jobId ?? ""} tabName="IREE/MLIR" />
-      {jobId && <JobArtifactText jobId={jobId} path="generated.mlir" title="선택 작업의 generated.mlir" />}
+      {jobId && (
+        <JobArtifactText
+          jobId={jobId}
+          path="generated.mlir"
+          title="선택 작업의 generated.mlir"
+        />
+      )}
       <Artifact
         name="iree-command.sh"
         text={result.artifacts.ireeCommand}
@@ -339,10 +393,24 @@ export function Iree({ result, download, jobId }: { result: any; download: Downl
     </>
   );
 }
-export function Exports({ result, download, jobId, jobsPayload }: { result: any; download: DownloadFn; jobId?: string; jobsPayload?: any | null }) {
+export function Exports({
+  result,
+  download,
+  jobId,
+  jobsPayload,
+}: {
+  result: any;
+  download: DownloadFn;
+  jobId?: string;
+  jobsPayload?: any | null;
+}) {
   return (
     <>
-      <JobSourceNotice jobId={jobId ?? ""} jobsPayload={jobsPayload} tabName="내보내기" />
+      <JobSourceNotice
+        jobId={jobId ?? ""}
+        jobsPayload={jobsPayload}
+        tabName="내보내기"
+      />
       {jobId && <JobArtifactList jobId={jobId} jobsPayload={jobsPayload} />}
       <ActionButton
         tip="결과 artifact의 해시와 메타데이터를 담은 manifest를 저장합니다."
@@ -439,13 +507,26 @@ export function Exports({ result, download, jobId, jobsPayload }: { result: any;
   );
 }
 
-export function Graphs({ result, download, jobId, jobsPayload }: { result: any; download: DownloadFn; jobId?: string; jobsPayload?: any | null }) {
+export function Graphs({
+  result,
+  download,
+  jobId,
+  jobsPayload,
+  activeEstimatorSuite,
+}: {
+  result: any;
+  download: DownloadFn;
+  jobId?: string;
+  jobsPayload?: any | null;
+  activeEstimatorSuite?: any | null;
+}) {
   const [jobResult, setJobResult] = useState<any | null>(null);
   const [scaleSummary, setScaleSummary] = useState<any | null>(null);
   const [selectedOp, setSelectedOp] = useState(0);
   const [metric, setMetric] = useState("cycles");
   const [fullLayerMetric, setFullLayerMetric] = useState("cycles");
   const [graphMode, setGraphMode] = useState("fullLayer");
+  const [designMetric, setDesignMetric] = useState<DesignMetric>("score");
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -457,13 +538,20 @@ export function Graphs({ result, download, jobId, jobsPayload }: { result: any; 
       if (!jobId) return;
       try {
         const [r, sr] = await Promise.all([
-          fetch(`/api/jobs/${jobId}/artifact?path=${encodeURIComponent("result.json")}`, { cache: "no-store" }),
-          fetch(`/api/jobs/${jobId}/artifact?path=${encodeURIComponent("scalesim_summary.json")}`, { cache: "no-store" }),
+          fetch(
+            `/api/jobs/${jobId}/artifact?path=${encodeURIComponent("result.json")}`,
+            { cache: "no-store" },
+          ),
+          fetch(
+            `/api/jobs/${jobId}/artifact?path=${encodeURIComponent("scalesim_summary.json")}`,
+            { cache: "no-store" },
+          ),
         ]);
         if (!r.ok) throw new Error(await r.text());
         const text = await r.text();
         const parsed = JSON.parse(text);
-        if (!cancelled) setJobResult(parsed?.payload?.response ?? parsed?.response ?? parsed);
+        if (!cancelled)
+          setJobResult(parsed?.payload?.response ?? parsed?.response ?? parsed);
         if (sr.ok) {
           const st = await sr.text();
           if (!cancelled) setScaleSummary(JSON.parse(st));
@@ -473,7 +561,9 @@ export function Graphs({ result, download, jobId, jobsPayload }: { result: any; 
       }
     }
     void load();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [jobId]);
 
   const source = jobResult ?? result;
@@ -481,51 +571,192 @@ export function Graphs({ result, download, jobId, jobsPayload }: { result: any; 
   const opIndex = Math.min(selectedOp, Math.max(0, rows.length - 1));
   const op = rows[opIndex];
   const heat = Array.isArray(op?.heatmap) ? [...op.heatmap] : [];
-  const hw = source?.request?.hardware ?? result?.request?.hardware ?? { frequencyMHz: 700 };
+  const hw = source?.request?.hardware ??
+    result?.request?.hardware ?? { frequencyMHz: 700 };
   const shape = op?.shape ?? {};
   const dtype = Number(shape.dtypeBytes || hw.bytesPerElement || 2);
-  const tileKey = (p: any) => `${Number(p.tileM)}x${Number(p.tileN)}x${Number(p.tileK)}`;
-  const externalCandidates = Array.isArray(scaleSummary?.candidateLayers) ? scaleSummary.candidateLayers : [];
+  const tileKey = (p: any) =>
+    `${Number(p.tileM)}x${Number(p.tileN)}x${Number(p.tileK)}`;
+  const externalCandidates = Array.isArray(scaleSummary?.candidateLayers)
+    ? scaleSummary.candidateLayers
+    : [];
   const mainActual = scaleSummary?.layers?.[opIndex];
+  void mainActual;
+  const designRows = useMemo(
+    () => buildDesignSpaceRows(source, activeEstimatorSuite),
+    [source, activeEstimatorSuite?.runId],
+  );
+  const designSvg = useMemo(
+    () => buildDesignSpaceSvg(designRows, designMetric),
+    [designRows, designMetric],
+  );
+  const designBest = useMemo(() => bestDesignRow(designRows), [designRows]);
+  const designPareto = useMemo(
+    () => paretoDesignRows(designRows),
+    [designRows],
+  );
+  const designRiskBest = useMemo(
+    () => bestRiskAdjustedDesignRow(designRows),
+    [designRows],
+  );
+  const designValidationPlan = useMemo(
+    () => validationPlanRows(designRows, 5),
+    [designRows],
+  );
+  const designValidationRows = designValidationPlan.map((item) => item.row);
+  const bestByAxis = useMemo(
+    () => bestDesignRowsByAxis(designRows),
+    [designRows],
+  );
 
-  const normalizeOpName = (name: string) => String(name || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
-  const scaleLayers = Array.isArray(scaleSummary?.layers) ? scaleSummary.layers : [];
+  const normalizeOpName = (name: string) =>
+    String(name || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "");
+  const scaleLayers = Array.isArray(scaleSummary?.layers)
+    ? scaleSummary.layers
+    : [];
   const matchScaleLayer = (row: any) => {
     const opName = normalizeOpName(row?.shape?.opName);
-    const modelOp = normalizeOpName(`${row?.shape?.model || ""}${row?.shape?.opName || ""}`);
+    const modelOp = normalizeOpName(
+      `${row?.shape?.model || ""}${row?.shape?.opName || ""}`,
+    );
     return scaleLayers.find((l: any) => {
       const ln = normalizeOpName(l?.name);
-      return ln === opName || ln === modelOp || ln.includes(opName) || opName.includes(ln);
+      return (
+        ln === opName ||
+        ln === modelOp ||
+        ln.includes(opName) ||
+        opName.includes(ln)
+      );
     });
   };
   const fullLayerRows = rows.map((r: any) => {
     const actual = matchScaleLayer(r);
     const predicted = Number(r?.best?.cycles) || 0;
     const actualCycles = Number(actual?.cycles) || 0;
-    const errPct = predicted > 0 && actualCycles > 0 ? ((actualCycles - predicted) / predicted) * 100 : undefined;
+    const errPct =
+      predicted > 0 && actualCycles > 0
+        ? ((actualCycles - predicted) / predicted) * 100
+        : undefined;
     return { row: r, predicted, actual, actualCycles, errPct };
   });
   const hasFullLayerActual = fullLayerRows.some((r: any) => r.actualCycles > 0);
 
-  const bestMemoryTrafficFor = (row: any) => memoryTrafficFor(
-    { ...(hw as any), bytesPerElement: Number(row?.shape?.dtypeBytes || hw.bytesPerElement || 2) },
-    { ...(row?.shape as any), dtypeBytes: Number(row?.shape?.dtypeBytes || hw.bytesPerElement || 2) },
-    row?.best ?? {},
-  );
-  const layerAccessKiB = (layer: any, key: "sramAccesses" | "dramAccesses", row: any) => {
+  const bestMemoryTrafficFor = (row: any) =>
+    memoryTrafficFor(
+      {
+        ...(hw as any),
+        bytesPerElement: Number(
+          row?.shape?.dtypeBytes || hw.bytesPerElement || 2,
+        ),
+      },
+      {
+        ...(row?.shape as any),
+        dtypeBytes: Number(row?.shape?.dtypeBytes || hw.bytesPerElement || 2),
+      },
+      row?.best ?? {},
+    );
+  const layerAccessKiB = (
+    layer: any,
+    key: "sramAccesses" | "dramAccesses",
+    row: any,
+  ) => {
     const accesses = Number(layer?.[key]);
     const bytes = Number(row?.shape?.dtypeBytes || hw.bytesPerElement || 2);
-    return Number.isFinite(accesses) && accesses > 0 ? accesses * bytes / 1024 : undefined;
+    return Number.isFinite(accesses) && accesses > 0
+      ? (accesses * bytes) / 1024
+      : undefined;
   };
-  const fullLayerMetricInfo: Record<string, { label: string; unit: string; predicted: (r: any) => number | undefined; actual: (r: any) => number | undefined; format: (v: number) => string; note: string }> = {
-    cycles: { label: "Cycle", unit: "cyc", predicted: (r) => r.predicted, actual: (r) => r.actualCycles, format: (v) => Math.round(v).toLocaleString(), note: "COMPUTE_REPORT.csv의 layer cycle과 TileForge learned estimator cycle을 비교합니다." },
-    timeUs: { label: "실행 시간", unit: "us", predicted: (r) => r.predicted / Math.max(1, Number(hw.frequencyMHz || 700)), actual: (r) => r.actualCycles > 0 ? r.actualCycles / Math.max(1, Number(hw.frequencyMHz || 700)) : undefined, format: (v) => v.toFixed(3), note: "cycle을 현재 주파수로 나눈 시간입니다." },
-    utilization: { label: "PE 사용률", unit: "%", predicted: (r) => (Number(r.row?.best?.utilization) || 0) * 100, actual: (r) => Number(r.actual?.overallUtil ?? r.actual?.computeUtil), format: (v) => `${v.toFixed(1)}%`, note: "SCALE-Sim Overall Util/Compute Util과 TileForge 사용률을 비교합니다." },
-    mapping: { label: "Mapping efficiency", unit: "%", predicted: () => undefined, actual: (r) => Number(r.actual?.mappingEfficiency), format: (v) => `${v.toFixed(1)}%`, note: "SCALE-Sim 전용 지표입니다. estimator의 직접 대응값이 없어 actual만 표시합니다." },
-    stall: { label: "Stall cycles", unit: "cyc", predicted: () => undefined, actual: (r) => Number(r.actual?.stallCycles), format: (v) => Math.round(v).toLocaleString(), note: "SCALE-Sim 전용 stall cycle입니다. estimator의 직접 대응값이 없어 actual만 표시합니다." },
-    sramAccess: { label: "SRAM access", unit: "KiB", predicted: (r) => { const lm = Number(r.row?.best?.learnedMetrics?.sramBytes); if (Number.isFinite(lm) && lm > 0) return lm / 1024; const m = bestMemoryTrafficFor(r.row); return (m.sramReadBytes + m.sramWriteBytes) / 1024; }, actual: (r) => layerAccessKiB(r.actual, "sramAccesses", r.row), format: (v) => `${v.toFixed(1)} KiB`, note: "가능하면 multi-target learned SRAM을, 없으면 memoryTraffic 추정값을 SCALE-Sim access와 비교합니다." },
-    dramAccess: { label: "DRAM access", unit: "KiB", predicted: (r) => { const lm = Number(r.row?.best?.learnedMetrics?.dramBytes); if (Number.isFinite(lm) && lm > 0) return lm / 1024; const m = bestMemoryTrafficFor(r.row); return (m.dramReadBytes + m.dramWriteBytes) / 1024; }, actual: (r) => layerAccessKiB(r.actual, "dramAccesses", r.row), format: (v) => `${v.toFixed(1)} KiB`, note: "가능하면 multi-target learned DRAM을, 없으면 memoryTraffic 추정값을 SCALE-Sim access와 비교합니다." },
-    sramFootprint: { label: "SRAM footprint", unit: "KiB", predicted: (r) => Number(r.row?.best?.sramBytes || 0) / 1024, actual: () => undefined, format: (v) => `${v.toFixed(1)} KiB`, note: "TileForge working-set footprint입니다. SCALE-Sim access와 다른 물리량이라 actual은 표시하지 않습니다." },
+  const fullLayerMetricInfo: Record<
+    string,
+    {
+      label: string;
+      unit: string;
+      predicted: (r: any) => number | undefined;
+      actual: (r: any) => number | undefined;
+      format: (v: number) => string;
+      note: string;
+    }
+  > = {
+    cycles: {
+      label: "Cycle",
+      unit: "cyc",
+      predicted: (r) => r.predicted,
+      actual: (r) => r.actualCycles,
+      format: (v) => Math.round(v).toLocaleString(),
+      note: "COMPUTE_REPORT.csv의 layer cycle과 TileForge learned estimator cycle을 비교합니다.",
+    },
+    timeUs: {
+      label: "실행 시간",
+      unit: "us",
+      predicted: (r) =>
+        r.predicted / Math.max(1, Number(hw.frequencyMHz || 700)),
+      actual: (r) =>
+        r.actualCycles > 0
+          ? r.actualCycles / Math.max(1, Number(hw.frequencyMHz || 700))
+          : undefined,
+      format: (v) => v.toFixed(3),
+      note: "cycle을 현재 주파수로 나눈 시간입니다.",
+    },
+    utilization: {
+      label: "PE 사용률",
+      unit: "%",
+      predicted: (r) => (Number(r.row?.best?.utilization) || 0) * 100,
+      actual: (r) => Number(r.actual?.overallUtil ?? r.actual?.computeUtil),
+      format: (v) => `${v.toFixed(1)}%`,
+      note: "SCALE-Sim Overall Util/Compute Util과 TileForge 사용률을 비교합니다.",
+    },
+    mapping: {
+      label: "Mapping efficiency",
+      unit: "%",
+      predicted: () => undefined,
+      actual: (r) => Number(r.actual?.mappingEfficiency),
+      format: (v) => `${v.toFixed(1)}%`,
+      note: "SCALE-Sim 전용 지표입니다. estimator의 직접 대응값이 없어 actual만 표시합니다.",
+    },
+    stall: {
+      label: "Stall cycles",
+      unit: "cyc",
+      predicted: () => undefined,
+      actual: (r) => Number(r.actual?.stallCycles),
+      format: (v) => Math.round(v).toLocaleString(),
+      note: "SCALE-Sim 전용 stall cycle입니다. estimator의 직접 대응값이 없어 actual만 표시합니다.",
+    },
+    sramAccess: {
+      label: "SRAM access",
+      unit: "KiB",
+      predicted: (r) => {
+        const lm = Number(r.row?.best?.learnedMetrics?.sramBytes);
+        if (Number.isFinite(lm) && lm > 0) return lm / 1024;
+        const m = bestMemoryTrafficFor(r.row);
+        return (m.sramReadBytes + m.sramWriteBytes) / 1024;
+      },
+      actual: (r) => layerAccessKiB(r.actual, "sramAccesses", r.row),
+      format: (v) => `${v.toFixed(1)} KiB`,
+      note: "가능하면 multi-target learned SRAM을, 없으면 memoryTraffic 추정값을 SCALE-Sim access와 비교합니다.",
+    },
+    dramAccess: {
+      label: "DRAM access",
+      unit: "KiB",
+      predicted: (r) => {
+        const lm = Number(r.row?.best?.learnedMetrics?.dramBytes);
+        if (Number.isFinite(lm) && lm > 0) return lm / 1024;
+        const m = bestMemoryTrafficFor(r.row);
+        return (m.dramReadBytes + m.dramWriteBytes) / 1024;
+      },
+      actual: (r) => layerAccessKiB(r.actual, "dramAccesses", r.row),
+      format: (v) => `${v.toFixed(1)} KiB`,
+      note: "가능하면 multi-target learned DRAM을, 없으면 memoryTraffic 추정값을 SCALE-Sim access와 비교합니다.",
+    },
+    sramFootprint: {
+      label: "SRAM footprint",
+      unit: "KiB",
+      predicted: (r) => Number(r.row?.best?.sramBytes || 0) / 1024,
+      actual: () => undefined,
+      format: (v) => `${v.toFixed(1)} KiB`,
+      note: "TileForge working-set footprint입니다. SCALE-Sim access와 다른 물리량이라 actual은 표시하지 않습니다.",
+    },
   };
 
   const candidateActualByTile = new Map<string, any>();
@@ -537,20 +768,27 @@ export function Graphs({ result, download, jobId, jobsPayload }: { result: any; 
     // full-layer TileForge estimates with micro-run access/cycle counters.
     const isFullLayerCandidate = !c.tileCount && !c.tileExtrapolatedCycles;
     if (!isFullLayerCandidate) continue;
-    if ((c.shapeId && c.shapeId === shape.id) || (!c.shapeId && c.opName === shape.opName)) {
+    if (
+      (c.shapeId && c.shapeId === shape.id) ||
+      (!c.shapeId && c.opName === shape.opName)
+    ) {
       candidateActualByTile.set(tileKey(c), c);
     }
   }
-  const actualFor = (p: any, _index: number) => candidateActualByTile.get(tileKey(p));
+  const actualFor = (p: any, _index: number) =>
+    candidateActualByTile.get(tileKey(p));
   const actualAccessKiB = (a: any, key: "sramAccesses" | "dramAccesses") => {
     const accesses = Number(a?.[key]);
-    return Number.isFinite(accesses) && accesses > 0 ? accesses * dtype / 1024 : undefined;
+    return Number.isFinite(accesses) && accesses > 0
+      ? (accesses * dtype) / 1024
+      : undefined;
   };
-  const memoryFor = (p: any) => memoryTrafficFor(
-    { ...(hw as any), bytesPerElement: dtype },
-    { ...(shape as any), dtypeBytes: dtype },
-    p,
-  );
+  const memoryFor = (p: any) =>
+    memoryTrafficFor(
+      { ...(hw as any), bytesPerElement: dtype },
+      { ...(shape as any), dtypeBytes: dtype },
+      p,
+    );
   const estimatedSramAccessKiB = (p: any) => {
     const m = memoryFor(p);
     return (m.sramReadBytes + m.sramWriteBytes) / 1024;
@@ -559,22 +797,115 @@ export function Graphs({ result, download, jobId, jobsPayload }: { result: any; 
     const m = memoryFor(p);
     return (m.dramReadBytes + m.dramWriteBytes) / 1024;
   };
-  const metricInfo: Record<string, { label: string; unit: string; lowerBetter: boolean; value: (p: any) => number; actualValue?: (a: any) => number | undefined; format: (v: number) => string; description: string }> = {
-    cycles: { label: "Cycle", unit: "cyc", lowerBetter: true, value: (p) => Number(p.cycles) || 0, actualValue: (a) => Number(a?.cycles) || undefined, format: (v) => Math.round(v).toLocaleString(), description: "TileForge learned/analytical estimator cycle입니다. 주황색 actual은 같은 tile 후보를 full-layer로 검증한 경우에만 표시합니다." },
-    timeUs: { label: "실행 시간", unit: "us", lowerBetter: true, value: (p) => (Number(p.cycles) || 0) / Math.max(1, Number(hw.frequencyMHz || 700)), actualValue: (a) => Number(a?.cycles) ? Number(a.cycles) / Math.max(1, Number(hw.frequencyMHz || 700)) : undefined, format: (v) => v.toFixed(3), description: "cycle을 주파수로 나눈 예상/실제 실행 시간입니다." },
-    utilization: { label: "PE 사용률", unit: "%", lowerBetter: false, value: (p) => (Number(p.utilization) || 0) * 100, actualValue: (a) => Number(a?.overallUtil ?? a?.computeUtil) || undefined, format: (v) => `${v.toFixed(1)}%`, description: "예측 PE 사용률입니다. SCALE-Sim actual은 같은 tile 후보를 full-layer로 검증한 경우에만 표시합니다." },
-    padding: { label: "패딩 비율", unit: "%", lowerBetter: true, value: (p) => (Number(p.paddingRatio) || 0) * 100, format: (v) => `${v.toFixed(1)}%`, description: "타일 경계에서 낭비되는 계산 비율입니다. SCALE-Sim에는 직접 대응되는 단일 지표가 없습니다." },
-    sramFootprint: { label: "SRAM footprint", unit: "KiB", lowerBetter: true, value: (p) => (Number(p.sramBytes) || 0) / 1024, format: (v) => `${v.toFixed(1)} KiB`, description: "타일이 동시에 요구하는 로컬 SRAM 작업 영역입니다. access 총량과는 다른 물리량이므로 SCALE-Sim 막대를 표시하지 않습니다." },
-    sram: { label: "SRAM accesses", unit: "KiB", lowerBetter: true, value: estimatedSramAccessKiB, actualValue: (a) => actualAccessKiB(a, "sramAccesses"), format: (v) => `${v.toFixed(1)} KiB`, description: "파란색은 TileForge 추정 SRAM read/write traffic입니다. SCALE-Sim micro-run access와 직접 비교하지 않습니다." },
-    dram: { label: "DRAM accesses", unit: "KiB", lowerBetter: true, value: estimatedDramAccessKiB, actualValue: (a) => actualAccessKiB(a, "dramAccesses"), format: (v) => `${v.toFixed(1)} KiB`, description: "파란색은 TileForge 추정 DRAM read/write traffic입니다. SCALE-Sim micro-run access와 직접 비교하지 않습니다." },
-    score: { label: "종합 점수", unit: "score", lowerBetter: true, value: (p) => Number(p.score ?? p.cycles) || 0, format: (v) => v.toFixed(3), description: "objective에 따른 내부 ranking 점수입니다. 외부 도구의 직접 대응값은 없습니다." },
+  const metricInfo: Record<
+    string,
+    {
+      label: string;
+      unit: string;
+      lowerBetter: boolean;
+      value: (p: any) => number;
+      actualValue?: (a: any) => number | undefined;
+      format: (v: number) => string;
+      description: string;
+    }
+  > = {
+    cycles: {
+      label: "Cycle",
+      unit: "cyc",
+      lowerBetter: true,
+      value: (p) => Number(p.cycles) || 0,
+      actualValue: (a) => Number(a?.cycles) || undefined,
+      format: (v) => Math.round(v).toLocaleString(),
+      description:
+        "TileForge learned/analytical estimator cycle입니다. 주황색 actual은 같은 tile 후보를 full-layer로 검증한 경우에만 표시합니다.",
+    },
+    timeUs: {
+      label: "실행 시간",
+      unit: "us",
+      lowerBetter: true,
+      value: (p) =>
+        (Number(p.cycles) || 0) / Math.max(1, Number(hw.frequencyMHz || 700)),
+      actualValue: (a) =>
+        Number(a?.cycles)
+          ? Number(a.cycles) / Math.max(1, Number(hw.frequencyMHz || 700))
+          : undefined,
+      format: (v) => v.toFixed(3),
+      description: "cycle을 주파수로 나눈 예상/실제 실행 시간입니다.",
+    },
+    utilization: {
+      label: "PE 사용률",
+      unit: "%",
+      lowerBetter: false,
+      value: (p) => (Number(p.utilization) || 0) * 100,
+      actualValue: (a) => Number(a?.overallUtil ?? a?.computeUtil) || undefined,
+      format: (v) => `${v.toFixed(1)}%`,
+      description:
+        "예측 PE 사용률입니다. SCALE-Sim actual은 같은 tile 후보를 full-layer로 검증한 경우에만 표시합니다.",
+    },
+    padding: {
+      label: "패딩 비율",
+      unit: "%",
+      lowerBetter: true,
+      value: (p) => (Number(p.paddingRatio) || 0) * 100,
+      format: (v) => `${v.toFixed(1)}%`,
+      description:
+        "타일 경계에서 낭비되는 계산 비율입니다. SCALE-Sim에는 직접 대응되는 단일 지표가 없습니다.",
+    },
+    sramFootprint: {
+      label: "SRAM footprint",
+      unit: "KiB",
+      lowerBetter: true,
+      value: (p) => (Number(p.sramBytes) || 0) / 1024,
+      format: (v) => `${v.toFixed(1)} KiB`,
+      description:
+        "타일이 동시에 요구하는 로컬 SRAM 작업 영역입니다. access 총량과는 다른 물리량이므로 SCALE-Sim 막대를 표시하지 않습니다.",
+    },
+    sram: {
+      label: "SRAM accesses",
+      unit: "KiB",
+      lowerBetter: true,
+      value: estimatedSramAccessKiB,
+      actualValue: (a) => actualAccessKiB(a, "sramAccesses"),
+      format: (v) => `${v.toFixed(1)} KiB`,
+      description:
+        "파란색은 TileForge 추정 SRAM read/write traffic입니다. SCALE-Sim micro-run access와 직접 비교하지 않습니다.",
+    },
+    dram: {
+      label: "DRAM accesses",
+      unit: "KiB",
+      lowerBetter: true,
+      value: estimatedDramAccessKiB,
+      actualValue: (a) => actualAccessKiB(a, "dramAccesses"),
+      format: (v) => `${v.toFixed(1)} KiB`,
+      description:
+        "파란색은 TileForge 추정 DRAM read/write traffic입니다. SCALE-Sim micro-run access와 직접 비교하지 않습니다.",
+    },
+    score: {
+      label: "종합 점수",
+      unit: "score",
+      lowerBetter: true,
+      value: (p) => Number(p.score ?? p.cycles) || 0,
+      format: (v) => v.toFixed(3),
+      description:
+        "objective에 따른 내부 ranking 점수입니다. 외부 도구의 직접 대응값은 없습니다.",
+    },
   };
   const info = metricInfo[metric] ?? metricInfo.cycles;
-  const sorted = heat.sort((a: any, b: any) => info.lowerBetter ? info.value(a) - info.value(b) : info.value(b) - info.value(a));
+  const sorted = heat.sort((a: any, b: any) =>
+    info.lowerBetter
+      ? info.value(a) - info.value(b)
+      : info.value(b) - info.value(a),
+  );
   const top = sorted.slice(0, 24);
-  const actualMetricValues = top.map((p: any, i: number) => info.actualValue?.(actualFor(p, i))).map((v) => Number.isFinite(v) && v! > 0 ? v : undefined);
+  const actualMetricValues = top
+    .map((p: any, i: number) => info.actualValue?.(actualFor(p, i)))
+    .map((v) => (Number.isFinite(v) && v! > 0 ? v : undefined));
   const hasActualMetric = actualMetricValues.some((v) => v !== undefined);
-  const maxValue = Math.max(1e-9, ...actualMetricValues.map((v) => v ? Math.abs(v) : 0), ...top.map((p: any) => Math.abs(info.value(p)) || 0));
+  const maxValue = Math.max(
+    1e-9,
+    ...actualMetricValues.map((v) => (v ? Math.abs(v) : 0)),
+    ...top.map((p: any) => Math.abs(info.value(p)) || 0),
+  );
   const best = top[0];
   const svgWidth = 980;
   const rowH = hasActualMetric ? 34 : 26;
@@ -584,35 +915,69 @@ export function Graphs({ result, download, jobId, jobsPayload }: { result: any; 
   <rect width="100%" height="100%" fill="#0b1020"/>
   <text x="20" y="30" fill="#eaf0ff" font-family="Arial" font-size="18">${safeTitle}</text>
   <text x="20" y="52" fill="#9fb0d0" font-family="Arial" font-size="12">${info.description}</text>
-  ${top.map((p: any, i: number) => {
-    const y = 80 + i * rowH;
-    const v = info.value(p);
-    const w = Math.max(2, Math.round((Math.abs(v) / maxValue) * 600));
-    const label = `${p.tileM}x${p.tileN}x${p.tileK}`;
-    const actualMetricValue = actualMetricValues[i];
-    const actualW = actualMetricValue ? Math.max(2, Math.round((Math.abs(actualMetricValue) / maxValue) * 600)) : 0;
-    const actualPart = actualW ? `<rect x="170" y="${y + 17}" width="${actualW}" height="6" rx="3" fill="#ffb86b"/><text x="${180 + actualW}" y="${y + 23}" fill="#ffdfb0" font-family="Consolas, monospace" font-size="10">SCALE-Sim ${info.format(actualMetricValue!)}</text>` : "";
-    return `<text x="20" y="${y + 15}" fill="#cfe0ff" font-family="Consolas, monospace" font-size="12">${label}</text><rect x="170" y="${y}" width="${w}" height="16" rx="4" fill="#8db3ff"/><text x="${180 + w}" y="${y + 13}" fill="#eaf0ff" font-family="Consolas, monospace" font-size="12">예측 ${info.format(v)} · util ${((Number(p.utilization) || 0) * 100).toFixed(1)}% · SRAM ${((Number(p.sramBytes)||0)/1024).toFixed(1)} KiB</text>${actualPart}`;
-  }).join("\n  ")}
+  ${top
+    .map((p: any, i: number) => {
+      const y = 80 + i * rowH;
+      const v = info.value(p);
+      const w = Math.max(2, Math.round((Math.abs(v) / maxValue) * 600));
+      const label = `${p.tileM}x${p.tileN}x${p.tileK}`;
+      const actualMetricValue = actualMetricValues[i];
+      const actualW = actualMetricValue
+        ? Math.max(
+            2,
+            Math.round((Math.abs(actualMetricValue) / maxValue) * 600),
+          )
+        : 0;
+      const actualPart = actualW
+        ? `<rect x="170" y="${y + 17}" width="${actualW}" height="6" rx="3" fill="#ffb86b"/><text x="${180 + actualW}" y="${y + 23}" fill="#ffdfb0" font-family="Consolas, monospace" font-size="10">SCALE-Sim ${info.format(actualMetricValue!)}</text>`
+        : "";
+      return `<text x="20" y="${y + 15}" fill="#cfe0ff" font-family="Consolas, monospace" font-size="12">${label}</text><rect x="170" y="${y}" width="${w}" height="16" rx="4" fill="#8db3ff"/><text x="${180 + w}" y="${y + 13}" fill="#eaf0ff" font-family="Consolas, monospace" font-size="12">예측 ${info.format(v)} · util ${((Number(p.utilization) || 0) * 100).toFixed(1)}% · SRAM ${((Number(p.sramBytes) || 0) / 1024).toFixed(1)} KiB</text>${actualPart}`;
+    })
+    .join("\n  ")}
 </svg>`;
 
-  const fullInfo = fullLayerMetricInfo[fullLayerMetric] ?? fullLayerMetricInfo.cycles;
-  const fullLayerPredVals = fullLayerRows.map((r: any) => fullInfo.predicted(r)).map((v: number | undefined) => Number.isFinite(v) && v! >= 0 ? v : undefined);
-  const fullLayerActualVals = fullLayerRows.map((r: any) => fullInfo.actual(r)).map((v: number | undefined) => Number.isFinite(v) && v! >= 0 ? v : undefined);
-  const fullLayerMax = Math.max(1, ...fullLayerPredVals.map((v: number | undefined) => v ?? 0), ...fullLayerActualVals.map((v: number | undefined) => v ?? 0));
+  const fullInfo =
+    fullLayerMetricInfo[fullLayerMetric] ?? fullLayerMetricInfo.cycles;
+  const fullLayerPredVals = fullLayerRows
+    .map((r: any) => fullInfo.predicted(r))
+    .map((v: number | undefined) =>
+      Number.isFinite(v) && v! >= 0 ? v : undefined,
+    );
+  const fullLayerActualVals = fullLayerRows
+    .map((r: any) => fullInfo.actual(r))
+    .map((v: number | undefined) =>
+      Number.isFinite(v) && v! >= 0 ? v : undefined,
+    );
+  const fullLayerMax = Math.max(
+    1,
+    ...fullLayerPredVals.map((v: number | undefined) => v ?? 0),
+    ...fullLayerActualVals.map((v: number | undefined) => v ?? 0),
+  );
   const fullLayerSvgHeight = 96 + Math.max(1, fullLayerRows.length) * 52;
   const fullLayerSvgRows = fullLayerRows.map((r: any, i: number) => {
     const y = 98 + i * 52;
     const label = `${r.row?.shape?.model || ""}.${r.row?.shape?.opName || "op"}`;
     const predictedValue = fullLayerPredVals[i];
     const actualValue = fullLayerActualVals[i];
-    const pw = predictedValue !== undefined ? Math.max(2, Math.round((predictedValue / fullLayerMax) * 540)) : 0;
-    const aw = actualValue !== undefined ? Math.max(2, Math.round((actualValue / fullLayerMax) * 540)) : 0;
+    const pw =
+      predictedValue !== undefined
+        ? Math.max(2, Math.round((predictedValue / fullLayerMax) * 540))
+        : 0;
+    const aw =
+      actualValue !== undefined
+        ? Math.max(2, Math.round((actualValue / fullLayerMax) * 540))
+        : 0;
     const pred = pw
       ? `<rect x="250" y="${y}" width="${pw}" height="12" rx="4" fill="#8db3ff"/><text x="${260 + pw}" y="${y + 10}" fill="#eaf0ff" font-family="Consolas, monospace" font-size="11">예측 ${fullInfo.format(predictedValue!)}</text>`
       : `<text x="250" y="${y + 10}" fill="#8db3ff" font-family="Consolas, monospace" font-size="11">예측값 없음</text>`;
-    const errPct = predictedValue && actualValue ? ((actualValue - predictedValue) / predictedValue) * 100 : undefined;
-    const errText = errPct !== undefined ? ` (${errPct >= 0 ? "+" : ""}${errPct.toFixed(1)}%)` : "";
+    const errPct =
+      predictedValue && actualValue
+        ? ((actualValue - predictedValue) / predictedValue) * 100
+        : undefined;
+    const errText =
+      errPct !== undefined
+        ? ` (${errPct >= 0 ? "+" : ""}${errPct.toFixed(1)}%)`
+        : "";
     const actual = aw
       ? `<rect x="250" y="${y + 21}" width="${aw}" height="10" rx="4" fill="#ffb86b"/><text x="${260 + aw}" y="${y + 30}" fill="#ffdfb0" font-family="Consolas, monospace" font-size="11">SCALE-Sim ${fullInfo.format(actualValue!)}${errText}</text>`
       : `<text x="250" y="${y + 30}" fill="#ffdfb0" font-family="Consolas, monospace" font-size="11">SCALE-Sim 값 없음</text>`;
@@ -628,21 +993,40 @@ export function Graphs({ result, download, jobId, jobsPayload }: { result: any; 
 
   return (
     <section className="graphs-panel">
-      <JobSourceNotice jobId={jobId ?? ""} jobsPayload={jobsPayload} tabName="그래프" />
+      <JobSourceNotice
+        jobId={jobId ?? ""}
+        jobsPayload={jobsPayload}
+        tabName="그래프"
+      />
       <h3>그래프</h3>
-      <p className="small">full-pipeline SCALE-Sim 결과가 있으면 기본적으로 op별 실제 layer cycle과 비교합니다. tile 후보 그래프는 실제 full-layer 후보 검증이 있을 때만 actual 막대를 표시합니다.</p>
+      <p className="small">
+        full-pipeline SCALE-Sim 결과가 있으면 기본적으로 op별 실제 layer cycle과
+        비교합니다. tile 후보 그래프는 실제 full-layer 후보 검증이 있을 때만
+        actual 막대를 표시합니다.
+      </p>
       <div className="row graph-controls">
         <div>
-          <FieldLabel tip="full-layer 실제 SCALE-Sim layer cycle과 비교하거나, tile 후보 내부 ranking을 확인합니다.">그래프 모드</FieldLabel>
-          <select value={graphMode} onChange={(e) => setGraphMode(e.target.value)}>
+          <FieldLabel tip="full-layer 실제 SCALE-Sim layer cycle과 비교하거나, tile 후보 내부 ranking을 확인합니다.">
+            그래프 모드
+          </FieldLabel>
+          <select
+            value={graphMode}
+            onChange={(e) => setGraphMode(e.target.value)}
+          >
             <option value="fullLayer">Full-layer SCALE-Sim 비교</option>
             <option value="candidates">Tile 후보 ranking</option>
+            <option value="designSpace">Design-space sweet spot</option>
           </select>
         </div>
         {graphMode === "fullLayer" && (
           <div>
-            <FieldLabel tip="SCALE-Sim full-layer 결과와 비교할 지표입니다. cycle 외에도 utilization, SRAM/DRAM access, mapping efficiency, stall cycle을 확인할 수 있습니다.">비교 지표</FieldLabel>
-            <select value={fullLayerMetric} onChange={(e) => setFullLayerMetric(e.target.value)}>
+            <FieldLabel tip="SCALE-Sim full-layer 결과와 비교할 지표입니다. cycle 외에도 utilization, SRAM/DRAM access, mapping efficiency, stall cycle을 확인할 수 있습니다.">
+              비교 지표
+            </FieldLabel>
+            <select
+              value={fullLayerMetric}
+              onChange={(e) => setFullLayerMetric(e.target.value)}
+            >
               <option value="cycles">Cycle</option>
               <option value="timeUs">실행 시간</option>
               <option value="utilization">PE 사용률</option>
@@ -654,75 +1038,463 @@ export function Graphs({ result, download, jobId, jobsPayload }: { result: any; 
             </select>
           </div>
         )}
+        {graphMode === "designSpace" && (
+          <div>
+            <FieldLabel tip="하드웨어/워크로드 sweep 그래프의 y축 지표입니다. score는 정규화된 속도 향상, 활용률, 비용 증가를 함께 고려합니다.">
+              Design 지표
+            </FieldLabel>
+            <select
+              value={designMetric}
+              onChange={(e) => setDesignMetric(e.target.value as any)}
+            >
+              <option value="score">Sweet-spot score</option>
+              <option value="speedup">Speedup</option>
+              <option value="throughput">Throughput</option>
+            </select>
+          </div>
+        )}
       </div>
-      {graphMode === "fullLayer" && !hasFullLayerActual && <p className="small warn">선택 작업에 full-layer SCALE-Sim layer 결과가 없어 실제 비교 그래프를 만들 수 없습니다. full-pipeline 작업 완료 후 다시 확인하세요.</p>}
-      {graphMode === "fullLayer" && hasFullLayerActual && (
+
+      {graphMode === "designSpace" && (
         <>
-          <div className="graph-actions"><ActionButton tip="full-layer 비교 그래프를 SVG로 다운로드합니다." onClick={() => download(`full-layer-scalesim-comparison.svg`, fullLayerSvg, "image/svg+xml")}>Full-layer 지표 비교 SVG 다운로드</ActionButton></div>
-          <div className="chart-scroll"><div className="chart-svg" dangerouslySetInnerHTML={{ __html: fullLayerSvg }} /></div>
-          <h3>Full-layer op별 {fullInfo.label} 비교</h3>
-          <table className="compact-table"><thead><tr><th>연산</th><th>TileForge 예측</th><th>SCALE-Sim 실제</th><th>오차</th></tr></thead><tbody>{fullLayerRows.map((r: any, i: number) => {
-            const pv = fullLayerPredVals[i];
-            const av = fullLayerActualVals[i];
-            const err = pv && av ? ((av - pv) / pv) * 100 : undefined;
-            return <tr key={i}><td>{r.row?.shape?.model}.{r.row?.shape?.opName}</td><td>{pv !== undefined ? fullInfo.format(pv) : "-"}</td><td>{av !== undefined ? fullInfo.format(av) : "-"}</td><td>{err !== undefined ? `${err >= 0 ? "+" : ""}${err.toFixed(1)}%` : "-"}</td></tr>;
-          })}</tbody></table>
+          <p className="small">
+            TPU 배열/클럭/SRAM/DRAM bandwidth를 변화시키는 하드웨어 축과, 고정
+            하드웨어에서 M/N/K를 변화시키는 워크로드 축을 같은 기준으로
+            그립니다. M/N/K 축은 총 cycle이 아니라 ops/cycle 기준으로
+            정규화합니다. 추천값은 consensus, ROI, 예측 confidence에 더해
+            uncertainty/risk를 함께 봐서 비싼 확장이나 학습 범위 밖
+            extrapolation만 계속 선택되는 문제를 줄입니다. 활성 Estimator
+            Suite가 있으면 ensemble 보정 결과로 sweep합니다.
+          </p>
+          <div className="graph-actions">
+            <ActionButton
+              tip="하드웨어/워크로드 sweet-spot 그래프를 SVG로 다운로드합니다."
+              onClick={() =>
+                download(
+                  "design-space-sweet-spots.svg",
+                  designSvg,
+                  "image/svg+xml",
+                )
+              }
+            >
+              Design-space SVG 다운로드
+            </ActionButton>
+            <ActionButton
+              tip="다음 SCALE-Sim 검증 추천 후보를 CSV로 저장합니다. 이 후보를 검증한 뒤 training CSV에 추가하면 estimator 재보정에 바로 사용할 수 있습니다."
+              onClick={() =>
+                download(
+                  "design-space-validation-plan.csv",
+                  exportValidationPlanCsv(designRows, 5),
+                  "text/csv",
+                )
+              }
+            >
+              검증 후보 CSV 다운로드
+            </ActionButton>
+            <ActionButton
+              tip="검증 후보와 선정 이유를 JSON으로 저장합니다. 자동화 스크립트에서 읽기 쉽도록 rank, factor, uncertainty, rationale을 포함합니다."
+              onClick={() =>
+                download(
+                  "design-space-validation-plan.json",
+                  exportValidationPlanJson(designRows, 5),
+                  "application/json",
+                )
+              }
+            >
+              검증 후보 JSON 다운로드
+            </ActionButton>
+          </div>
+          {designBest && (
+            <div className="cards graph-summary-cards">
+              <Metric
+                title="전체 최상위 sweet spot"
+                value={`${designBest.label}`}
+                tip="speedup·throughput·score가 가장 많이 겹치는 consensus sweet spot 후보입니다."
+              />
+              <Metric
+                title="Speedup"
+                value={`${niceNumber(designBest.speedup)}×`}
+                tip="workload 크기가 달라도 비교 가능하도록 ops/cycle 기준으로 정규화한 개선 배율입니다."
+              />
+              <Metric
+                title="예상 TOPS"
+                value={niceNumber(designBest.throughput)}
+                tip="GEMM 연산량과 cycle/frequency로 계산한 대략적 throughput입니다."
+              />
+              <Metric
+                title="Recommendation"
+                value={niceNumber(designBest.recommendationScore)}
+                tip="Consensus, ROI, 예측 confidence를 섞은 최종 추천 점수입니다. 너무 비싼 하드웨어 확장이나 학습 범위 밖 extrapolation을 과도하게 추천하지 않도록 보정합니다."
+              />
+              <Metric
+                title="Risk-adjusted"
+                value={
+                  designRiskBest
+                    ? `${designRiskBest.label} / ${niceNumber(designRiskBest.riskAdjustedRecommendationScore)}`
+                    : "-"
+                }
+                tip="불확실성까지 감안한 보수적 추천 후보입니다. 상위 후보들의 오차 범위가 겹칠 때 이 값을 우선 확인합니다."
+              />
+              <Metric
+                title="Uncertainty"
+                value={`±${designBest.uncertaintyPct.toFixed(1)}%`}
+                tip="prediction confidence, SRAM overflow, 활용률, 확장 정도를 바탕으로 한 design-space용 예상 오차 범위입니다."
+              />
+              <Metric
+                title="Consensus / ROI"
+                value={`${niceNumber(designBest.agreementScore)} / ${niceNumber(designBest.roiScore)}`}
+                tip="Consensus는 여러 성능 지표의 겹침, ROI는 비용 대비 추천 강도입니다."
+              />
+              <Metric
+                title="Prediction confidence"
+                value={`${((designBest.predictionConfidence ?? 1) * 100).toFixed(0)}%`}
+                tip="활성 Estimator Suite 기준 학습 domain 안쪽인지 나타냅니다. analytical-only 실행은 100%로 표시합니다."
+              />
+              <Metric
+                title="검증 추천 후보"
+                value={`${designValidationRows.length}개`}
+                tip="SCALE-Sim으로 검증하면 학습 효과가 클 것으로 추정되는 active-learning 후보 수입니다."
+              />
+              <Metric
+                title="Pareto 후보"
+                value={`${designPareto.length}개`}
+                tip="speedup/throughput/score/cost 기준에서 지배되지 않는 설계 후보 수입니다."
+              />
+            </div>
+          )}
+          <div className="chart-scroll">
+            <div
+              className="chart-svg"
+              dangerouslySetInnerHTML={{ __html: designSvg }}
+            />
+          </div>
+          <h3>축별 sweet spot 후보</h3>
+          <table className="compact-table">
+            <thead>
+              <tr>
+                <th>축</th>
+                <th>권장값</th>
+                <th>총 cycle</th>
+                <th>Norm speedup</th>
+                <th>Risk speedup</th>
+                <th>Work scale</th>
+                <th>TOPS</th>
+                <th>활용률</th>
+                <th>Cost</th>
+                <th>Score</th>
+                <th>Consensus</th>
+                <th>ROI</th>
+                <th>Conf.</th>
+                <th>Unc.</th>
+                <th>Recommend</th>
+                <th>Risk rec.</th>
+                <th>Validate</th>
+                <th>Knee</th>
+              </tr>
+            </thead>
+            <tbody>
+              {bestByAxis.map((r: any) => (
+                <tr key={r.axis}>
+                  <td>{r.axis}</td>
+                  <td>{r.label}</td>
+                  <td>{Math.round(r.totalCycles).toLocaleString()}</td>
+                  <td>{niceNumber(r.speedup)}×</td>
+                  <td>{niceNumber(r.riskAdjustedSpeedup)}×</td>
+                  <td>×{niceNumber(r.workScale)}</td>
+                  <td>{niceNumber(r.throughput)}</td>
+                  <td>{(r.meanUtilization * 100).toFixed(1)}%</td>
+                  <td>×{niceNumber(r.cost)}</td>
+                  <td>{niceNumber(r.score)}</td>
+                  <td>{niceNumber(r.agreementScore)}</td>
+                  <td>{niceNumber(r.roiScore)}</td>
+                  <td>
+                    {((r.predictionConfidence ?? 1) * 100).toFixed(0)}%
+                    {r.outOfDomain ? "*" : ""}
+                  </td>
+                  <td>±{r.uncertaintyPct.toFixed(1)}%</td>
+                  <td>{niceNumber(r.recommendationScore)}</td>
+                  <td>{niceNumber(r.riskAdjustedRecommendationScore)}</td>
+                  <td>{niceNumber(r.validationPriority)}</td>
+                  <td>{r.isKnee ? "knee" : "-"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {designValidationRows.length > 0 && (
+            <>
+              <h3>다음 SCALE-Sim 검증 추천 후보</h3>
+              <p className="small">
+                검증 우선순위는 예측 불확실성, 학습 domain 밖 여부, 추천 잠재력,
+                SRAM overflow, knee 여부를 섞어 계산합니다. 이 후보부터 실제
+                SCALE-Sim을 돌려 training CSV에 추가하면 estimator 보정 효과가
+                큽니다.
+              </p>
+              <table className="compact-table">
+                <thead>
+                  <tr>
+                    <th>순위</th>
+                    <th>축</th>
+                    <th>후보</th>
+                    <th>Selection</th>
+                    <th>Validate</th>
+                    <th>Unc.</th>
+                    <th>Conf.</th>
+                    <th>Risk speedup</th>
+                    <th>Risk rec.</th>
+                    <th>선정 이유</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {designValidationPlan.map((item: any) => {
+                    const r = item.row;
+                    return (
+                      <tr key={`${r.axis}-${r.value}-${item.rank}`}>
+                        <td>{item.rank}</td>
+                        <td>{r.axis}</td>
+                        <td>{r.label}</td>
+                        <td>{niceNumber(item.selectionScore)}</td>
+                        <td>{niceNumber(r.validationPriority)}</td>
+                        <td>±{r.uncertaintyPct.toFixed(1)}%</td>
+                        <td>
+                          {((r.predictionConfidence ?? 1) * 100).toFixed(0)}%
+                          {r.outOfDomain ? "*" : ""}
+                        </td>
+                        <td>{niceNumber(r.riskAdjustedSpeedup)}×</td>
+                        <td>{niceNumber(r.riskAdjustedRecommendationScore)}</td>
+                        <td>{item.rationale}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </>
+          )}
         </>
       )}
-      {graphMode === "candidates" && <p className="small">파란색은 TileForge 예측, 주황색은 같은 tile 후보를 full-layer로 검증한 경우에만 표시되는 실제값입니다. SRAM footprint와 access traffic은 서로 다른 물리량이므로 분리해서 표시합니다.</p>}
-      {error && <p className="small warn">선택 작업 result.json을 읽지 못해 현재 입력 미리보기를 사용합니다: {error}</p>}
-      {graphMode === "candidates" && <>
-      <div className="row graph-controls">
-        <div>
-          <FieldLabel tip="그래프로 볼 연산을 선택합니다.">연산 선택</FieldLabel>
-          <select value={opIndex} onChange={(e) => setSelectedOp(Number(e.target.value))}>
-            {rows.map((r: any, i: number) => <option key={i} value={i}>{r.shape?.model}.{r.shape?.opName}</option>)}
-          </select>
-        </div>
-        <div>
-          <FieldLabel tip="막대 그래프의 기준 지표를 선택합니다.">그래프 지표</FieldLabel>
-          <select value={metric} onChange={(e) => setMetric(e.target.value)}>
-            <option value="cycles">Cycle</option>
-            <option value="timeUs">예상 실행 시간</option>
-            <option value="utilization">PE 사용률</option>
-            <option value="padding">패딩 비율</option>
-            <option value="sramFootprint">SRAM footprint</option>
-            <option value="sram">SRAM access 추정</option>
-            <option value="dram">DRAM access 추정</option>
-            <option value="score">종합 점수</option>
-          </select>
-        </div>
-      </div>
-      <div className="graph-actions">
-        <ActionButton tip="현재 그래프를 SVG 파일로 다운로드합니다." onClick={() => download(`tile-candidate-${metric}.svg`, svg, "image/svg+xml")}>그래프 SVG 다운로드</ActionButton>
-      </div>
-      {best && (
-        <div className="cards graph-summary-cards">
-          <Metric title={info.lowerBetter ? `최저 ${info.label}` : `최고 ${info.label}`} value={info.format(info.value(best))} tip="현재 선택한 지표 기준 최상위 타일 후보입니다." />
-          <Metric title="선택 기준 최적 타일" value={`${best.tileM}×${best.tileN}×${best.tileK}`} tip="현재 그래프 지표 기준 상위 후보입니다." />
-          <Metric title="PE 사용률" value={`${((best.utilization ?? 0) * 100).toFixed(1)}%`} tip="선택 후보의 PE 사용률입니다." />
-          <Metric title="SRAM/cache" value={`${((best.sramBytes ?? 0) / 1024).toFixed(1)} KiB`} tip="선택 후보의 로컬 SRAM/cache 작업 영역입니다." />
-        </div>
+      {graphMode === "fullLayer" && !hasFullLayerActual && (
+        <p className="small warn">
+          선택 작업에 full-layer SCALE-Sim layer 결과가 없어 실제 비교 그래프를
+          만들 수 없습니다. full-pipeline 작업 완료 후 다시 확인하세요.
+        </p>
       )}
-      <div className="chart-scroll">
-        <div className="chart-svg" dangerouslySetInnerHTML={{ __html: svg }} />
-      </div>
-      <h3>상위 타일 후보</h3>
-      <table className="compact-table">
-        <thead><tr><th>순위</th><th>타일</th><th>{info.label} 예측</th><th>{info.label} 실제</th><th>예측 cycle</th><th>SCALE-Sim cycle</th><th>시간 us</th><th>사용률</th><th>패딩</th><th>SRAM</th><th>DRAM</th></tr></thead>
-        <tbody>{top.map((p: any, i: number) => {
-          const actual = actualFor(p, i);
-          const actualMetricValue = actualMetricValues[i];
-          return (
-            <tr key={`${p.tileM}-${p.tileN}-${p.tileK}-${i}`}>
-              <td>{i + 1}</td><td>{p.tileM}×{p.tileN}×{p.tileK}</td><td>{info.format(info.value(p))}</td><td>{actualMetricValue ? info.format(actualMetricValue) : "-"}</td><td>{Math.round(p.cycles).toLocaleString()}</td><td>{actual?.cycles ? Math.round(actual.cycles).toLocaleString() : "-"}</td><td>{((Number(p.cycles)||0)/Math.max(1, Number(hw.frequencyMHz||700))).toFixed(3)}</td><td>{((p.utilization ?? 0) * 100).toFixed(1)}% / {actual?.overallUtil ? `${Number(actual.overallUtil).toFixed(1)}%` : "-"}</td><td>{((p.paddingRatio ?? 0) * 100).toFixed(1)}%</td><td>{((p.sramBytes ?? 0) / 1024).toFixed(1)} KiB; access {estimatedSramAccessKiB(p).toFixed(1)} / {actualAccessKiB(actual, "sramAccesses")?.toFixed(1) ?? "-"} KiB</td><td>{estimatedDramAccessKiB(p).toFixed(1)} KiB / {actualAccessKiB(actual, "dramAccesses")?.toFixed(1) ?? "-"} KiB</td>
-            </tr>
-          );
-        })}</tbody>
-      </table>
-      </>}
+      {graphMode === "fullLayer" && hasFullLayerActual && (
+        <>
+          <div className="graph-actions">
+            <ActionButton
+              tip="full-layer 비교 그래프를 SVG로 다운로드합니다."
+              onClick={() =>
+                download(
+                  `full-layer-scalesim-comparison.svg`,
+                  fullLayerSvg,
+                  "image/svg+xml",
+                )
+              }
+            >
+              Full-layer 지표 비교 SVG 다운로드
+            </ActionButton>
+          </div>
+          <div className="chart-scroll">
+            <div
+              className="chart-svg"
+              dangerouslySetInnerHTML={{ __html: fullLayerSvg }}
+            />
+          </div>
+          <h3>Full-layer op별 {fullInfo.label} 비교</h3>
+          <table className="compact-table">
+            <thead>
+              <tr>
+                <th>연산</th>
+                <th>TileForge 예측</th>
+                <th>SCALE-Sim 실제</th>
+                <th>오차</th>
+              </tr>
+            </thead>
+            <tbody>
+              {fullLayerRows.map((r: any, i: number) => {
+                const pv = fullLayerPredVals[i];
+                const av = fullLayerActualVals[i];
+                const err = pv && av ? ((av - pv) / pv) * 100 : undefined;
+                return (
+                  <tr key={i}>
+                    <td>
+                      {r.row?.shape?.model}.{r.row?.shape?.opName}
+                    </td>
+                    <td>{pv !== undefined ? fullInfo.format(pv) : "-"}</td>
+                    <td>{av !== undefined ? fullInfo.format(av) : "-"}</td>
+                    <td>
+                      {err !== undefined
+                        ? `${err >= 0 ? "+" : ""}${err.toFixed(1)}%`
+                        : "-"}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </>
+      )}
+      {graphMode === "candidates" && (
+        <p className="small">
+          파란색은 TileForge 예측, 주황색은 같은 tile 후보를 full-layer로 검증한
+          경우에만 표시되는 실제값입니다. SRAM footprint와 access traffic은 서로
+          다른 물리량이므로 분리해서 표시합니다.
+        </p>
+      )}
+      {error && (
+        <p className="small warn">
+          선택 작업 result.json을 읽지 못해 현재 입력 미리보기를 사용합니다:{" "}
+          {error}
+        </p>
+      )}
+      {graphMode === "candidates" && (
+        <>
+          <div className="row graph-controls">
+            <div>
+              <FieldLabel tip="그래프로 볼 연산을 선택합니다.">
+                연산 선택
+              </FieldLabel>
+              <select
+                value={opIndex}
+                onChange={(e) => setSelectedOp(Number(e.target.value))}
+              >
+                {rows.map((r: any, i: number) => (
+                  <option key={i} value={i}>
+                    {r.shape?.model}.{r.shape?.opName}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <FieldLabel tip="막대 그래프의 기준 지표를 선택합니다.">
+                그래프 지표
+              </FieldLabel>
+              <select
+                value={metric}
+                onChange={(e) => setMetric(e.target.value)}
+              >
+                <option value="cycles">Cycle</option>
+                <option value="timeUs">예상 실행 시간</option>
+                <option value="utilization">PE 사용률</option>
+                <option value="padding">패딩 비율</option>
+                <option value="sramFootprint">SRAM footprint</option>
+                <option value="sram">SRAM access 추정</option>
+                <option value="dram">DRAM access 추정</option>
+                <option value="score">종합 점수</option>
+              </select>
+            </div>
+          </div>
+          <div className="graph-actions">
+            <ActionButton
+              tip="현재 그래프를 SVG 파일로 다운로드합니다."
+              onClick={() =>
+                download(`tile-candidate-${metric}.svg`, svg, "image/svg+xml")
+              }
+            >
+              그래프 SVG 다운로드
+            </ActionButton>
+          </div>
+          {best && (
+            <div className="cards graph-summary-cards">
+              <Metric
+                title={
+                  info.lowerBetter ? `최저 ${info.label}` : `최고 ${info.label}`
+                }
+                value={info.format(info.value(best))}
+                tip="현재 선택한 지표 기준 최상위 타일 후보입니다."
+              />
+              <Metric
+                title="선택 기준 최적 타일"
+                value={`${best.tileM}×${best.tileN}×${best.tileK}`}
+                tip="현재 그래프 지표 기준 상위 후보입니다."
+              />
+              <Metric
+                title="PE 사용률"
+                value={`${((best.utilization ?? 0) * 100).toFixed(1)}%`}
+                tip="선택 후보의 PE 사용률입니다."
+              />
+              <Metric
+                title="SRAM/cache"
+                value={`${((best.sramBytes ?? 0) / 1024).toFixed(1)} KiB`}
+                tip="선택 후보의 로컬 SRAM/cache 작업 영역입니다."
+              />
+            </div>
+          )}
+          <div className="chart-scroll">
+            <div
+              className="chart-svg"
+              dangerouslySetInnerHTML={{ __html: svg }}
+            />
+          </div>
+          <h3>상위 타일 후보</h3>
+          <table className="compact-table">
+            <thead>
+              <tr>
+                <th>순위</th>
+                <th>타일</th>
+                <th>{info.label} 예측</th>
+                <th>{info.label} 실제</th>
+                <th>예측 cycle</th>
+                <th>SCALE-Sim cycle</th>
+                <th>시간 us</th>
+                <th>사용률</th>
+                <th>패딩</th>
+                <th>SRAM</th>
+                <th>DRAM</th>
+              </tr>
+            </thead>
+            <tbody>
+              {top.map((p: any, i: number) => {
+                const actual = actualFor(p, i);
+                const actualMetricValue = actualMetricValues[i];
+                return (
+                  <tr key={`${p.tileM}-${p.tileN}-${p.tileK}-${i}`}>
+                    <td>{i + 1}</td>
+                    <td>
+                      {p.tileM}×{p.tileN}×{p.tileK}
+                    </td>
+                    <td>{info.format(info.value(p))}</td>
+                    <td>
+                      {actualMetricValue ? info.format(actualMetricValue) : "-"}
+                    </td>
+                    <td>{Math.round(p.cycles).toLocaleString()}</td>
+                    <td>
+                      {actual?.cycles
+                        ? Math.round(actual.cycles).toLocaleString()
+                        : "-"}
+                    </td>
+                    <td>
+                      {(
+                        (Number(p.cycles) || 0) /
+                        Math.max(1, Number(hw.frequencyMHz || 700))
+                      ).toFixed(3)}
+                    </td>
+                    <td>
+                      {((p.utilization ?? 0) * 100).toFixed(1)}% /{" "}
+                      {actual?.overallUtil
+                        ? `${Number(actual.overallUtil).toFixed(1)}%`
+                        : "-"}
+                    </td>
+                    <td>{((p.paddingRatio ?? 0) * 100).toFixed(1)}%</td>
+                    <td>
+                      {((p.sramBytes ?? 0) / 1024).toFixed(1)} KiB; access{" "}
+                      {estimatedSramAccessKiB(p).toFixed(1)} /{" "}
+                      {actualAccessKiB(actual, "sramAccesses")?.toFixed(1) ??
+                        "-"}{" "}
+                      KiB
+                    </td>
+                    <td>
+                      {estimatedDramAccessKiB(p).toFixed(1)} KiB /{" "}
+                      {actualAccessKiB(actual, "dramAccesses")?.toFixed(1) ??
+                        "-"}{" "}
+                      KiB
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </>
+      )}
     </section>
   );
 }
-
-

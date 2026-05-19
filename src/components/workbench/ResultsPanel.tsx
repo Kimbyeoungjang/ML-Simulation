@@ -184,7 +184,7 @@ export function ResultsPanel(props: ResultsPanelProps) {
             {tab === "exports" && (
               <Exports result={result} download={download} jobId={analysisJobId} jobsPayload={jobsPayload} />
             )}
-            {tab === "graphs" && <Graphs result={result} download={download} jobId={analysisJobId} jobsPayload={jobsPayload} />}
+            {tab === "graphs" && <Graphs result={result} download={download} jobId={analysisJobId} jobsPayload={jobsPayload} activeEstimatorSuite={activeEstimatorSuite} />}
             {tab === "report" && (
               <ReportTab
                 report={serverReportMarkdown || result.artifacts.reportMarkdown}
