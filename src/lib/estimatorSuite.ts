@@ -215,6 +215,8 @@ export interface EstimatorSuiteModel {
       dataflows: string[];
       workloads: string[];
       opNames: string[];
+      targetScopes?: string[];
+      primaryTargetScope?: "full-layer" | "tile-policy" | "mixed";
     };
   };
 }
@@ -1693,6 +1695,14 @@ function numericRange(
   return { min: Math.min(...values), max: Math.max(...values) };
 }
 
+function primaryTargetScope(rows: LearnedEstimatorSample[]): "full-layer" | "tile-policy" | "mixed" {
+  const counts = new Map<string, number>();
+  for (const r of rows) counts.set(String(r.targetScope ?? "mixed"), (counts.get(String(r.targetScope ?? "mixed")) ?? 0) + 1);
+  const sorted = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
+  const top = sorted[0]?.[0];
+  return top === "full-layer" || top === "tile-policy" ? top : "mixed";
+}
+
 function trainingDomain(rows: LearnedEstimatorSample[]) {
   const numericKeys: (keyof LearnedEstimatorSample)[] = [
     "m",
@@ -1717,6 +1727,8 @@ function trainingDomain(rows: LearnedEstimatorSample[]) {
     dataflows: unique(rows.map(keyOfDataflow)).sort(),
     workloads: unique(rows.map(keyOfWorkload)).sort(),
     opNames: unique(rows.map((s) => String(s.opName || "unknown"))).sort(),
+    targetScopes: unique(rows.map((s) => String(s.targetScope ?? "mixed"))).sort(),
+    primaryTargetScope: primaryTargetScope(rows),
   };
 }
 

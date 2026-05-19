@@ -101,6 +101,15 @@ function optNum(row: Record<string, string>, names: string[]) {
   return undefined;
 }
 
+function targetScope(row: Record<string, string>): "full-layer" | "tile-policy" | "mixed" {
+  const raw = str(row, ["targetScope", "measurementScope", "scope", "target_scope", "measurement_scope"], "").toLowerCase();
+  if (["full-layer", "full_layer", "full", "layer", "topology", "scalesim-full"].includes(raw)) return "full-layer";
+  if (["tile-policy", "tile_policy", "tile", "micro", "tile-extrapolated", "candidate"].includes(raw)) return "tile-policy";
+  if (str(row, ["measuredSource", "measured_source"], "").toLowerCase().includes("tile")) return "tile-policy";
+  if (str(row, ["measuredSource", "measured_source"], "").toLowerCase().includes("full")) return "full-layer";
+  return "mixed";
+}
+
 export function sampleFromEstimatorRow(
   row: Record<string, string>,
 ): LearnedEstimatorSample | undefined {
@@ -209,6 +218,8 @@ export function sampleFromEstimatorRow(
       "utilMeasured",
       "util_measured",
     ]),
+    targetScope: targetScope(row),
+    measuredSource: str(row, ["measuredSource", "measured_source"], ""),
   };
 }
 
@@ -327,13 +338,15 @@ export function buildEstimatorSuiteArtifacts(
     ``,
     `추천 최종 모델: **${model.recommended}**`,
     ``,
-    `이 suite는 cycle에 대해 analytical baseline, Tree residual, Neural residual, Direct neural을 함께 학습하고 validation 성능으로 ensemble weight를 정합니다. 현재 예측 경로는 split holdout에서 튜닝된 log-space stacked ensemble과 out-of-fold residual calibration을 사용하며, 학습 범위 밖 입력은 domain guard로 analytical baseline 쪽으로 완화합니다. CSV에 SRAM/DRAM/utilization measured column이 있으면 해당 지표는 별도 multi-target direct model로 학습합니다.`,
+    `이 suite는 cycle에 대해 analytical baseline, Tree residual, Neural residual, Direct neural을 함께 학습하고 validation 성능으로 ensemble weight를 정합니다. 현재 예측 경로는 split holdout에서 튜닝된 log-space stacked ensemble과 out-of-fold residual calibration을 사용하며, 학습 범위 밖 입력은 domain guard로 analytical baseline 쪽으로 완화합니다. CSV에 SRAM/DRAM/utilization measured column이 있으면 해당 지표는 별도 multi-target direct model로 학습합니다. full-layer target은 tile feature를 canonicalize하여 SCALE-Sim full topology와 tile micro-run target이 섞여 생기는 편향을 줄입니다.`,
     ``,
     `## Dataset`,
     ``,
     `- Valid samples: ${model.metadata.samples.toLocaleString()}`,
     `- Final train samples: ${model.metadata.trainSamples.toLocaleString()}`,
     `- Target: ${model.target}`,
+    `- Target scopes: ${(model.metadata.featureDomain?.targetScopes ?? ["mixed"]).join(", ")}`,
+    `- Primary target scope: ${model.metadata.featureDomain?.primaryTargetScope ?? "mixed"}`,
     ``,
     `## Final ensemble weights`,
     ``,

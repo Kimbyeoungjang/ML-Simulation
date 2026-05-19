@@ -153,3 +153,21 @@ Domain-adaptive stacking now also considers the predicted bottleneck regime.  Ea
 v22 extends the OOF weight search to `regime` and `dataflow-regime` buckets.  The same validation gate, minimum-sample check, and support-based shrinkage are used, so a regime-specific stack is kept only when holdout predictions show a real improvement over the global stack.  At inference time TileForge now chooses weights in this order: `dataflow-array → dataflow-regime → dataflow → regime → array → global`.
 
 This improves prediction accuracy for hardware sweeps where increasing SRAM, DRAM bandwidth, or array size moves the same workload across bottleneck regimes.  In those cases, the best blend of analytical, tree residual, neural residual, and direct-neural predictors can change before the residual calibration layer is applied.
+
+## v23 target-scope separation for SCALE-Sim labels
+
+Estimator Suite now records what each measured cycle label means through `targetScope`:
+
+- `full-layer`: a whole-layer row from SCALE-Sim `COMPUTE_REPORT.csv` / `scalesim_summary.layers[*].cycles`.
+- `tile-policy`: a one-tile SCALE-Sim candidate run extrapolated with TileForge tile count, usually `candidateLayers[*].tileExtrapolatedCycles`.
+- `mixed`: legacy rows that do not state the measurement scope.
+
+This matters because full-layer SCALE-Sim topology runs do not directly simulate the selected TileForge tile. For `full-layer` samples, tile-dependent learning features are canonicalized to a no-tiling full-shape geometry, so the model does not learn a fake dependence on `tileM/tileN/tileK`. For `tile-policy` samples, tile geometry remains active because the target explicitly represents a tile policy.
+
+The job-sample collector now emits one row per shape in multi-op full-pipeline jobs. If exact candidate micro-runs provide `tileExtrapolatedCycles`, those become `tile-policy` rows; otherwise the collector falls back to matching full-layer `layers[*].cycles` and marks them as `full-layer`. Dataset summaries and Estimator Suite reports show target-scope distribution and the model's primary target scope.
+
+Recommended workflow for the current ViT 512-sample dataset:
+
+1. Keep SCALE-Sim full topology rows and tile micro-run extrapolated rows separated when analyzing absolute error.
+2. Train/activate a model whose primary target scope matches the comparison you care about. For the external full-layer report, prefer `full-layer` rows.
+3. Use tile-policy rows for ranking candidate tilings, not for claiming equality with full-layer SCALE-Sim cycles.

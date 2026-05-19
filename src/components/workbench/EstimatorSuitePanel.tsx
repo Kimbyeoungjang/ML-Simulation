@@ -685,6 +685,7 @@ export function EstimatorSuitePanel({
           <p className="small">
             samples {Number(sampleCount ?? 0).toLocaleString()}개, 추천 모델{" "}
             <b>{model.recommended}</b>,{" "}
+            {model.metadata?.featureDomain?.primaryTargetScope ? `target=${model.metadata.featureDomain.primaryTargetScope}, ` : ""}
             {model.blend?.mode ? `blend=${model.blend.mode}, ` : ""}
             {model.blend?.adaptiveWeights
               ? `adaptive-stack=${model.blend.adaptiveWeights.buckets.length} buckets, `

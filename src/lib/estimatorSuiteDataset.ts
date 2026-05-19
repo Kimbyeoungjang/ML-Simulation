@@ -19,6 +19,7 @@ export interface EstimatorDatasetSummary {
   arrays: Record<string, number>;
   models: Record<string, number>;
   ops: Record<string, number>;
+  targetScopes: Record<string, number>;
   warnings: string[];
 }
 
@@ -107,6 +108,7 @@ export function buildEstimatorDataset(files: EstimatorDatasetInput[], options: {
   const arrays: Record<string, number> = {};
   const models: Record<string, number> = {};
   const ops: Record<string, number> = {};
+  const targetScopes: Record<string, number> = {};
 
   for (const row of normalizedRows) {
     const measured = numberish(first(row, ["measuredCycles", "scaleSimCycles", "scalesimCycles", "totalCycles", "cycles_measured", "measured_cycles"]));
@@ -120,6 +122,7 @@ export function buildEstimatorDataset(files: EstimatorDatasetInput[], options: {
       inc(arrays, `${sample.arrayRows}x${sample.arrayCols}`);
       inc(models, sample.model ?? "csv");
       inc(ops, sample.opName ?? "op");
+      inc(targetScopes, sample.targetScope ?? "mixed");
     } else {
       invalidRows++;
     }
@@ -128,6 +131,8 @@ export function buildEstimatorDataset(files: EstimatorDatasetInput[], options: {
   if (samples.length < 40) warnings.push(`학습 가능한 measured sample이 ${samples.length}개입니다. Estimator Suite 학습에는 최소 40개가 필요합니다.`);
   if (missingMeasuredCycles > 0) warnings.push(`measuredCycles가 비었거나 0 이하인 row ${missingMeasuredCycles.toLocaleString()}개는 학습에서 제외됩니다.`);
   if (duplicatesRemoved > 0) warnings.push(`중복 row ${duplicatesRemoved.toLocaleString()}개를 제거했습니다.`);
+  const scopeKinds = Object.keys(targetScopes).filter((k) => (targetScopes[k] ?? 0) > 0);
+  if (scopeKinds.length > 1) warnings.push(`full-layer와 tile-policy target이 함께 있습니다(${scopeKinds.join(", ")}). 보고서/학습에서 target 기준을 분리해서 해석하세요.`);
 
   return {
     csv: toEstimatorCsv(normalizedRows as unknown as Record<string, unknown>[]),
@@ -146,6 +151,7 @@ export function buildEstimatorDataset(files: EstimatorDatasetInput[], options: {
       arrays,
       models,
       ops,
+      targetScopes,
       warnings,
     },
   };
@@ -189,5 +195,7 @@ export function estimatorDatasetSummaryMarkdown(summary: EstimatorDatasetSummary
     mapTable("Model 분포", summary.models),
     "",
     mapTable("Operation 분포", summary.ops),
+    "",
+    mapTable("Target scope 분포", summary.targetScopes),
   ].join("\n");
 }

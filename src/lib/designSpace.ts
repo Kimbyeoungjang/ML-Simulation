@@ -450,8 +450,9 @@ export function buildDesignSpaceRows(
       Math.max(1, Number(nextReq.hardware?.frequencyMHz || 1)) /
       1e6;
     const throughput = seconds > 0 ? ops / seconds / 1e12 : 0;
-    const cycleSpeedup = baseCycles / totalCycles;
-    const speedup = ops / totalCycles / Math.max(1e-9, baseOpsPerCycle);
+    const isBase = Math.abs(value - 1) < 1e-9;
+    const cycleSpeedup = isBase ? 1 : baseCycles / totalCycles;
+    const speedup = isBase ? 1 : ops / totalCycles / Math.max(1e-9, baseOpsPerCycle);
     const workScale = ops / baseOps;
     const cost = axisCost(axis, value);
     const costGrowth = Math.max(0, cost - 1);
@@ -514,7 +515,7 @@ export function buildDesignSpaceRows(
       validationPriority: 0,
       marginalEfficiency: 0,
       isKnee: false,
-      isBase: Math.abs(value - 1) < 1e-9,
+      isBase,
     };
   };
 

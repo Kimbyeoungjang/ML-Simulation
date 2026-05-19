@@ -32,6 +32,8 @@ export interface CollectedEstimatorSampleRow {
   measuredDramBytes?: number;
   estimatorUtilization?: number;
   measuredUtilization?: number;
+  targetScope: "full-layer" | "tile-policy" | "mixed";
+  measuredSource: string;
   scaleSimRunName: string;
   jobId: string;
   jobName: string;
@@ -79,32 +81,51 @@ function sameTile(layer: any, tileM: number, tileN: number, tileK: number) {
   return n(layer?.tileM) === tileM && n(layer?.tileN) === tileN && n(layer?.tileK) === tileK;
 }
 
-function pickScaleLayer(scale: any, shape: any, tileM: number, tileN: number, tileK: number) {
+function scaleLayerOpMatches(layer: any, shape: any) {
+  return !shape?.opName || layer?.opName === shape.opName || layer?.name === shape.opName || layer?.shapeId === shape.id;
+}
+
+function pickMeasuredScaleLayer(scale: any, shape: any, tileM: number, tileN: number, tileK: number) {
   const layers = Array.isArray(scale?.layers) ? scale.layers : [];
   const candidates = Array.isArray(scale?.candidateLayers) ? scale.candidateLayers : [];
-  const sameOp = (l: any) => !shape?.opName || l.opName === shape.opName || l.name === shape.opName;
+  const sameOp = (l: any) => scaleLayerOpMatches(l, shape);
 
   const exactCandidate =
     candidates.find((l: any) => sameTile(l, tileM, tileN, tileK) && sameOp(l)) ||
     candidates.find((l: any) => sameTile(l, tileM, tileN, tileK));
+  if (exactCandidate && n(exactCandidate.tileExtrapolatedCycles) > 0) {
+    return { layer: exactCandidate, measuredCycles: n(exactCandidate.tileExtrapolatedCycles), targetScope: "tile-policy" as const, measuredSource: "candidate.tileExtrapolatedCycles" };
+  }
 
-  // Prefer a tile-specific candidate when it carries a full-layer extrapolation.
-  // SCALE-Sim candidate runs are usually one-tile micro-runs, but workerRunner
-  // stores tileExtrapolatedCycles when the micro-run can be scaled to the layer.
-  // That is the best supervised target for a sampled tile policy. Otherwise,
-  // fall back to full-layer topology rows before using diagnostic candidates.
-  if (exactCandidate && n(exactCandidate.tileExtrapolatedCycles) > 0) return exactCandidate;
-
-  return (
-    layers.find((l: any) => sameTile(l, tileM, tileN, tileK) && sameOp(l)) ||
+  const fullLayer =
     layers.find((l: any) => sameOp(l)) ||
     layers.find((l: any) => sameTile(l, tileM, tileN, tileK)) ||
-    layers[0] ||
-    exactCandidate ||
-    candidates.find((l: any) => sameOp(l)) ||
-    candidates[0]
-  );
+    layers[0];
+  if (fullLayer && n(fullLayer.cycles) > 0) {
+    return { layer: fullLayer, measuredCycles: n(fullLayer.cycles), targetScope: "full-layer" as const, measuredSource: "layers.cycles" };
+  }
+  if (fullLayer && n(fullLayer.scaleSimRawCycles) > 0) {
+    return { layer: fullLayer, measuredCycles: n(fullLayer.scaleSimRawCycles), targetScope: "full-layer" as const, measuredSource: "layers.scaleSimRawCycles" };
+  }
+
+  if (exactCandidate && n(exactCandidate.cycles) > 0) {
+    return { layer: exactCandidate, measuredCycles: n(exactCandidate.cycles), targetScope: "tile-policy" as const, measuredSource: "candidate.cycles" };
+  }
+
+  const candidate = candidates.find((l: any) => sameOp(l)) || candidates[0];
+  if (candidate && n(candidate.cycles) > 0) {
+    return { layer: candidate, measuredCycles: n(candidate.cycles), targetScope: "tile-policy" as const, measuredSource: "candidate.cycles" };
+  }
+
+  if (n(scale?.totalCycles) > 0) {
+    return { layer: undefined, measuredCycles: n(scale.totalCycles), targetScope: "full-layer" as const, measuredSource: "scale.totalCycles" };
+  }
+  if (n(scale?.totalCyclesInclPrefetch) > 0) {
+    return { layer: undefined, measuredCycles: n(scale.totalCyclesInclPrefetch), targetScope: "full-layer" as const, measuredSource: "scale.totalCyclesInclPrefetch" };
+  }
+  return { layer: undefined, measuredCycles: NaN, targetScope: "mixed" as const, measuredSource: "none" };
 }
+
 
 async function readJsonMaybe<T = any>(file: string): Promise<T | undefined> {
   try {
@@ -179,99 +200,111 @@ export async function collectEstimatorSamplesFromJobs(jobs: JobRecord[], jobRoot
       continue;
     }
     const req = job.request;
-    const shape = req?.shapes?.[0];
     const hw = req?.hardware;
-    const tileM = n(req?.candidates?.tileM?.[0]);
-    const tileN = n(req?.candidates?.tileN?.[0]);
-    const tileK = n(req?.candidates?.tileK?.[0]);
-    if (!shape || !hw || ![tileM, tileN, tileK].every((v) => v > 0)) {
-      skipped.push({ jobId: job.id, name: job.name, reason: "job request is not a single sampled GEMM tile" });
+    if (!req?.shapes?.length || !hw) {
+      skipped.push({ jobId: job.id, name: job.name, reason: "job request has no hardware or shapes" });
       continue;
     }
 
     const resultJson = await readJsonMaybe<any>(path.join(dir, "result.json"));
     const response = resultJson?.payload?.response ?? resultJson?.response ?? resultJson;
-    const resultRow = Array.isArray(response?.results) ? response.results[0] : undefined;
-    let estimatorCycles = firstPositive([resultRow?.best?.rawCycles, resultRow?.best?.cycles, resultRow?.cycles, response?.summary?.analyticalTotalCycles, response?.summary?.totalCycles]);
-    let estimatorSramBytes = firstPositive([resultRow?.best?.sramBytes, resultRow?.sramBytes]);
-    let estimatorUtilization = firstFinite([resultRow?.best?.utilization, resultRow?.utilization]);
-    if (!(estimatorCycles > 0) || !(estimatorSramBytes > 0) || estimatorUtilization === undefined) {
-      try {
-        const fresh = estimateAll(req);
-        const freshRow = fresh.results?.[0];
-        estimatorCycles = estimatorCycles > 0 ? estimatorCycles : fresh.summary.totalCycles;
-        estimatorSramBytes = estimatorSramBytes > 0 ? estimatorSramBytes : firstPositive([freshRow?.best?.sramBytes, fresh.summary.maxSramBytes]);
-        estimatorUtilization = estimatorUtilization ?? firstFinite([fresh.summary.meanUtilization, freshRow?.best?.utilization]);
-      } catch {
-        estimatorCycles = estimatorCycles > 0 ? estimatorCycles : NaN;
+    const resultRows = Array.isArray(response?.results) ? response.results : [];
+
+    for (const shape of req.shapes) {
+      const resultRow =
+        resultRows.find((r: any) => r?.shape?.id === shape.id || r?.best?.shapeId === shape.id) ||
+        resultRows.find((r: any) => r?.shape?.opName === shape.opName || r?.best?.opName === shape.opName) ||
+        (req.shapes.length === 1 ? resultRows[0] : undefined);
+      const best = resultRow?.best;
+      const tileM = n(best?.tileM, n(req?.candidates?.tileM?.[0]));
+      const tileN = n(best?.tileN, n(req?.candidates?.tileN?.[0]));
+      const tileK = n(best?.tileK, n(req?.candidates?.tileK?.[0]));
+      if (![tileM, tileN, tileK].every((v) => v > 0)) {
+        skipped.push({ jobId: job.id, name: job.name, reason: `shape=${shape.id}: missing positive tile sizes` });
+        continue;
       }
+
+      let estimatorCycles = firstPositive([best?.rawCycles, best?.cycles, resultRow?.cycles, response?.summary?.analyticalTotalCycles, response?.summary?.totalCycles]);
+      let estimatorSramBytes = firstPositive([best?.sramBytes, resultRow?.sramBytes]);
+      let estimatorUtilization = firstFinite([best?.utilization, resultRow?.utilization]);
+      if (!(estimatorCycles > 0) || !(estimatorSramBytes > 0) || estimatorUtilization === undefined) {
+        try {
+          const oneShapeReq: SearchRequest = { ...req, shapes: [shape], candidates: { tileM: [tileM], tileN: [tileN], tileK: [tileK] } };
+          const fresh = estimateAll(oneShapeReq);
+          const freshRow = fresh.results?.[0];
+          estimatorCycles = estimatorCycles > 0 ? estimatorCycles : fresh.summary.totalCycles;
+          estimatorSramBytes = estimatorSramBytes > 0 ? estimatorSramBytes : firstPositive([freshRow?.best?.sramBytes, fresh.summary.maxSramBytes]);
+          estimatorUtilization = estimatorUtilization ?? firstFinite([fresh.summary.meanUtilization, freshRow?.best?.utilization]);
+        } catch {
+          estimatorCycles = estimatorCycles > 0 ? estimatorCycles : NaN;
+        }
+      }
+
+      const measured = pickMeasuredScaleLayer(scale, shape, tileM, tileN, tileK);
+      const matchedLayer = measured.layer;
+      const measuredCycles = measured.measuredCycles;
+      const dtypeBytes = shape.dtypeBytes ?? hw.bytesPerElement ?? 2;
+      const traffic = memoryTrafficFor(hw, shape, {
+        shapeId: shape.id, model: shape.model, opName: shape.opName,
+        tileM, tileN, tileK, cycles: Math.max(1, estimatorCycles), rawCycles: Math.max(1, estimatorCycles),
+        timeUs: Math.max(1, estimatorCycles) / Math.max(1, hw.frequencyMHz), utilization: estimatorUtilization ?? 0,
+        paddingRatio: 0, sramBytes: estimatorSramBytes > 0 ? estimatorSramBytes : 0,
+        boundaryPenalty: 0, score: 0, isPareto: false, warnings: [], explanation: ""
+      });
+      const measuredSramBytes = accessBytes(firstPositive([matchedLayer?.sramAccessBytes, matchedLayer?.sramBytes, matchedLayer?.sramAccesses]), dtypeBytes);
+      const measuredDramBytes = accessBytes(firstPositive([matchedLayer?.dramAccessBytes, matchedLayer?.dramBytes, matchedLayer?.dramAccesses]), dtypeBytes);
+      const measuredUtilization = utilizationFraction(firstFinite([matchedLayer?.computeUtil, matchedLayer?.overallUtil, matchedLayer?.mappingEfficiency]));
+      const estimatorDramBytes = firstPositive([
+        traffic.dramReadBytes + traffic.dramWriteBytes,
+        best?.dramBytes,
+        resultRow?.dramBytes,
+        (shape.m * shape.k + shape.k * shape.n + shape.m * shape.n) * dtypeBytes,
+      ]);
+      const estimatorSramTrafficBytes = firstPositive([
+        traffic.sramReadBytes + traffic.sramWriteBytes,
+        estimatorSramBytes,
+      ]);
+      if (!(estimatorCycles > 0) || !(measuredCycles > 0)) {
+        skipped.push({ jobId: job.id, name: job.name, reason: `shape=${shape.id}: missing positive estimatorCycles or measuredCycles` });
+        continue;
+      }
+      rows.push({
+        id: shape.id || job.name || job.id,
+        model: shape.model || "sampling_plan",
+        opName: shape.opName || shape.id || "op",
+        arrayRows: hw.arrayRows,
+        arrayCols: hw.arrayCols,
+        sramKB: hw.sramKB,
+        frequencyMHz: hw.frequencyMHz,
+        memoryBandwidthGBs: hw.memoryBandwidthGBs,
+        dispatchOverheadUs: hw.dispatchOverheadUs,
+        dataflow: hw.dataflow,
+        dtypeBytes,
+        m: shape.m,
+        n: shape.n,
+        k: shape.k,
+        tileM,
+        tileN,
+        tileK,
+        estimatorCycles: Math.round(estimatorCycles),
+        measuredCycles: Math.round(measuredCycles),
+        estimatorSramBytes: estimatorSramTrafficBytes > 0 ? Math.round(estimatorSramTrafficBytes) : undefined,
+        measuredSramBytes,
+        estimatorDramBytes: estimatorDramBytes > 0 ? Math.round(estimatorDramBytes) : undefined,
+        measuredDramBytes,
+        estimatorUtilization: estimatorUtilization === undefined ? undefined : estimatorUtilization,
+        measuredUtilization,
+        targetScope: measured.targetScope,
+        measuredSource: measured.measuredSource,
+        scaleSimRunName: req.scaleSim?.runName || job.name || job.id,
+        jobId: job.id,
+        jobName: job.name || job.id,
+      });
     }
-    const matchedLayer = pickScaleLayer(scale, shape, tileM, tileN, tileK);
-    const measuredCycles = firstPositive([
-      matchedLayer?.tileExtrapolatedCycles,
-      matchedLayer?.cycles,
-      matchedLayer?.scaleSimRawCycles,
-      scale.totalCycles,
-      scale.totalCyclesInclPrefetch,
-    ]);
-    const dtypeBytes = shape.dtypeBytes ?? hw.bytesPerElement ?? 2;
-    const traffic = memoryTrafficFor(hw, shape, {
-      shapeId: shape.id, model: shape.model, opName: shape.opName,
-      tileM, tileN, tileK, cycles: Math.max(1, estimatorCycles), rawCycles: Math.max(1, estimatorCycles),
-      timeUs: Math.max(1, estimatorCycles) / Math.max(1, hw.frequencyMHz), utilization: estimatorUtilization ?? 0,
-      paddingRatio: 0, sramBytes: estimatorSramBytes > 0 ? estimatorSramBytes : 0,
-      boundaryPenalty: 0, score: 0, isPareto: false, warnings: [], explanation: ""
-    });
-    const measuredSramBytes = accessBytes(firstPositive([matchedLayer?.sramAccessBytes, matchedLayer?.sramBytes, matchedLayer?.sramAccesses]), dtypeBytes);
-    const measuredDramBytes = accessBytes(firstPositive([matchedLayer?.dramAccessBytes, matchedLayer?.dramBytes, matchedLayer?.dramAccesses]), dtypeBytes);
-    const measuredUtilization = utilizationFraction(firstFinite([matchedLayer?.computeUtil, matchedLayer?.overallUtil, matchedLayer?.mappingEfficiency]));
-    const estimatorDramBytes = firstPositive([
-      traffic.dramReadBytes + traffic.dramWriteBytes,
-      resultRow?.best?.dramBytes,
-      resultRow?.dramBytes,
-      (shape.m * shape.k + shape.k * shape.n + shape.m * shape.n) * dtypeBytes,
-    ]);
-    const estimatorSramTrafficBytes = firstPositive([
-      traffic.sramReadBytes + traffic.sramWriteBytes,
-      estimatorSramBytes,
-    ]);
-    if (!(estimatorCycles > 0) || !(measuredCycles > 0)) {
-      skipped.push({ jobId: job.id, name: job.name, reason: "missing positive estimatorCycles or measuredCycles" });
-      continue;
-    }
-    rows.push({
-      id: shape.id || job.name || job.id,
-      model: shape.model || "sampling_plan",
-      opName: shape.opName || shape.id || "op",
-      arrayRows: hw.arrayRows,
-      arrayCols: hw.arrayCols,
-      sramKB: hw.sramKB,
-      frequencyMHz: hw.frequencyMHz,
-      memoryBandwidthGBs: hw.memoryBandwidthGBs,
-      dispatchOverheadUs: hw.dispatchOverheadUs,
-      dataflow: hw.dataflow,
-      dtypeBytes,
-      m: shape.m,
-      n: shape.n,
-      k: shape.k,
-      tileM,
-      tileN,
-      tileK,
-      estimatorCycles: Math.round(estimatorCycles),
-      measuredCycles: Math.round(measuredCycles),
-      estimatorSramBytes: estimatorSramTrafficBytes > 0 ? Math.round(estimatorSramTrafficBytes) : undefined,
-      measuredSramBytes,
-      estimatorDramBytes: estimatorDramBytes > 0 ? Math.round(estimatorDramBytes) : undefined,
-      measuredDramBytes,
-      estimatorUtilization: estimatorUtilization === undefined ? undefined : estimatorUtilization,
-      measuredUtilization,
-      scaleSimRunName: req.scaleSim?.runName || job.name || job.id,
-      jobId: job.id,
-      jobName: job.name || job.id,
-    });
   }
   return { rows, skipped };
 }
+
 
 export function mergeCollectedSamplesIntoCsv(csvText: string, collected: CollectedEstimatorSampleRow[]) {
   const existing = parseEstimatorCsv(csvText);
@@ -334,6 +367,8 @@ export function mergeCollectedSamplesIntoCsv(csvText: string, collected: Collect
       measuredDramBytes: match.measuredDramBytes === undefined ? r.measuredDramBytes : String(match.measuredDramBytes),
       estimatorUtilization: r.estimatorUtilization || match.estimatorUtilization,
       measuredUtilization: match.measuredUtilization === undefined ? r.measuredUtilization : String(match.measuredUtilization),
+      targetScope: r.targetScope || match.targetScope,
+      measuredSource: r.measuredSource || match.measuredSource,
       scaleSimRunName: r.scaleSimRunName || match.scaleSimRunName,
       jobId: match.jobId,
       jobName: match.jobName,

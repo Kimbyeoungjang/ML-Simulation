@@ -63,7 +63,12 @@ function domainConfidence(model: EstimatorSuiteModel, sample: LearnedEstimatorSa
   return { confidence: clamp(confidence, 0.25, 1), warnings };
 }
 
-function candidateToSample(req: SearchRequest, candidate: TileCandidateResult): LearnedEstimatorSample {
+function modelTargetScope(model: EstimatorSuiteModel): "full-layer" | "tile-policy" | "mixed" {
+  const scope = model.metadata?.featureDomain?.primaryTargetScope;
+  return scope === "full-layer" || scope === "tile-policy" ? scope : "mixed";
+}
+
+function candidateToSample(req: SearchRequest, candidate: TileCandidateResult, model?: EstimatorSuiteModel): LearnedEstimatorSample {
   const shape = req.shapes.find(s => s.id === candidate.shapeId) ?? req.shapes.find(s => s.model === candidate.model && s.opName === candidate.opName) ?? req.shapes[0];
   const baseCycles = candidate.rawCycles && candidate.rawCycles > 0 ? candidate.rawCycles : candidate.cycles;
   return {
@@ -86,12 +91,14 @@ function candidateToSample(req: SearchRequest, candidate: TileCandidateResult): 
     tileK: candidate.tileK,
     estimatorCycles: Math.max(1, baseCycles),
     measuredCycles: Math.max(1, baseCycles),
+    targetScope: model ? modelTargetScope(model) : "mixed",
+    measuredSource: "prediction",
   };
 }
 
 function adjustCandidate(req: SearchRequest, model: EstimatorSuiteModel, candidate: TileCandidateResult): TileCandidateResult {
   const rawCycles = candidate.rawCycles && candidate.rawCycles > 0 ? candidate.rawCycles : candidate.cycles;
-  const sample = candidateToSample(req, { ...candidate, cycles: rawCycles, rawCycles });
+  const sample = candidateToSample(req, { ...candidate, cycles: rawCycles, rawCycles }, model);
   const rawLearnedCycles = clamp(predictEstimatorSuiteCycles(model, sample), 1, rawCycles * 100);
   const domain = domainConfidence(model, sample);
   const learnedCycles = clamp(rawCycles * (1 - domain.confidence) + rawLearnedCycles * domain.confidence, 1, rawCycles * 100);

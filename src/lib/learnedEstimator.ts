@@ -27,6 +27,15 @@ export interface LearnedEstimatorSample {
   measuredUtilization?: number;
   memoryBandwidthGBs?: number;
   dispatchOverheadUs?: number;
+  /**
+   * What SCALE-Sim target this row represents.
+   * - full-layer: COMPUTE_REPORT row for the whole GEMM/layer topology. Tile
+   *   features are bookkeeping only and should not drive the learned target.
+   * - tile-policy: one-tile SCALE-Sim micro-run extrapolated by tile count.
+   * - mixed/undefined: legacy CSV without explicit target metadata.
+   */
+  targetScope?: "full-layer" | "tile-policy" | "mixed";
+  measuredSource?: string;
 }
 
 export interface LearnedEstimatorTreeNode {
@@ -86,7 +95,8 @@ const FEATURE_NAMES = [
   "mModTileM", "nModTileN", "kModTileK",
   "tileMOverRows", "tileNOverCols", "tileKOverRows",
   "opsLog", "sramUseRatio", "paddingRatio", "estimatorLogCycles",
-  "dataflowWS", "dataflowOS", "dataflowIS"
+  "dataflowWS", "dataflowOS", "dataflowIS",
+  "targetFullLayer", "targetTilePolicy"
 ] as const;
 
 function log1p(x: number) { return Math.log1p(Math.max(0, x)); }
@@ -115,23 +125,37 @@ function shuffle<T>(items: T[], seed: number): T[] {
   return out;
 }
 
+function effectiveTileForFeatures(s: LearnedEstimatorSample) {
+  const scope = String(s.targetScope ?? "mixed");
+  if (scope === "full-layer") {
+    // Full-layer SCALE-Sim targets are whole-topology measurements.  The
+    // selected TileForge candidate is only bookkeeping, so use a canonical
+    // no-tiling geometry to avoid learning fake tile-specific bias.
+    return { tileM: Math.max(1, s.m), tileN: Math.max(1, s.n), tileK: Math.max(1, s.k) };
+  }
+  return { tileM: Math.max(1, s.tileM), tileN: Math.max(1, s.tileN), tileK: Math.max(1, s.tileK) };
+}
+
 export function learnedEstimatorFeatures(s: LearnedEstimatorSample): number[] {
-  const paddedM = Math.ceil(s.m / s.tileM) * s.tileM;
-  const paddedN = Math.ceil(s.n / s.tileN) * s.tileN;
-  const paddedK = Math.ceil(s.k / s.tileK) * s.tileK;
+  const { tileM, tileN, tileK } = effectiveTileForFeatures(s);
+  const paddedM = Math.ceil(s.m / tileM) * tileM;
+  const paddedN = Math.ceil(s.n / tileN) * tileN;
+  const paddedK = Math.ceil(s.k / tileK) * tileK;
   const usefulOps = Math.max(1, 2 * s.m * s.n * s.k);
   const paddedOps = Math.max(1, 2 * paddedM * paddedN * paddedK);
   const bytes = s.dtypeBytes || 2;
-  const sramBytes = (s.tileM * s.tileK + s.tileK * s.tileN + s.tileM * s.tileN) * bytes;
+  const sramBytes = (tileM * tileK + tileK * tileN + tileM * tileN) * bytes;
   const df = String(s.dataflow).toUpperCase();
+  const scope = String(s.targetScope ?? "mixed");
   return [
-    log1p(s.m), log1p(s.n), log1p(s.k), log1p(s.tileM), log1p(s.tileN), log1p(s.tileK),
+    log1p(s.m), log1p(s.n), log1p(s.k), log1p(tileM), log1p(tileN), log1p(tileK),
     log1p(s.arrayRows), log1p(s.arrayCols), log1p(s.sramKB), log1p(s.frequencyMHz),
     log1p(s.memoryBandwidthGBs ?? 0), log1p(s.dispatchOverheadUs ?? 0),
-    safeDiv(s.m % s.tileM, s.tileM), safeDiv(s.n % s.tileN, s.tileN), safeDiv(s.k % s.tileK, s.tileK),
-    safeDiv(s.tileM, s.arrayRows), safeDiv(s.tileN, s.arrayCols), safeDiv(s.tileK, s.arrayRows),
+    safeDiv(s.m % tileM, tileM), safeDiv(s.n % tileN, tileN), safeDiv(s.k % tileK, tileK),
+    safeDiv(tileM, s.arrayRows), safeDiv(tileN, s.arrayCols), safeDiv(tileK, s.arrayRows),
     log1p(usefulOps), safeDiv(sramBytes, Math.max(1, s.sramKB * 1024)), paddedOps / usefulOps - 1, log1p(s.estimatorCycles),
-    df === "WS" ? 1 : 0, df === "OS" ? 1 : 0, df === "IS" ? 1 : 0
+    df === "WS" ? 1 : 0, df === "OS" ? 1 : 0, df === "IS" ? 1 : 0,
+    scope === "full-layer" ? 1 : 0, scope === "tile-policy" ? 1 : 0
   ];
 }
 
