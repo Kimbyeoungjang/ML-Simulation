@@ -944,9 +944,9 @@ export function Graphs({
   const svgHeight = 76 + top.length * rowH;
   const safeTitle = `${info.label} comparison${op?.shape ? ` - ${op.shape.model}.${op.shape.opName}` : ""}`;
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${svgWidth}" height="${svgHeight}" viewBox="0 0 ${svgWidth} ${svgHeight}">
-  <rect width="100%" height="100%" fill="#0b1020"/>
-  <text x="20" y="30" fill="#eaf0ff" font-family="Arial" font-size="18">${safeTitle}</text>
-  <text x="20" y="52" fill="#9fb0d0" font-family="Arial" font-size="12">${info.description}</text>
+  <rect width="100%" height="100%" fill="#ffffff"/>
+  <text x="20" y="30" fill="#202124" font-family="Arial" font-size="18">${safeTitle}</text>
+  <text x="20" y="52" fill="#5f6368" font-family="Arial" font-size="12">${info.description}</text>
   ${top
     .map((p: any, i: number) => {
       const y = 80 + i * rowH;
@@ -961,9 +961,10 @@ export function Graphs({
           )
         : 0;
       const actualPart = actualW
-        ? `<rect x="170" y="${y + 17}" width="${actualW}" height="6" rx="3" fill="#ffb86b"/><text x="${180 + actualW}" y="${y + 23}" fill="#ffdfb0" font-family="Consolas, monospace" font-size="10">SCALE-Sim ${info.format(actualMetricValue!)}</text>`
+        ? `<rect x="170" y="${y + 17}" width="${actualW}" height="6" rx="3" fill="#f9ab00"/><text x="${180 + actualW}" y="${y + 23}" fill="#b06000" font-family="Consolas, monospace" font-size="10">SCALE-Sim ${info.format(actualMetricValue!)}</text>`
         : "";
-      return `<text x="20" y="${y + 15}" fill="#cfe0ff" font-family="Consolas, monospace" font-size="12">${label}</text><rect x="170" y="${y}" width="${w}" height="16" rx="4" fill="#8db3ff"/><text x="${180 + w}" y="${y + 13}" fill="#eaf0ff" font-family="Consolas, monospace" font-size="12">예측 ${info.format(v)} · util ${((Number(p.utilization) || 0) * 100).toFixed(1)}% · SRAM ${((Number(p.sramBytes) || 0) / 1024).toFixed(1)} KiB</text>${actualPart}`;
+      const hoverTitle = `${label} · ${info.label} ${info.format(v)} · util ${((Number(p.utilization) || 0) * 100).toFixed(1)}% · SRAM ${((Number(p.sramBytes) || 0) / 1024).toFixed(1)} KiB`;
+      return `<g><title>${hoverTitle}</title><text x="20" y="${y + 15}" fill="#3c4043" font-family="Consolas, monospace" font-size="12">${label}</text><rect x="170" y="${y}" width="${w}" height="16" rx="4" fill="#1a73e8"/><text x="${180 + w}" y="${y + 13}" fill="#202124" font-family="Consolas, monospace" font-size="12">예측 ${info.format(v)} · util ${((Number(p.utilization) || 0) * 100).toFixed(1)}% · SRAM ${((Number(p.sramBytes) || 0) / 1024).toFixed(1)} KiB</text>${actualPart}</g>`;
     })
     .join("\n  ")}
 </svg>`;
@@ -1000,8 +1001,8 @@ export function Graphs({
         ? Math.max(2, Math.round((actualValue / fullLayerMax) * 540))
         : 0;
     const pred = pw
-      ? `<rect x="250" y="${y}" width="${pw}" height="12" rx="4" fill="#8db3ff"/><text x="${260 + pw}" y="${y + 10}" fill="#eaf0ff" font-family="Consolas, monospace" font-size="11">예측 ${fullInfo.format(predictedValue!)}</text>`
-      : `<text x="250" y="${y + 10}" fill="#8db3ff" font-family="Consolas, monospace" font-size="11">예측값 없음</text>`;
+      ? `<rect x="250" y="${y}" width="${pw}" height="12" rx="4" fill="#1a73e8"/><text x="${260 + pw}" y="${y + 10}" fill="#202124" font-family="Consolas, monospace" font-size="11">예측 ${fullInfo.format(predictedValue!)}</text>`
+      : `<text x="250" y="${y + 10}" fill="#1a73e8" font-family="Consolas, monospace" font-size="11">예측값 없음</text>`;
     const errPct =
       predictedValue && actualValue
         ? ((actualValue - predictedValue) / predictedValue) * 100
@@ -1011,15 +1012,16 @@ export function Graphs({
         ? ` (${errPct >= 0 ? "+" : ""}${errPct.toFixed(1)}%)`
         : "";
     const actual = aw
-      ? `<rect x="250" y="${y + 21}" width="${aw}" height="10" rx="4" fill="#ffb86b"/><text x="${260 + aw}" y="${y + 30}" fill="#ffdfb0" font-family="Consolas, monospace" font-size="11">SCALE-Sim ${fullInfo.format(actualValue!)}${errText}</text>`
-      : `<text x="250" y="${y + 30}" fill="#ffdfb0" font-family="Consolas, monospace" font-size="11">SCALE-Sim 값 없음</text>`;
-    return `<text x="20" y="${y + 13}" fill="#cfe0ff" font-family="Consolas, monospace" font-size="12">${label}</text>${pred}${actual}`;
+      ? `<rect x="250" y="${y + 21}" width="${aw}" height="10" rx="4" fill="#f9ab00"/><text x="${260 + aw}" y="${y + 30}" fill="#b06000" font-family="Consolas, monospace" font-size="11">SCALE-Sim ${fullInfo.format(actualValue!)}${errText}</text>`
+      : `<text x="250" y="${y + 30}" fill="#b06000" font-family="Consolas, monospace" font-size="11">SCALE-Sim 값 없음</text>`;
+    const hoverTitle = `${label} · 예측 ${predictedValue !== undefined ? fullInfo.format(predictedValue) : "없음"} · SCALE-Sim ${actualValue !== undefined ? fullInfo.format(actualValue) : "없음"}${errText}`;
+    return `<g><title>${hoverTitle}</title><text x="20" y="${y + 13}" fill="#3c4043" font-family="Consolas, monospace" font-size="12">${label}</text>${pred}${actual}</g>`;
   });
   const fullLayerSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="980" height="${fullLayerSvgHeight}" viewBox="0 0 980 ${fullLayerSvgHeight}">
-  <rect width="100%" height="100%" fill="#0b1020"/>
-  <text x="20" y="30" fill="#eaf0ff" font-family="Arial" font-size="18">Full-layer SCALE-Sim ${fullInfo.label} 비교</text>
-  <text x="20" y="52" fill="#9fb0d0" font-family="Arial" font-size="12">${fullInfo.note}</text>
-  <text x="20" y="72" fill="#9fb0d0" font-family="Arial" font-size="11">파란색: TileForge/learned estimate, 주황색: SCALE-Sim full-layer report</text>
+  <rect width="100%" height="100%" fill="#ffffff"/>
+  <text x="20" y="30" fill="#202124" font-family="Arial" font-size="18">Full-layer SCALE-Sim ${fullInfo.label} 비교</text>
+  <text x="20" y="52" fill="#5f6368" font-family="Arial" font-size="12">${fullInfo.note}</text>
+  <text x="20" y="72" fill="#5f6368" font-family="Arial" font-size="11">파란색: TileForge 예측, 주황색: SCALE-Sim full-layer 결과</text>
   ${fullLayerSvgRows.join("\n  ")}
 </svg>`;
 
@@ -1087,12 +1089,22 @@ export function Graphs({
         )}
       </div>
 
-      <div className="graph-zoom-controls">
-        <span className="small">그래프 확대</span>
-        <button className="secondary" onClick={() => setChartZoom((z) => Math.max(0.65, Number((z - 0.15).toFixed(2))))}>−</button>
+      <div className="graph-zoom-controls" title="그래프는 마우스 hover로 값을 확인하고, 슬라이더로 확대해 볼 수 있습니다.">
+        <span className="small">확대</span>
+        <button className="secondary" title="그래프를 축소합니다." onClick={() => setChartZoom((z) => Math.max(0.65, Number((z - 0.15).toFixed(2))))}>−</button>
+        <input
+          className="zoom-slider"
+          type="range"
+          min="65"
+          max="225"
+          step="5"
+          value={Math.round(chartZoom * 100)}
+          title="그래프 확대 비율"
+          onChange={(e) => setChartZoom(Number(e.target.value) / 100)}
+        />
         <span className="zoom-value">{Math.round(chartZoom * 100)}%</span>
-        <button className="secondary" onClick={() => setChartZoom((z) => Math.min(2.25, Number((z + 0.15).toFixed(2))))}>+</button>
-        <button className="secondary" onClick={() => setChartZoom(1)}>초기화</button>
+        <button className="secondary" title="그래프를 확대합니다." onClick={() => setChartZoom((z) => Math.min(2.25, Number((z + 0.15).toFixed(2))))}>+</button>
+        <button className="secondary" title="확대 비율을 100%로 되돌립니다." onClick={() => setChartZoom(1)}>맞춤</button>
       </div>
 
       {graphMode === "designSpace" && (

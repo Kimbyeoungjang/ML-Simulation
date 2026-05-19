@@ -96,21 +96,20 @@ export function Jobs({
           새 작업 생성 시 콘솔 자동 연결
         </label>
       </div>
-      <p className="small" title="작업 API의 기능 요약입니다.">
-        작업 목록은 자동으로 갱신됩니다. 각 작업은 stage 이력, 진행률, 로그,
-        artifact, 취소, 삭제, SSE 실시간 업데이트를 포함합니다.
-      </p>
       <QueueSummary payload={jobsPayload} activeJobId={liveJobId} jobsViewMode={jobsViewMode} setJobsViewMode={setJobsViewMode} jobsPage={jobsPage} setJobsPage={setJobsPage} jobsPageSize={jobsPageSize} setJobsPageSize={setJobsPageSize} onWatchJob={onWatchJob} onDeleteJob={onDeleteJob} onCancelJob={onCancelJob} selectedJobIds={selectedJobIds} setSelectedJobIds={setSelectedJobIds} onDeleteSelected={onDeleteSelected} onCancelSelected={onCancelSelected} />
-      <LiveTerminal
-        jobId={liveJobId}
-        job={liveJob}
-        logs={liveLogs}
-        connected={liveConnected}
-        autoScroll={autoScroll}
-        setAutoScroll={setAutoScroll}
-        onStop={onStop}
-      />
-      <JobExternalLogs jobId={liveJobId} live={liveConnected || liveJob?.status === "running"} />
+      <details className="inline-details job-console-details">
+        <summary title="선택한 작업의 콘솔 로그와 외부 도구 로그를 확인합니다.">선택 작업 콘솔 / 로그</summary>
+        <LiveTerminal
+          jobId={liveJobId}
+          job={liveJob}
+          logs={liveLogs}
+          connected={liveConnected}
+          autoScroll={autoScroll}
+          setAutoScroll={setAutoScroll}
+          onStop={onStop}
+        />
+        <JobExternalLogs jobId={liveJobId} live={liveConnected || liveJob?.status === "running"} />
+      </details>
       <details className="json-details">
         <summary title="작업의 원본 JSON을 펼쳐서 확인합니다.">
           작업 JSON 원본 보기
@@ -246,7 +245,7 @@ export function QueueSummary({
           </table>
         </div>
       )}
-      <p className="small">새 작업 생성 시 콘솔 자동 연결을 끄면 큐에는 추가되지만 현재 보고 있는 콘솔은 유지됩니다. 대량 큐에서는 running 작업과 다음 queued 작업을 우선 표시합니다.</p>
+      <p className="small">작업은 자동으로 갱신됩니다. 로그가 필요할 때만 “콘솔 보기”를 누르세요.</p>
     </section>
   );
 }

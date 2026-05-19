@@ -1,22 +1,29 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 
 export type DownloadFn = (name: string, text: string, type?: string) => void;
+
+function InfoHint({ tip }: { tip?: string }) {
+  if (!tip) return null;
+  return (
+    <span className="hint" title={tip} aria-label={tip} role="img">
+      i
+    </span>
+  );
+}
 
 export function FieldLabel({
   children,
   tip,
 }: {
-  children: React.ReactNode;
+  children: ReactNode;
   tip: string;
 }) {
   return (
-    <label title={tip}>
-      {children}
-      <span className="hint" aria-hidden="true">
-        ?
-      </span>
+    <label className="field-label" title={tip}>
+      <span>{children}</span>
+      <InfoHint tip={tip} />
     </label>
   );
 }
@@ -27,13 +34,13 @@ export function ActionButton({
   className,
   onClick,
 }: {
-  children: React.ReactNode;
+  children: ReactNode;
   tip: string;
   className?: string;
   onClick: () => void;
 }) {
   return (
-    <button className={className} title={tip} onClick={onClick}>
+    <button className={className} title={tip} aria-label={typeof children === "string" ? `${children}: ${tip}` : tip} onClick={onClick}>
       {children}
     </button>
   );
@@ -46,11 +53,14 @@ export function MiniField({
 }: {
   label: string;
   tip?: string;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   return (
-    <div className="mini-field" title={tip}>
-      <span>{label}</span>
+    <div className="mini-field">
+      <span className="mini-field-label" title={tip}>
+        {label}
+        <InfoHint tip={tip} />
+      </span>
       {children}
     </div>
   );
@@ -147,7 +157,7 @@ function MarkdownTable({ lines }: { lines: string[] }) {
 
 export function MarkdownView({ text }: { text: string }) {
   const lines = text.split(/\r?\n/);
-  const nodes: React.ReactNode[] = [];
+  const nodes: ReactNode[] = [];
   let list: string[] = [];
   let code: string[] | null = null;
   const flushList = () => {

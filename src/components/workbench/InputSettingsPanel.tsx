@@ -15,9 +15,9 @@ type InputTab =
 type InputSettingsPanelProps = Record<string, any>;
 
 const dataflowCopy: Record<Dataflow, { title: string; desc: string }> = {
-  WS: { title: "Weight Stationary", desc: "weight/filter 재사용이 큰 GEMM·Conv에 적합합니다." },
-  OS: { title: "Output Stationary", desc: "partial sum을 오래 유지해 누산 write-back을 줄입니다." },
-  IS: { title: "Input Stationary", desc: "activation 재사용이 큰 경우를 비교할 때 유용합니다." },
+  WS: { title: "Weight Stationary", desc: "필터/가중치를 PE 안에 오래 두는 방식입니다. 큰 GEMM과 Conv projection 비교에 자주 씁니다." },
+  OS: { title: "Output Stationary", desc: "부분합을 오래 유지해 write-back 부담을 줄이는 방식입니다. 누산이 큰 연산을 비교할 때 좋습니다." },
+  IS: { title: "Input Stationary", desc: "입력 activation 재사용을 우선하는 방식입니다. SRAM/DRAM 병목 비교에 유용합니다." },
 };
 
 export function InputSettingsPanel(props: InputSettingsPanelProps) {
@@ -97,12 +97,30 @@ export function InputSettingsPanel(props: InputSettingsPanelProps) {
     setEnvValues?.((cur: Record<string, string>) => ({ ...cur, [key]: value }));
   };
 
+  const convFields: Array<[string, string, string]> = [
+    ["batch", "Batch", "한 번에 처리하는 image 개수입니다."],
+    ["inputH", "Input H", "입력 feature map의 높이입니다."],
+    ["inputW", "Input W", "입력 feature map의 너비입니다."],
+    ["inputC", "Input C", "입력 channel 수입니다."],
+    ["outputC", "Output C", "출력 channel, 즉 filter 개수입니다."],
+    ["kernelH", "Kernel H", "커널 높이입니다."],
+    ["kernelW", "Kernel W", "커널 너비입니다."],
+    ["strideH", "Stride H", "세로 stride입니다."],
+    ["strideW", "Stride W", "가로 stride입니다."],
+    ["padH", "Pad H", "위/아래 padding 크기입니다."],
+    ["padW", "Pad W", "좌/우 padding 크기입니다."],
+    ["dilationH", "Dilation H", "세로 dilation입니다."],
+    ["dilationW", "Dilation W", "가로 dilation입니다."],
+  ];
+
+  const shapeName = (s: any) => s.opName ?? s.name ?? s.id ?? "op";
+
   return (
     <section className="panel setup-panel" title="하드웨어부터 실행까지 필요한 입력을 순서대로 설정합니다.">
       <div className="setup-header">
         <div>
-          <h2>실험 설정</h2>
-          <p className="small">하드웨어 → 타일링 → 워크로드 → 실행 순서로 맞추면 바로 미리보기 결과가 갱신됩니다.</p>
+          <h2>설계 흐름</h2>
+          <p className="small">하드웨어를 정하고, 타일 후보를 고른 뒤, workload를 확인하고 검증 작업을 실행합니다.</p>
         </div>
         <div className="setup-summary" aria-label="현재 입력 요약">
           <span>{hardware.arrayRows}×{hardware.arrayCols}</span>
@@ -136,7 +154,7 @@ export function InputSettingsPanel(props: InputSettingsPanelProps) {
         {inputTab === "hardware" && (
           <>
             <h3>하드웨어</h3>
-            <p className="small">Systolic array 크기와 메모리 구성을 정합니다. 선택한 값은 즉시 추정 결과에 반영됩니다.</p>
+            <p className="small">가속기의 기본 성격을 정합니다. array, SRAM, DRAM을 바꾸면 오른쪽 미리보기 결과가 바로 갱신됩니다.</p>
             <div className="quick-preset-row">
               <MiniField label="하드웨어 프리셋" tip="자주 쓰는 array/SRAM 설정을 불러옵니다.">
                 <select onChange={(e) => applyHardwarePreset(e.target.value)} defaultValue="">
@@ -211,7 +229,7 @@ export function InputSettingsPanel(props: InputSettingsPanelProps) {
         {inputTab === "tiling" && (
           <>
             <h3>타일링</h3>
-            <p className="small">후보는 쉼표로 입력합니다. 미리보기는 입력이 바뀔 때마다 자동으로 다시 계산됩니다.</p>
+            <p className="small">타일 후보를 쉼표로 입력합니다. 여기의 결과는 tile 선택과 ranking을 위한 보조 기준입니다.</p>
             <div className="row3">
               <MiniField label="tileM" tip="GEMM M축 타일 후보입니다."><input value={tileM} onChange={(e) => setTileM(e.target.value)} /></MiniField>
               <MiniField label="tileN" tip="GEMM N축 타일 후보입니다."><input value={tileN} onChange={(e) => setTileN(e.target.value)} /></MiniField>
@@ -232,13 +250,13 @@ export function InputSettingsPanel(props: InputSettingsPanelProps) {
         {inputTab === "workload" && (
           <>
             <h3>워크로드</h3>
-            <p className="small">GEMM shape를 직접 추가하거나 CSV/ONNX/Conv2D에서 가져옵니다. Conv2D 변환은 workload 생성 기능으로 통합했습니다.</p>
+            <p className="small">분석할 GEMM 목록을 구성합니다. Conv2D는 im2col 기준 GEMM으로 변환해 같은 목록에 추가합니다.</p>
             <FieldLabel tip="name,m,n,k 형식의 CSV를 붙여넣습니다.">CSV 입력</FieldLabel>
             <textarea value={csvText} onChange={(e) => setCsvText(e.target.value)} rows={6} />
             <ActionButton tip="CSV를 현재 workload 목록에 반영합니다." onClick={importCsv}>CSV 적용</ActionButton>
             <h4>수동 GEMM 추가</h4>
             <div className="row3">
-              <MiniField label="이름" tip="연산 이름입니다."><input value={manualShape.name} onChange={(e) => setManualShape({ ...manualShape, name: e.target.value })} /></MiniField>
+              <MiniField label="연산 이름" tip="보고서와 그래프에 표시될 GEMM 연산 이름입니다."><input value={manualShape.opName ?? manualShape.id} onChange={(e) => setManualShape({ ...manualShape, opName: e.target.value, id: e.target.value || manualShape.id })} /></MiniField>
               <MiniField label="M" tip="GEMM M입니다."><input type="number" value={manualShape.m} onChange={(e) => setManualShape({ ...manualShape, m: +e.target.value })} /></MiniField>
               <MiniField label="N" tip="GEMM N입니다."><input type="number" value={manualShape.n} onChange={(e) => setManualShape({ ...manualShape, n: +e.target.value })} /></MiniField>
             </div>
@@ -246,22 +264,28 @@ export function InputSettingsPanel(props: InputSettingsPanelProps) {
             <ActionButton tip="현재 수동 GEMM을 workload에 추가합니다." onClick={addManualShape}>GEMM 추가</ActionButton>
             <details className="advanced-box">
               <summary>Conv2D를 GEMM으로 추가</summary>
-              <div className="row3">
-                {(["n", "h", "w", "c", "r", "s", "k", "stride", "pad"] as const).map((key) => (
-                  <MiniField key={key} label={key.toUpperCase()} tip={`Conv2D ${key} 값입니다.`}>
-                    <input type="number" value={(conv as any)[key]} onChange={(e) => setConv({ ...conv, [key]: +e.target.value })} />
+              <p className="small">Conv2D 설정은 workload 생성용입니다. 추가하면 오른쪽 목록에 GEMM shape가 생깁니다.</p>
+              <div className="row3 conv-grid">
+                {convFields.map(([key, label, tip]) => (
+                  <MiniField key={key} label={label} tip={tip}>
+                    <input
+                      type="number"
+                      value={Number((conv as any)[key] ?? 0)}
+                      min={key.startsWith("pad") ? 0 : 1}
+                      onChange={(e) => setConv({ ...conv, [key]: +e.target.value })}
+                    />
                   </MiniField>
                 ))}
               </div>
-              <ActionButton tip="현재 Conv2D 파라미터를 im2col GEMM shape로 변환해 추가합니다." onClick={addConv}>Conv2D 추가</ActionButton>
+              <ActionButton tip="현재 Conv2D 파라미터를 im2col GEMM shape로 변환해 workload 목록에 추가합니다." onClick={addConv}>Conv2D → GEMM 추가</ActionButton>
             </details>
             <FieldLabel tip="ONNX 파일에서 MatMul/Gemm 노드를 가져옵니다.">ONNX 가져오기</FieldLabel>
             <input type="file" accept=".onnx" onChange={(e: ChangeEvent<HTMLInputElement>) => e.target.files?.[0] && importOnnxFile(e.target.files[0])} />
             <div className="shape-list clean-shape-list">
               {shapes.map((s: any, idx: number) => (
-                <div key={`${s.name}-${idx}`} className="shape-row">
-                  <span>{s.name}</span><code>{s.m}×{s.n}×{s.k}</code>
-                  <button className="secondary danger-button" onClick={() => setShapes(shapes.filter((_: any, i: number) => i !== idx))}>삭제</button>
+                <div key={`${shapeName(s)}-${idx}`} className="shape-row">
+                  <span>{s.model ? `${s.model}.` : ""}{shapeName(s)}</span><code>{s.m}×{s.n}×{s.k}</code>
+                  <button className="secondary danger-button" title="이 workload 항목을 목록에서 제거합니다." onClick={() => setShapes(shapes.filter((_: any, i: number) => i !== idx))}>삭제</button>
                 </div>
               ))}
               {shapes.length === 0 && <p className="small">아직 workload가 없습니다. 기본값을 불러오거나 GEMM을 추가하세요.</p>}
@@ -274,11 +298,11 @@ export function InputSettingsPanel(props: InputSettingsPanelProps) {
             <h3>실행</h3>
             <div className="info-box"><b>자동 미리보기</b><p className="small">입력값을 바꾸면 로컬 추정은 바로 갱신됩니다. SCALE-Sim/IREE 검증이 필요할 때만 full-pipeline 작업을 큐에 넣으세요.</p></div>
             <div className="run-actions">
-              <button onClick={() => createJob(false)}>Full-pipeline 작업 추가</button>
-              <button className="secondary" onClick={() => createJob(true)}>Dataflow별 작업 추가</button>
-              <button className="secondary" onClick={() => refreshJobs({ switchTab: true, updateReport: false })}>작업 큐 열기</button>
-              <button className="secondary" onClick={refreshStatus}>상태 새로고침</button>
-              <button className="secondary" onClick={runDoctorCheck}>도구 점검</button>
+              <button title="현재 대표 dataflow로 full-pipeline 검증 작업을 큐에 넣습니다." onClick={() => createJob("full-pipeline", false)}>현재 조건 검증</button>
+              <button className="secondary" title="선택한 WS/OS/IS를 각각 full-pipeline 작업으로 큐에 넣습니다." onClick={() => createJob("full-pipeline", true)}>선택 Dataflow 모두 검증</button>
+              <button className="secondary" title="작업 큐 탭으로 이동해 진행 상황과 artifact를 확인합니다." onClick={() => refreshJobs({ switchTab: true, updateReport: false })}>작업 큐 열기</button>
+              <button className="secondary" title="서버와 외부 도구 상태를 새로 불러옵니다." onClick={refreshStatus}>상태 새로고침</button>
+              <button className="secondary" title="SCALE-Sim/IREE 명령과 작업 환경을 점검합니다." onClick={runDoctorCheck}>도구 점검</button>
             </div>
             {liveJobId && (
               <div className="live-job-actions">
@@ -319,7 +343,8 @@ export function InputSettingsPanel(props: InputSettingsPanelProps) {
             </details>
             <div className="run-actions">
               <button className="secondary" onClick={saveProject}>프로젝트 저장</button>
-              <label className="button-like secondary">프로젝트 불러오기<input type="file" accept=".json" onChange={(e) => e.target.files?.[0] && loadProject(e.target.files[0])} hidden /></label>
+              <button className="secondary" title="서버에 저장된 .tileforge/project.json을 불러옵니다." onClick={() => loadProject()}>최근 프로젝트 불러오기</button>
+              <label className="button-like secondary" title="내 컴퓨터의 project.tileforge.json 파일을 불러옵니다.">프로젝트 파일 불러오기<input type="file" accept=".json" onChange={(e) => e.target.files?.[0] && loadProject(e.target.files[0])} hidden /></label>
               <Link className="button-like secondary" href="/estimator-suite">Estimator Suite 열기</Link>
             </div>
             {(customPresets.length > 0 || userHardwarePresets.length > 0 || userWorkloadPresets.length > 0) && <p className="small">사용자 프리셋: 전체 {customPresets.length}개, 하드웨어 {userHardwarePresets.length}개, 워크로드 {userWorkloadPresets.length}개</p>}
@@ -329,7 +354,7 @@ export function InputSettingsPanel(props: InputSettingsPanelProps) {
         {inputTab === "settings" && (
           <>
             <h3>설정</h3>
-            <p className="small">외부 도구 경로와 작업 디렉터리 같은 `.env` 값을 웹에서 확인하고 수정합니다.</p>
+            <p className="small">외부 도구 명령, 작업 폴더, 병렬 실행 수를 관리합니다. 저장한 값은 다음 작업부터 적용됩니다.</p>
             <div className="env-grid">
               {envKeys.map((key: string) => (
                 <label key={key} className="env-row">

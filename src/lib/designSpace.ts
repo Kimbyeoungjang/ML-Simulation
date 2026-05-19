@@ -984,13 +984,13 @@ export function buildDesignSpaceSvg(
         .join(" ");
       const bestPoint = points.find((p) => p.r === best);
       const kneePoints = points.filter((p) => p.r.isKnee);
-      return `<text x="20" y="${ys + 14}" fill="#eaf0ff" font-family="Arial" font-size="14">${safeSvgText(axisLabels[axis])}</text>
-      <line x1="210" y1="${ys + 98}" x2="930" y2="${ys + 98}" stroke="#2a3658"/>
-      <line x1="210" y1="${ys + 12}" x2="210" y2="${ys + 98}" stroke="#2a3658"/>
-      <path d="${path}" fill="none" stroke="#8db3ff" stroke-width="2.5"/>
+      return `<text x="20" y="${ys + 14}" fill="#202124" font-family="Arial" font-size="14">${safeSvgText(axisLabels[axis])}</text>
+      <line x1="210" y1="${ys + 98}" x2="930" y2="${ys + 98}" stroke="#dadce0"/>
+      <line x1="210" y1="${ys + 12}" x2="210" y2="${ys + 98}" stroke="#dadce0"/>
+      <path d="${path}" fill="none" stroke="#1a73e8" stroke-width="2.5"/>
       ${points.map((p) => {
         const title = safeSvgText(`${axisLabels[p.r.axis] ?? p.r.axis} · ${p.r.label} · ${metricLabel}: ${niceNumber(valueOf(p.r))} · speedup ${niceNumber(p.r.speedup)}x · uncertainty ±${p.r.uncertaintyPct.toFixed(1)}%`);
-        return `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${p.r.isBase ? 5 : 3.5}" fill="${p.r.isBase ? "#ffdf7d" : "#8db3ff"}"><title>${title}</title></circle>`;
+        return `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${p.r.isBase ? 5 : 3.5}" fill="${p.r.isBase ? "#fbbc04" : "#1a73e8"}"><title>${title}</title></circle>`;
       }).join("\n      ")}
       ${kneePoints.map((p) => `<path d="M ${p.x.toFixed(1)} ${(p.y - 6).toFixed(1)} L ${(p.x + 6).toFixed(1)} ${p.y.toFixed(1)} L ${p.x.toFixed(1)} ${(p.y + 6).toFixed(1)} L ${(p.x - 6).toFixed(1)} ${p.y.toFixed(1)} Z" fill="#ffb86b"><title>marginal knee: ×${niceNumber(p.r.x)}, efficiency ${niceNumber(p.r.marginalEfficiency)}</title></path>`).join("\n      ")}
       ${points
@@ -1000,20 +1000,20 @@ export function buildDesignSpaceSvg(
             `<path d="M ${p.x.toFixed(1)} ${(p.y - 9).toFixed(1)} L ${(p.x + 7).toFixed(1)} ${(p.y + 5).toFixed(1)} L ${(p.x - 7).toFixed(1)} ${(p.y + 5).toFixed(1)} Z" fill="#c792ea"><title>next validation candidate: ×${niceNumber(p.r.x)}, priority ${niceNumber(p.r.validationPriority)}</title></path>`,
         )
         .join("\n      ")}
-      ${bestPoint ? `<line x1="${bestPoint.x.toFixed(1)}" y1="${ys + 10}" x2="${bestPoint.x.toFixed(1)}" y2="${ys + 102}" stroke="#7dffb2" stroke-dasharray="4 4"/><rect x="936" y="${ys + 13}" width="166" height="54" rx="10" fill="#101a31" stroke="#2a3658"/><text x="948" y="${ys + 31}" fill="#7dffb2" font-family="Consolas, monospace" font-size="12">×${niceNumber(best.x)} · ${niceNumber(best.speedup)}x</text><text x="948" y="${ys + 49}" fill="#cfe0ff" font-family="Consolas, monospace" font-size="11">risk ±${best.uncertaintyPct.toFixed(1)}% · util ${(best.meanUtilization * 100).toFixed(0)}%</text><text x="948" y="${ys + 64}" fill="#9fb0d0" font-family="Consolas, monospace" font-size="10">rec ${niceNumber(best.recommendationScore)} · ROI ${niceNumber(best.roiScore)}</text>` : ""}
-      <text x="210" y="${ys + 120}" fill="#9fb0d0" font-family="Consolas, monospace" font-size="11">×${niceNumber(minX)}</text>
-      <text x="885" y="${ys + 120}" fill="#9fb0d0" font-family="Consolas, monospace" font-size="11">×${niceNumber(maxX)}</text>`;
+      ${bestPoint ? `<line x1="${bestPoint.x.toFixed(1)}" y1="${ys + 10}" x2="${bestPoint.x.toFixed(1)}" y2="${ys + 102}" stroke="#188038" stroke-dasharray="4 4"/><rect x="936" y="${ys + 13}" width="166" height="54" rx="10" fill="#f8fafd" stroke="#dadce0"/><text x="948" y="${ys + 31}" fill="#188038" font-family="Consolas, monospace" font-size="12">×${niceNumber(best.x)} · ${niceNumber(best.speedup)}x</text><text x="948" y="${ys + 49}" fill="#3c4043" font-family="Consolas, monospace" font-size="11">risk ±${best.uncertaintyPct.toFixed(1)}% · util ${(best.meanUtilization * 100).toFixed(0)}%</text><text x="948" y="${ys + 64}" fill="#5f6368" font-family="Consolas, monospace" font-size="10">rec ${niceNumber(best.recommendationScore)} · ROI ${niceNumber(best.roiScore)}</text>` : ""}
+      <text x="210" y="${ys + 120}" fill="#5f6368" font-family="Consolas, monospace" font-size="11">×${niceNumber(minX)}</text>
+      <text x="885" y="${ys + 120}" fill="#5f6368" font-family="Consolas, monospace" font-size="11">×${niceNumber(maxX)}</text>`;
     })
     .join("\n");
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
     <desc>Design-space sweep confidence-aware consensus+ROI recommend sweet:</desc>
-    <rect width="100%" height="100%" fill="#0b1020"/>
-    <text x="20" y="30" fill="#eaf0ff" font-family="Arial" font-size="18">Design-space sweet spot / ${safeSvgText(metricLabel)}</text>
-    <text x="20" y="52" fill="#9fb0d0" font-family="Arial" font-size="12">각 축은 log-scale입니다. 초록=권장 sweet spot, 노랑=baseline, 주황=knee, 보라=다음 검증 후보.</text>
+    <rect width="100%" height="100%" fill="#ffffff"/>
+    <text x="20" y="30" fill="#202124" font-family="Arial" font-size="18">Design-space sweet spot · ${safeSvgText(metricLabel)}</text>
+    <text x="20" y="52" fill="#5f6368" font-family="Arial" font-size="12">각 축은 log-scale입니다. 초록=권장점, 노랑=baseline, 주황=knee, 보라=다음 검증 후보입니다.</text>
     <path d="M 970 43 L 976 49 L 970 55 L 964 49 Z" fill="#ffb86b"><title>marginal knee legend</title></path>
-    <text x="982" y="53" fill="#9fb0d0" font-family="Arial" font-size="11">knee</text>
+    <text x="982" y="53" fill="#5f6368" font-family="Arial" font-size="11">knee</text>
     <path d="M 1020 41 L 1027 55 L 1013 55 Z" fill="#c792ea"><title>next validation candidate legend</title></path>
-    <text x="1033" y="53" fill="#9fb0d0" font-family="Arial" font-size="11">validate</text>
+    <text x="1033" y="53" fill="#5f6368" font-family="Arial" font-size="11">validate</text>
     ${panels}
   </svg>`;
 }

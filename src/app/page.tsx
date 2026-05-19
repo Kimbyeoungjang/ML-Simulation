@@ -54,17 +54,17 @@ type InputTab =
   | "settings";
 
 const tabLabels: Record<Tab, string> = {
-  policy: "타일 정책",
-  bottleneck: "병목 분석",
-  roofline: "루프라인",
+  policy: "타일 후보",
+  bottleneck: "병목",
+  roofline: "Roofline",
   energy: "에너지",
-  array: "배열 비교",
-  iree: "IREE",
-  exports: "내보내기",
+  array: "배열 탐색",
+  iree: "컴파일",
+  exports: "파일",
   graphs: "그래프",
   report: "보고서",
-  jobs: "작업",
-  status: "상태",
+  jobs: "작업 큐",
+  status: "시스템",
 };
 
 const inputTabLabels: Record<InputTab, string> = {
@@ -77,12 +77,12 @@ const inputTabLabels: Record<InputTab, string> = {
 };
 
 const inputTabTips: Record<InputTab, string> = {
-  hardware: "배열 크기, 주파수, SRAM, 데이터플로우를 정합니다.",
-  tiling: "tileM/tileN/tileK 후보와 최적화 목표를 정합니다.",
-  workload: "GEMM, CSV, ONNX, Conv2D 변환으로 workload를 구성합니다.",
-  run: "SCALE-Sim/IREE full-pipeline 작업을 큐에 등록하고 상태를 확인합니다.",
-  tools: "프리셋, 프로젝트 파일, Estimator Suite 바로가기를 관리합니다.",
-  settings: ".env 기반 외부 도구 경로와 작업 설정을 관리합니다.",
+  hardware: "가속기 크기, 클럭, SRAM/DRAM, dataflow를 정합니다.",
+  tiling: "타일 후보와 ranking 기준을 정합니다. 하드웨어 성능 예측과 tile 선택을 분리해 봅니다.",
+  workload: "GEMM 목록을 직접 만들거나 CSV/ONNX/Conv2D에서 가져옵니다.",
+  run: "현재 설정으로 SCALE-Sim/IREE 검증 작업을 큐에 넣고 실행 상태를 확인합니다.",
+  tools: "프리셋과 프로젝트 파일을 관리합니다. 학습기는 별도 페이지에서 다룹니다.",
+  settings: "외부 도구 명령, 작업 폴더, 병렬 작업 수 같은 .env 값을 확인하고 바꿉니다.",
 };
 
 const envSettingKeys = [
@@ -96,17 +96,17 @@ const envSettingKeys = [
 ];
 
 const tabTips: Record<Tab, string> = {
-  policy: "각 연산별 최적 타일 후보와 예상 사이클, 활용률을 확인합니다.",
-  bottleneck: "전체 실행 시간에서 비중이 큰 연산과 병목 원인을 요약합니다.",
-  roofline: "연산 집약도 기준으로 compute-bound인지 memory-bound인지 판단합니다.",
-  energy: "MAC, SRAM, DRAM 접근 기반의 간단한 에너지 추정을 표시합니다.",
-  array: "여러 systolic array 크기를 비교하여 설계 후보를 고릅니다.",
-  iree: "생성된 MLIR과 IREE 실행 명령을 확인하고 다운로드합니다.",
-  exports: "SCALE-Sim, LaTeX, SVG, manifest 등 산출물을 내려받습니다.",
-  graphs: "타일 후보별 cycle/utilization 차이를 그래프로 비교합니다.",
-  report: "현재 실험 설정과 결과를 논문/보고서용 Markdown으로 확인합니다.",
-  jobs: "백그라운드 작업의 상태, 로그, artifact 정보를 확인합니다.",
-  status: "로컬 서버, 저장소, 워커, 외부 도구 상태를 JSON으로 확인합니다.",
+  policy: "연산별 추천 tile과 하드웨어 설계용 cycle을 확인합니다.",
+  bottleneck: "전체 cycle을 크게 만드는 연산과 병목 원인을 빠르게 찾습니다.",
+  roofline: "연산 집약도 기준으로 compute-bound인지 memory-bound인지 봅니다.",
+  energy: "MAC, SRAM, DRAM 접근량으로 대략적인 에너지와 EDP를 계산합니다.",
+  array: "여러 systolic array 크기를 같은 workload로 비교합니다.",
+  iree: "MLIR/IREE 관련 산출물과 컴파일 명령을 확인합니다.",
+  exports: "SCALE-Sim, MLIR, SVG, CSV, manifest 파일을 내려받습니다.",
+  graphs: "cycle, memory, mapping, stall, sweet spot을 시각적으로 확인합니다.",
+  report: "핵심 결과만 정리한 Markdown 보고서를 확인합니다.",
+  jobs: "검증 작업 큐, 진행 상태, 로그, artifact를 관리합니다.",
+  status: "서버, 워커, 저장소, 외부 도구 상태를 점검합니다.",
 };
 
 
@@ -716,22 +716,37 @@ export default function Home() {
     });
     setServerMessage(`프로젝트 저장 완료: ${(await r.json()).path}`);
   }
-  async function loadProject() {
-    const r = await fetch("/api/project");
-    if (!r.ok) return setServerMessage("저장된 프로젝트가 없습니다.");
-    const p = await r.json();
-    setHardware(p.hardware);
-    setDataflowModes([p.hardware?.dataflow ?? "WS"] as Dataflow[]);
-    setShapes(p.shapes);
-    setObjective(p.objective);
+  function applyProjectState(p: any, source = "project") {
+    if (p.hardware) {
+      setHardware(p.hardware);
+      setDataflowModes((Array.isArray(p.dataflowModes) && p.dataflowModes.length ? p.dataflowModes : [p.hardware?.dataflow ?? "WS"]) as Dataflow[]);
+    }
+    if (Array.isArray(p.shapes)) setShapes(p.shapes);
+    if (p.objective) setObjective(p.objective);
     if (p.scaleSim) setScaleSim((cur) => ({ ...cur, ...p.scaleSim }));
-    setTileM(p.candidates.tileM.join(", "));
-    setTileN(p.candidates.tileN.join(", "));
-    setTileK(p.candidates.tileK.join(", "));
-    setServerMessage(".tileforge/project.json을 불러왔습니다.");
+    if (p.candidates) {
+      if (Array.isArray(p.candidates.tileM)) setTileM(p.candidates.tileM.join(", "));
+      if (Array.isArray(p.candidates.tileN)) setTileN(p.candidates.tileN.join(", "));
+      if (Array.isArray(p.candidates.tileK)) setTileK(p.candidates.tileK.join(", "));
+    }
+    setServerMessage(`${source} 설정을 불러왔습니다.`);
   }
-  async function createJob(kind: string) {
-    const modes = dataflowModes.length ? dataflowModes : [hardware.dataflow];
+
+  async function loadProject(file?: File) {
+    try {
+      if (file) {
+        applyProjectState(JSON.parse(await file.text()), file.name);
+        return;
+      }
+      const r = await fetch("/api/project");
+      if (!r.ok) return setServerMessage("저장된 프로젝트가 없습니다.");
+      applyProjectState(await r.json(), ".tileforge/project.json");
+    } catch (error: any) {
+      setServerMessage(`프로젝트 불러오기 실패: ${error?.message ?? error}`);
+    }
+  }
+  async function createJob(kind = "full-pipeline", allSelectedDataflows = true) {
+    const modes = allSelectedDataflows ? (dataflowModes.length ? dataflowModes : [hardware.dataflow]) : [hardware.dataflow];
     const created: any[] = [];
     for (const df of modes) {
       const dfHardware = { ...hardware, dataflow: df };
@@ -890,21 +905,15 @@ export default function Home() {
     await refreshStatus(false);
   }
 
-  async function deleteJobPrompt() {
-    const id = prompt("삭제할 작업 ID를 입력하세요.");
-    if (!id) return;
-    await deleteJobById(id);
+  async function deleteJobPrompt(id?: string) {
+    const target = id || prompt("삭제할 작업 ID를 입력하세요.");
+    if (!target) return;
+    await deleteJobById(target);
   }
-  async function cancelJob() {
-    const id = prompt("취소할 작업 ID를 입력하세요.");
-    if (!id) return;
-    const r = await fetch(`/api/jobs/${id}`, {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ action: "cancel" }),
-    });
-    setServerMessage(`취소 결과: ${(await r.json()).status}`);
-    await refreshJobs();
+  async function cancelJob(id?: string) {
+    const target = id || prompt("취소할 작업 ID를 입력하세요.");
+    if (!target) return;
+    await cancelJobById(target);
   }
   async function runDoctorCheck() {
     const r = await fetch("/api/doctor");
@@ -937,10 +946,10 @@ export default function Home() {
     setServerMessage(`병렬 작업 수를 ${j.maxParallelJobs}로 저장했습니다. .env의 TILEFORGE_MAX_PARALLEL_JOBS를 갱신했습니다.`);
     await refreshStatus(false);
   }
-  function watchJob() {
-    const id = prompt("실시간으로 볼 작업 ID를 입력하세요.");
-    if (!id) return;
-    startLiveJob(id);
+  function watchJob(id?: string) {
+    const target = id || prompt("실시간으로 볼 작업 ID를 입력하세요.");
+    if (!target) return;
+    startLiveJob(target);
   }
   function importCsv() {
     try {
@@ -1121,15 +1130,14 @@ export default function Home() {
     <main>
       <header className="topbar">
         <div>
-          <h1 title="Systolic array 기반 타일/하드웨어 설계 탐색 도구입니다.">
-            TileForge 워크벤치
+          <h1 title="TPU 계열 systolic-array 설계를 빠르게 탐색하는 도구입니다.">
+            TileForge
           </h1>
           <p
             className="lead"
-            title="입력 shape와 하드웨어 설정을 바꾸면 로컬 서버에서 추정과 외부 검증 산출물을 생성합니다."
+            title="설정을 바꾸면 즉시 미리보기 예측이 갱신되고, 필요할 때 SCALE-Sim/IREE 검증 작업을 실행합니다."
           >
-            TPU 계열 systolic-array 하드웨어와 컴파일러 타일링 정책을 함께
-            탐색하는 로컬 웹 워크벤치입니다.
+            하드웨어 설계값과 GEMM workload를 바꿔 보며 cycle, stall, memory 병목, sweet spot을 확인합니다.
           </p>
         </div>
         <div className="topbar-actions">
