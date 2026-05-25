@@ -54,6 +54,7 @@ type InputTab =
   | "workload"
   | "conv"
   | "calibration"
+  | "estimator"
   | "tools";
 
 type DownloadFn = (name: string, text: string, type?: string) => void;
@@ -81,6 +82,7 @@ const inputTabLabels: Record<InputTab, string> = {
   workload: "워크로드",
   conv: "Conv 변환",
   calibration: "보정",
+  estimator: "Estimator",
   tools: "도구/실행",
 };
 
@@ -93,8 +95,10 @@ const inputTabTips: Record<InputTab, string> = {
   workload: "CSV, ONNX, JSON에서 GEMM workload shape를 가져옵니다.",
   conv: "Conv2D 파라미터를 im2col GEMM shape로 변환합니다.",
   calibration: "실측 cycle CSV를 사용해 estimator 보정 계수를 적용합니다.",
+  estimator:
+    "TileForge analytic estimator를 즉시 실행하고 현재 입력값 기준 예측 요약을 확인합니다.",
   tools:
-    "서버 추정, 프로젝트 저장, full-pipeline 실행, 상태 진단을 수행합니다.",
+    "프로젝트 저장, full-pipeline 실행, 작업 새로고침, 상태 진단을 수행합니다.",
 };
 
 const tabTips: Record<Tab, string> = {
@@ -268,15 +272,18 @@ export default function Home() {
     }),
     [tileM, tileN, tileK],
   );
-  const request: SearchRequest = {
-    hardware: { ...hardware, dataflow: dataflowModes[0] ?? hardware.dataflow },
-    shapes,
-    candidates,
-    objective,
-    maxResultsPerOp: 24,
-    calibration,
-    scaleSim,
-  };
+  const request: SearchRequest = useMemo(
+    () => ({
+      hardware: { ...hardware, dataflow: dataflowModes[0] ?? hardware.dataflow },
+      shapes,
+      candidates,
+      objective,
+      maxResultsPerOp: 24,
+      calibration,
+      scaleSim,
+    }),
+    [hardware, dataflowModes, shapes, candidates, objective, calibration, scaleSim],
+  );
   const effectiveHardwarePresets = useMemo(
     () => [...hardwarePresets, ...userHardwarePresets.map((p: any) => p.hardware).filter(Boolean)],
     [userHardwarePresets],
@@ -288,17 +295,18 @@ export default function Home() {
     }
     return map;
   }, [userWorkloadPresets]);
-  const result = useMemo(() => estimateAll(request), [JSON.stringify(request)]);
+  const requestKey = useMemo(() => JSON.stringify(request), [request]);
+  const result = useMemo(() => estimateAll(request), [requestKey]);
   const confidence = useMemo(
     () =>
       assessConfidence(result, {
         calibrationSamples: calibration?.samples.length ?? 0,
       }),
-    [JSON.stringify(result.summary), calibration?.samples.length],
+    [result.summary, calibration?.samples.length],
   );
   const uncertainty = useMemo(
     () => totalCycleUncertainty(result),
-    [JSON.stringify(result.summary)],
+    [result.summary],
   );
   const arraySweep = useMemo(
     () =>
@@ -309,7 +317,7 @@ export default function Home() {
         arrays: defaultArraySweep,
         objective,
       }),
-    [JSON.stringify(request)],
+    [requestKey],
   );
 
   useEffect(() => {
@@ -350,7 +358,7 @@ export default function Home() {
   useEffect(() => {
     setServerReportMarkdown("");
     setServerReportJobId("");
-  }, [JSON.stringify(request)]);
+  }, [requestKey]);
 
   function startLiveJob(id: string) {
     const trimmed = id.trim();
@@ -925,6 +933,7 @@ export default function Home() {
                 "workload",
                 "conv",
                 "calibration",
+                "estimator",
                 "tools",
               ] as InputTab[]
             ).map((t) => (
@@ -1523,17 +1532,47 @@ export default function Home() {
               </>
             )}
 
-            {inputTab === "tools" && (
+            {inputTab === "estimator" && (
               <>
-                <h3 title="서버 계산, 프로젝트 저장, worker job, 진단 기능을 실행합니다.">
-                  도구 / 실행
+                <h3 title="현재 입력값을 TileForge analytic estimator로 계산합니다.">
+                  TileForge Estimator
                 </h3>
+                <p className="small" title="이 값은 SCALE-Sim/IREE를 실행하지 않은 estimator 미리보기입니다.">
+                  현재 미리보기: {result.results.length}개 연산, 총 {Math.round(result.summary.totalCycles).toLocaleString()} cycles
+                </p>
+                <p className="small" title="선택된 주 데이터플로우와 후보 tile 범위를 요약합니다.">
+                  기준 dataflow: <code>{request.hardware.dataflow}</code>, 후보 tileM/N/K: <code>{tileM}</code> / <code>{tileN}</code> / <code>{tileK}</code>
+                </p>
                 <ActionButton
-                  tip="현재 입력값을 API 서버로 보내 estimator를 실행합니다. 로컬 Next.js 서버에서 계산됩니다."
+                  tip="현재 입력값을 /api/estimate로 보내 서버 측 estimator를 실행합니다."
                   onClick={runServerEstimate}
                 >
-                  서버 추정 실행
+                  Estimator 서버 실행
                 </ActionButton>
+                <ActionButton
+                  className="secondary"
+                  tip="Estimator 결과와 SCALE-Sim/IREE 산출물을 함께 만들 full-pipeline job을 생성합니다."
+                  onClick={() => createJob("full-pipeline")}
+                >
+                  Estimator + SCALE-Sim/IREE 전체 실행
+                </ActionButton>
+                {serverMessage && (
+                  <p className="small warn" title="최근 estimator/API 실행 결과입니다.">
+                    {serverMessage}
+                  </p>
+                )}
+              </>
+            )}
+
+
+            {inputTab === "tools" && (
+              <>
+                <h3 title="프로젝트 저장, worker job, 진단 기능을 실행합니다.">
+                  도구 / 실행
+                </h3>
+                <p className="small" title="Estimator는 별도 Estimator 탭에서 바로 실행할 수 있습니다.">
+                  추정 실행은 왼쪽의 <strong>Estimator</strong> 탭으로 분리했습니다.
+                </p>
                 <ActionButton
                   className="secondary"
                   tip="현재 프로젝트 설정을 .tileforge/project.json에 저장합니다."
