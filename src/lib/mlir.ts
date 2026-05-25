@@ -20,7 +20,7 @@ export function generateArtifacts(res: Omit<SearchResponse, "artifacts"> & { art
   const scaleSimLayout = generateScaleSimLayout(res as SearchResponse);
   const scaleSimTopkTopology = generateScaleSimTopkTopology(res as SearchResponse);
   const scaleSimTopkLayout = generateScaleSimTopkLayout(res as SearchResponse);
-  const projectJson = JSON.stringify({ version: "0.5.0", name: res.request.hardware.name, createdAt: new Date().toISOString(), hardware: res.request.hardware, shapes: res.request.shapes, candidates: res.request.candidates, objective: res.request.objective, scaleSim: res.request.scaleSim }, null, 2);
+  const projectJson = JSON.stringify({ version: "0.5.0", name: res.request.hardware.name, createdAt: new Date().toISOString(), hardware: res.request.hardware, shapes: res.request.shapes, candidates: res.request.candidates, objective: res.request.objective, calibration: res.request.calibration, scaleSim: res.request.scaleSim }, null, 2);
   const manifestJson = JSON.stringify({ tileforgeVersion: "0.5.0-workbench", createdAt: new Date().toISOString(), hardware: res.request.hardware, shapes: res.request.shapes, candidates: res.request.candidates, objective: res.request.objective, scaleSim: res.request.scaleSim, summary: res.summary }, null, 2);
   const ireeCommand = generateIreeCommand("llvm-cpu", "generated.mlir", "transform.mlir", "model.vmfb", res.request.hardware);
   const latexTable = latexPolicyTable(res as SearchResponse);
@@ -38,10 +38,10 @@ export function generateArtifacts(res: Omit<SearchResponse, "artifacts"> & { art
   return { policyCsv, mlir, transformDialect, reportMarkdown: "", scaleSimConfig, scaleSimTopology, scaleSimLayout, scaleSimTopkTopology, scaleSimTopkLayout, projectJson, manifestJson, ireeCommand, latexTable, svgSummary, experimentComparisonCsv, validationMarkdown: validation.markdown, validationCsv: validation.csv, robustPolicyMarkdown: robust.markdown, robustPolicyCsv: robust.csv, dataflowComparisonCsv: dataflowCsv, memoryTrafficCsv: trafficCsv, pruneReportMarkdown: prune, tileScheduleSvg: scheduleSvg };
 }
 export function generatePolicyCsv(res: SearchResponse): string {
-  const rows = ["모델(model),연산(op_name),M,N,K,배열_rows(array_rows),배열_cols(array_cols),데이터플로우(dataflow),타일_M(tile_m),타일_N(tile_n),타일_K(tile_k),tileM,tileN,tileK,사이클(cycles),full_layer_cycles,tile_policy_cycles,시간_us(time_us),PE_사용률(utilization),패딩_비율(padding_ratio),SRAM_bytes,점수(score),경고(warnings),설명(explanation)"];
+  const rows = ["모델(model),연산(op_name),M,N,K,배열_rows(array_rows),배열_cols(array_cols),데이터플로우(dataflow),타일_M(tile_m),타일_N(tile_n),타일_K(tile_k),tileM,tileN,tileK,사이클(cycles),시간_us(time_us),PE_사용률(utilization),패딩_비율(padding_ratio),SRAM_bytes,점수(score),경고(warnings),설명(explanation)"];
   for (const r of res.results) {
     const b = r.best, s = r.shape, h = res.request.hardware;
-    rows.push([s.model,s.opName,s.m,s.n,s.k,h.arrayRows,h.arrayCols,h.dataflow,b.tileM,b.tileN,b.tileK,b.tileM,b.tileN,b.tileK,b.cycles,b.fullLayerCycles ?? b.cycles,b.tilePolicyCycles ?? b.cycles,b.timeUs.toFixed(4),b.utilization.toFixed(6),b.paddingRatio.toFixed(6),b.sramBytes,b.score.toFixed(6),`"${b.warnings.join("; ")}"`,`"${b.explanation.replaceAll('"','""')}"`].join(","));
+    rows.push([s.model,s.opName,s.m,s.n,s.k,h.arrayRows,h.arrayCols,h.dataflow,b.tileM,b.tileN,b.tileK,b.tileM,b.tileN,b.tileK,b.cycles,b.timeUs.toFixed(4),b.utilization.toFixed(6),b.paddingRatio.toFixed(6),b.sramBytes,b.score.toFixed(6),`"${b.warnings.join("; ")}"`,`"${b.explanation.replaceAll('"','""')}"`].join(","));
   }
   return rows.join("\n");
 }

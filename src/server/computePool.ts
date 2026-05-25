@@ -23,7 +23,7 @@ export interface ComputePoolStats {
 }
 
 function shapeKey(req: SearchRequest, shape: MatmulShape) {
-  return hashObject({ m: shape.m, n: shape.n, k: shape.k, dtypeBytes: shape.dtypeBytes, hardware: req.hardware, candidates: req.candidates, objective: req.objective });
+  return hashObject({ m: shape.m, n: shape.n, k: shape.k, dtypeBytes: shape.dtypeBytes, hardware: req.hardware, candidates: req.candidates, objective: req.objective, calibration: req.calibration });
 }
 
 function materializeResponse(req: SearchRequest, clusterResults: Map<string, OpSearchResult>, stats: ComputePoolStats): SearchResponse & { computePoolStats?: ComputePoolStats } {
@@ -82,16 +82,17 @@ export async function estimateWithClusterPool(req: SearchRequest): Promise<Searc
         candidates: req.candidates,
         objective: req.objective,
         maxResultsPerOp: req.maxResultsPerOp ?? 32,
+        calibration: req.calibration,
         workers: requestedWorkers
       });
       for (const { key, taskId } of representatives) clusterResults.set(key, taskResults.get(taskId)!);
       return materializeResponse(req, clusterResults, { enabled: true, workers: requestedWorkers, uniqueShapeKeys: clusters.size, totalOps: req.shapes.length, mode: "worker_threads", candidateCombos });
     } catch (error: any) {
-      for (const { key, shape } of representatives) clusterResults.set(key, estimateForShape(req.hardware, shape, req.candidates, req.objective, req.maxResultsPerOp ?? 32));
+      for (const { key, shape } of representatives) clusterResults.set(key, estimateForShape(req.hardware, shape, req.candidates, req.objective, req.maxResultsPerOp ?? 32, req.calibration));
       return materializeResponse(req, clusterResults, { enabled: false, workers: 0, uniqueShapeKeys: clusters.size, totalOps: req.shapes.length, mode: "fallback_single", candidateCombos, fallbackReason: error?.message ?? String(error) });
     }
   }
 
-  for (const { key, shape } of representatives) clusterResults.set(key, estimateForShape(req.hardware, shape, req.candidates, req.objective, req.maxResultsPerOp ?? 32));
+  for (const { key, shape } of representatives) clusterResults.set(key, estimateForShape(req.hardware, shape, req.candidates, req.objective, req.maxResultsPerOp ?? 32, req.calibration));
   return materializeResponse(req, clusterResults, { enabled: requestedWorkers > 0, workers: requestedWorkers, uniqueShapeKeys: clusters.size, totalOps: req.shapes.length, mode: clusters.size < req.shapes.length ? "clustered" : "single", candidateCombos });
 }

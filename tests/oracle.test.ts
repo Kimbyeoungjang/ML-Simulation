@@ -26,7 +26,7 @@ describe("SCALE-Sim reference oracle", () => {
           maxResultsPerOp: 8,
           scaleSim: scaleSimDefaults,
         }, { includeArtifacts: false });
-        return [dataflow, response.results.reduce((sum, row) => sum + Math.round(row.best.tilePolicyCycles ?? row.best.cycles), 0)];
+        return [dataflow, response.summary.totalCycles];
       }),
     ) as Record<Dataflow, number>;
 

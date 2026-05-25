@@ -1,9 +1,22 @@
 import { NextResponse } from "next/server";
 import { deleteJob, listJobs } from "@/server/jobStore";
+import { apiBodyLimitBytes, bodyLimitErrorResponse, readLimitedJsonBody } from "@/server/requestLimits";
+
+function daysValue(value: unknown): number {
+  const parsed = Number(value ?? 30);
+  if (!Number.isFinite(parsed)) return 30;
+  return Math.max(1, Math.min(Math.floor(parsed), 3650));
+}
 
 export async function POST(req: Request) {
-  const body = await req.json().catch(() => ({}));
-  const olderThanDays = Number(body.olderThanDays ?? 30);
+  let body: any;
+  try { body = await readLimitedJsonBody(req, apiBodyLimitBytes("TILEFORGE_CLEANUP_MAX_BODY_BYTES", 64_000), {}); }
+  catch (error) {
+    const limit = bodyLimitErrorResponse(error);
+    if (limit) return NextResponse.json(limit, { status: limit.status });
+    return NextResponse.json({ error: "Invalid cleanup request" }, { status: 400 });
+  }
+  const olderThanDays = daysValue(body.olderThanDays);
   const keepRunning = body.keepRunning !== false;
   const cutoff = Date.now() - olderThanDays * 24 * 60 * 60 * 1000;
   let deleted = 0;

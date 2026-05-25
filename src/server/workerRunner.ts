@@ -1,8 +1,8 @@
 import path from "node:path";
-import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, stat } from "node:fs/promises";
 import type { JobRecord } from "@/types/job";
 import { estimateAll } from "@/lib/estimator";
-import { applyEstimatorSuiteToSearchResponse, type SearchResponseWithEstimatorSuite } from "@/lib/estimatorSuiteApply";
+import { parseCsvRecords } from "@/lib/csv";
 import { scaleSimTopkCandidates } from "@/lib/mlir";
 import { estimateMaybeThreaded } from "./threadedEstimate";
 import { responseToPolicyEntries } from "@/lib/policyDb";
@@ -14,14 +14,12 @@ import {
 import {
   acquireJobLock,
   addLog,
-  addLogImmediate,
   markStageDone,
   readJob,
   releaseJobLock,
   saveJob,
   updateJobStatus,
   updateProgress,
-  updateProgressImmediate,
 } from "./jobStore";
 import {
   runExternalCommand,
@@ -30,7 +28,7 @@ import {
 } from "./externalCommand";
 import { normalizeError } from "@/lib/errors";
 import { nowIso } from "@/lib/determinism";
-import { getWorkspaceRoot, jobDir } from "./workspace";
+import { jobDir } from "./workspace";
 import { atomicWriteFile, hasStageMarker, writeStageMarker } from "./atomic";
 import {
   computeArtifactIntegrity,
@@ -41,12 +39,6 @@ import { assessConfidence, confidenceMarkdown } from "@/lib/confidence";
 import { readEstimateCache, writeEstimateCache, cacheKey as estimateCacheKey } from "@/lib/cache";
 import { totalCycleUncertainty } from "@/lib/uncertainty";
 import { recordArtifactSqlite } from "./sqliteStore";
-import { activateEstimatorSuiteModel, readActiveEstimatorSuiteModel } from "./activeEstimatorSuite";
-import { trainEstimatorSuite } from "@/lib/estimatorSuite";
-import { buildEstimatorSuiteArtifacts, normalizeSuiteSplitKinds, parseEstimatorSamplesCsv } from "@/lib/estimatorSuiteArtifacts";
-import { buildEstimatorDataset, estimatorDatasetSummaryMarkdown } from "@/lib/estimatorSuiteDataset";
-import { buildValidationReport, type ValidationSample } from "@/lib/verification";
-
 import {
   commandLabel,
   formatCandidateErrors,
@@ -151,12 +143,6 @@ async function runJobOnce(job: JobRecord) {
     "요청을 검증하고 상태 machine을 초기화했습니다",
   );
   await throwIfCancelled(job);
-
-  if (job.kind === "estimator-suite-train") {
-    await runEstimatorSuiteTrainingJob(job);
-    return;
-  }
-
   const versions = {
     scalesim: await detectExternalToolVersion(
       process.env.TILEFORGE_SCALE_SIM_CMD,
@@ -169,7 +155,7 @@ async function runJobOnce(job: JobRecord) {
     await addLog(job, `SCALE-Sim 버전: ${versions.scalesim}`);
   if (versions.iree) await addLog(job, `IREE 버전: ${versions.iree}`);
 
-  let res: SearchResponseWithEstimatorSuite | undefined;
+  let res: ReturnType<typeof estimateAll> | undefined;
   const dir = jobDir(job.id);
   if (!(await hasStageMarker(dir, "estimate"))) {
     await updateProgress(job, "estimating", 15, "Estimator 실행 중");
@@ -182,13 +168,9 @@ async function runJobOnce(job: JobRecord) {
       await writeEstimateCache(job.request, res);
       await addLog(job, `Estimator cache 저장: ${estimateCacheKey(job.request)}`);
     }
-    const activeModel = await readActiveEstimatorSuiteModel();
-    res = applyEstimatorSuiteToSearchResponse(res, activeModel);
-    if (res.estimatorSuite?.applied) await addLog(job, `활성 Estimator Suite 적용: analytical=${res.estimatorSuite.totalAnalyticalCycles.toLocaleString()} → learned=${res.estimatorSuite.totalLearnedCycles.toLocaleString()} cycles`);
     await writeStageMarker(dir, "estimate", {
       totalCycles: res.summary.totalCycles,
       cacheKey: estimateCacheKey(job.request),
-      estimatorSuite: res.estimatorSuite,
     });
     await markStageDone(job, "estimating", "Estimator 완료");
   } else {
@@ -199,9 +181,6 @@ async function runJobOnce(job: JobRecord) {
       "완료된 estimator 단계를 재사용합니다",
     );
     res = (await readEstimateCache(job.request)) ?? await estimateMaybeThreaded(job.request);
-    const activeModel = await readActiveEstimatorSuiteModel();
-    res = applyEstimatorSuiteToSearchResponse(res, activeModel);
-    if (res.estimatorSuite?.applied) await addLog(job, `활성 Estimator Suite 적용: analytical=${res.estimatorSuite.totalAnalyticalCycles.toLocaleString()} → learned=${res.estimatorSuite.totalLearnedCycles.toLocaleString()} cycles`);
   }
 
   await updateProgress(
@@ -278,111 +257,6 @@ async function runJobOnce(job: JobRecord) {
   );
 }
 
-
-function suiteNum(payload: any, name: string, fallback: number) {
-  const v = Number(payload?.options?.[name] ?? payload?.[name]);
-  return Number.isFinite(v) ? v : fallback;
-}
-
-async function runEstimatorSuiteTrainingJob(job: JobRecord) {
-  const payload = job.estimatorSuite ?? {};
-  const suiteRoot = path.join(getWorkspaceRoot(), "estimator-suite");
-  const runDir = path.join(suiteRoot, job.id);
-  const localDir = jobDir(job.id);
-  await mkdir(runDir, { recursive: true });
-
-  updateProgressImmediate(job, "preparing-dataset", 8, "Estimator Suite 학습 dataset 준비 중");
-  await throwIfCancelled(job);
-
-  let csvText = String(payload.csvText ?? "");
-  if (!csvText && payload.csvPath) {
-    const csvAbs = path.resolve(localDir, String(payload.csvPath));
-    if (csvAbs.startsWith(localDir)) csvText = await readFile(csvAbs, "utf8");
-  }
-  let samples = parseEstimatorSamplesCsv(csvText);
-  let datasetSummaryMarkdown = "";
-  if (payload.mode === "dataset" || Array.isArray(payload.files) || Array.isArray(payload.filePaths)) {
-    const rawFiles = Array.isArray(payload.files) ? payload.files : [];
-    const pathFiles = Array.isArray(payload.filePaths)
-      ? await Promise.all(payload.filePaths.map(async (f: any, index: number) => {
-          const rel = String(f?.path ?? "");
-          const abs = path.resolve(localDir, rel);
-          if (!abs.startsWith(localDir)) return { name: String(f?.name ?? `dataset_${index}.csv`), text: "" };
-          return { name: String(f?.name ?? `dataset_${index}.csv`), text: await readFile(abs, "utf8") };
-        }))
-      : [];
-    const files = [...rawFiles, ...pathFiles]
-      .map((f: any, index: number) => ({ name: String(f?.name ?? `dataset_${index}.csv`), text: String(f?.text ?? "") }))
-      .filter((f: { name: string; text: string }) => f.text.trim().length > 0);
-    const dataset = buildEstimatorDataset(files, { dedupe: payload.dedupe !== false });
-    csvText = dataset.csv;
-    samples = dataset.samples;
-    datasetSummaryMarkdown = estimatorDatasetSummaryMarkdown(dataset.summary);
-    addLogImmediate(job, `Dataset Manager: files=${files.length}, inputRows=${dataset.summary.inputRows}, validSamples=${dataset.summary.validSamples}, duplicates=${dataset.summary.duplicatesRemoved}`);
-    await writeFile(path.join(runDir, "estimator-suite-dataset.csv"), dataset.csv, "utf8");
-    await writeFile(path.join(runDir, "estimator-suite-dataset-summary.md"), datasetSummaryMarkdown, "utf8");
-    await writeFile(path.join(localDir, "estimator-suite-dataset.csv"), dataset.csv, "utf8");
-    await writeFile(path.join(localDir, "estimator-suite-dataset-summary.md"), datasetSummaryMarkdown, "utf8");
-    job.artifacts = [...new Set([...(job.artifacts ?? []), "estimator-suite-dataset.csv", "estimator-suite-dataset-summary.md"])];
-  } else {
-    await writeFile(path.join(runDir, "estimator-suite-input.csv"), csvText, "utf8");
-    if (!payload.csvPath) await writeFile(path.join(localDir, "estimator-suite-input.csv"), csvText, "utf8");
-    job.artifacts = [...new Set([...(job.artifacts ?? []), "estimator-suite-input.csv"])];
-  }
-  await saveJob(job);
-
-  if (samples.length < 40) {
-    throw new Error(`Estimator suite requires at least 40 valid measured samples; parsed ${samples.length}.`);
-  }
-
-  addLogImmediate(job, `학습 sample ${samples.length.toLocaleString()}개 파싱 완료`);
-  addLogImmediate(job, `설정: trees=${suiteNum(payload, "trees", 160)}, maxDepth=${suiteNum(payload, "maxDepth", suiteNum(payload, "max-depth", 10))}, hidden=${suiteNum(payload, "hiddenUnits", suiteNum(payload, "hidden", 64))}, epochs=${suiteNum(payload, "epochs", 900)}, maxFinalTrain=${suiteNum(payload, "maxFinalTrainSamples", suiteNum(payload, "max-final-train", 20000))}`);
-  await throwIfCancelled(job);
-
-  const model = trainEstimatorSuite(samples, {
-    trees: suiteNum(payload, "trees", 160),
-    maxDepth: suiteNum(payload, "maxDepth", suiteNum(payload, "max-depth", 10)),
-    minLeaf: suiteNum(payload, "minLeaf", suiteNum(payload, "min-leaf", 4)),
-    hiddenUnits: suiteNum(payload, "hiddenUnits", suiteNum(payload, "hidden", 64)),
-    epochs: suiteNum(payload, "epochs", 900),
-    learningRate: suiteNum(payload, "learningRate", suiteNum(payload, "learning-rate", 0.01)),
-    l2: suiteNum(payload, "l2", 0.0001),
-    seed: suiteNum(payload, "seed", 42),
-    validationFraction: suiteNum(payload, "validationFraction", suiteNum(payload, "validation", 0.2)),
-    maxSplitTrainSamples: suiteNum(payload, "maxSplitTrainSamples", suiteNum(payload, "max-split-train", 12000)),
-    maxFinalTrainSamples: suiteNum(payload, "maxFinalTrainSamples", suiteNum(payload, "max-final-train", 20000)),
-    splitKinds: normalizeSuiteSplitKinds((payload.options as any)?.splits ?? (payload as any).splits),
-    progress: (event) => {
-      const stage = (event.stage === "training-tree" || event.stage === "training-neural" || event.stage === "validating") ? event.stage : "validating";
-      const progress = Math.max(10, Math.min(96, Math.round(Number(event.progress ?? job.progress ?? 10))));
-      updateProgressImmediate(job, stage as any, progress, event.message);
-    },
-  });
-
-  updateProgressImmediate(job, "writing-artifacts", 97, "학습 산출물 생성 중");
-  const bundle = buildEstimatorSuiteArtifacts(model, samples);
-  const files: Record<string, string> = {
-    "estimator-suite-model.json": bundle.modelJson,
-    "suite-tree-residual-model.json": bundle.treeModelJson,
-    "suite-neural-residual-model.json": bundle.neuralModelJson,
-    "estimator-suite-validation.csv": bundle.validationCsv,
-    "estimator-suite-predictions.csv": bundle.predictionsCsv,
-    "estimator-suite-report.md": bundle.reportMarkdown,
-  };
-  for (const [name, text] of Object.entries(files)) {
-    await writeFile(path.join(runDir, name), text, "utf8");
-    await writeFile(path.join(localDir, name), text, "utf8");
-  }
-  job.artifacts = [...new Set([...(job.artifacts ?? []), ...Object.keys(files)])];
-  if (payload.activate !== false) {
-    await activateEstimatorSuiteModel(job.id);
-    addLogImmediate(job, `활성 Estimator Suite로 적용 완료: ${job.id}`);
-  }
-  await saveJob(job);
-  updateProgressImmediate(job, "done", 100, `Estimator Suite 학습 완료: samples=${model.metadata.samples}, train=${model.metadata.trainSamples}, recommended=${model.recommended}, blend=${model.blend?.mode ?? "linear-legacy"}, weights a=${model.weights.analytical.toFixed(3)}, tree=${model.weights.tree.toFixed(3)}, residual-neural=${model.weights.neural.toFixed(3)}, direct-neural=${(model.weights.directNeural ?? 0).toFixed(3)}`);
-  await updateJobStatus(job, "succeeded", "Estimator Suite 학습 job 완료");
-}
-
 async function writeArtifacts(
   job: JobRecord,
   res: ReturnType<typeof estimateAll>,
@@ -403,7 +277,7 @@ async function writeArtifacts(
   );
   const confidence = assessConfidence(res, {
     externalValidated: Boolean(res.artifacts.validationCsv),
-    estimatorSuiteSamples: (res as any).estimatorSuite?.applied ? (res as any).estimatorSuite.modelSamples ?? 0 : 0,
+    calibrationSamples: res.request.calibration?.samples?.length ?? 0,
   });
   const uncertainty = totalCycleUncertainty(res);
   const artifacts: Record<string, string> = {
@@ -511,9 +385,6 @@ type ScaleSimLayerSummary = {
   tileCount?: number;
   cycles: number;
   cyclesPerTile?: number;
-  scaleSimRawCycles?: number;
-  scaleSimRows?: number;
-  tileExtrapolatedCycles?: number;
   predictedCycles?: number;
   predictedTimeUs?: number;
   predictedUtilization?: number;
@@ -537,37 +408,7 @@ async function fileSize(file: string): Promise<number> {
 }
 
 function csvRows(text: string): Array<Record<string, string>> {
-  const lines = text.trim().split(/\r?\n/).filter(Boolean);
-  if (lines.length < 2) return [];
-  const headers = splitCsvLine(lines[0]).map((h) => h.trim());
-  return lines.slice(1).map((line) => {
-    const values = splitCsvLine(line);
-    const row: Record<string, string> = {};
-    headers.forEach((h, i) => {
-      row[h] = values[i] ?? "";
-    });
-    return row;
-  });
-}
-
-function splitCsvLine(line: string): string[] {
-  const values: string[] = [];
-  let current = "";
-  let quoted = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (ch === '"') {
-      if (quoted && line[i + 1] === '"') {
-        current += '"';
-        i++;
-      } else quoted = !quoted;
-    } else if (ch === "," && !quoted) {
-      values.push(current);
-      current = "";
-    } else current += ch;
-  }
-  values.push(current);
-  return values;
+  return parseCsvRecords(text);
 }
 
 function stringFromRow(
@@ -602,6 +443,8 @@ const cycleColumnNames = [
   "Compute cycles",
   "Compute Cycles",
   "Total_compute_cycles",
+  "Total Cycles (incl. prefetch)",
+  "Total Cycles incl. prefetch",
 ];
 
 async function readCsvRowsIfExists(file: string): Promise<Array<Record<string, string>>> {
@@ -622,7 +465,7 @@ async function parseScaleSimLayerReports(
   const detailRows = await readCsvRowsIfExists(path.join(reportDir, "DETAILED_ACCESS_REPORT.csv"));
   return computeRows.map((row, index) => {
     const meta = metadata[index] ?? {};
-    const rawCycles = numberFromRow(row, cycleColumnNames) ?? 0;
+    const cyclesPerTile = numberFromRow(row, cycleColumnNames) ?? 0;
     const tileCount = meta.tileCount && meta.tileCount > 0 ? meta.tileCount : undefined;
     const detail = detailRows[index] ?? {};
     const sramAccesses =
@@ -640,11 +483,8 @@ async function parseScaleSimLayerReports(
         meta.name ??
         stringFromRow(row, ["Layer Name", "Layer name", "Layer", "layer", "Name", "name"]) ??
         `layer_${index + 1}`,
-      cycles: rawCycles,
-      cyclesPerTile: tileCount ? rawCycles : undefined,
-      scaleSimRawCycles: rawCycles,
-      scaleSimRows: 1,
-      tileExtrapolatedCycles: tileCount ? rawCycles * tileCount : undefined,
+      cycles: tileCount ? cyclesPerTile * tileCount : cyclesPerTile,
+      cyclesPerTile: tileCount ? cyclesPerTile : undefined,
       totalCyclesInclPrefetch: numberFromRow(row, ["Total Cycles (incl. prefetch)", "Total Cycles incl. prefetch"]),
       stallCycles: numberFromRow(row, ["Stall Cycles"]),
       overallUtil: numberFromRow(row, ["Overall Util %"]),
@@ -788,7 +628,6 @@ async function runScaleSimForJob(
       .filter((layer) => layer.cycles > 0);
     const totalCycles = layers.reduce((sum, layer) => sum + layer.cycles, 0);
     const candidateLayers = await runScaleSimTopkForJob(job, res, commands);
-    await pruneScaleSimRawOutputs(job, outDir, [computeReport]);
     const summary: ExternalRunSummary = {
       ok: true,
       skipped: false,
@@ -902,7 +741,6 @@ async function runScaleSimTopkForJob(
   }
   const layers = (await parseScaleSimLayerReports(computeReport, metadata))
     .filter((layer) => layer.cycles > 0);
-  await pruneScaleSimRawOutputs(job, outDir, [computeReport]);
   const summary = {
     ok: true,
     tool: "scalesim-top3",
@@ -935,54 +773,6 @@ async function runScaleSimTopkForJob(
   return layers;
 }
 
-
-async function pruneScaleSimRawOutputs(job: JobRecord, root: string, keepFiles: string[] = []): Promise<{ removedFiles: number; removedBytes: number }> {
-  if (process.env.TILEFORGE_KEEP_EXTERNAL_RAW === "1") return { removedFiles: 0, removedBytes: 0 };
-  const keep = new Set(keepFiles.map(file => path.resolve(file)));
-  const keepNames = new Set([
-    "COMPUTE_REPORT.csv",
-    "DETAILED_ACCESS_REPORT.csv",
-    "BANDWIDTH_REPORT.csv",
-    "RUN_STATS.csv",
-    "CONFIG.csv",
-  ]);
-  const maxSmallReportBytes = Number(process.env.TILEFORGE_EXTERNAL_KEEP_REPORT_MAX_BYTES ?? 25 * 1024 * 1024);
-  let removedFiles = 0;
-  let removedBytes = 0;
-  async function walk(dir: string): Promise<void> {
-    let entries: import("node:fs").Dirent[];
-    try {
-      entries = await readdir(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        await walk(full);
-        continue;
-      }
-      if (!entry.isFile()) continue;
-      const resolved = path.resolve(full);
-      const upper = entry.name.toUpperCase();
-      if (keep.has(resolved) || keepNames.has(entry.name)) continue;
-      let size = 0;
-      try { size = (await stat(full)).size; } catch { continue; }
-      const looksVerbose = /TRACE|ACCESS|BW|BANDWIDTH|DETAILED|DRAM|SRAM|IFMAP|FILTER|OFMAP/i.test(entry.name);
-      const shouldDelete = looksVerbose || size > maxSmallReportBytes;
-      if (!shouldDelete) continue;
-      await rm(full, { force: true });
-      removedFiles++;
-      removedBytes += size;
-    }
-  }
-  await walk(root);
-  if (removedFiles) {
-    const mib = removedBytes / 1024 / 1024;
-    await addLog(job, `SCALE-Sim raw output 정리: ${removedFiles}개 파일, ${mib.toFixed(1)} MiB 삭제. 원본 전체 보존은 TILEFORGE_KEEP_EXTERNAL_RAW=1`);
-  }
-  return { removedFiles, removedBytes };
-}
 
 async function readTextTail(file: string, maxChars = 4000): Promise<string> {
   try {
@@ -1141,26 +931,6 @@ function formatPctDelta(actual: number, predicted: number): string {
   return `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`;
 }
 
-
-function accuracyGradeFromRatio(ratio?: number): { label: string; description: string } {
-  if (!ratio || !Number.isFinite(ratio)) return { label: "pending", description: "SCALE-Sim 결과 대기 중" };
-  const err = Math.abs(ratio - 1) * 100;
-  if (err < 5) return { label: "excellent", description: "매우 양호" };
-  if (err < 15) return { label: "good", description: "양호" };
-  if (err < 30) return { label: "warning", description: "주의" };
-  return { label: "poor", description: "재학습 필요" };
-}
-
-function normalizeName(name?: string): string {
-  return String(name || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
-}
-
-function matchScaleLayerForResult(item: any, layers: any[]) {
-  const op = normalizeName(item?.shape?.opName);
-  const modelOp = normalizeName(`${item?.shape?.model || ""}${item?.shape?.opName || ""}`);
-  return layers.find(l => normalizeName(l.name) === op || normalizeName(l.name) === modelOp || normalizeName(l.name).includes(op) || op.includes(normalizeName(l.name)));
-}
-
 function externalComparisonMarkdown(
   res: ReturnType<typeof estimateAll>,
   scale?: ExternalRunSummary,
@@ -1169,7 +939,6 @@ function externalComparisonMarkdown(
   const actualTotal = scale?.totalCycles;
   const hasActual = Boolean(scale?.ok && actualTotal && actualTotal > 0);
   const ratio = hasActual ? actualTotal! / predictedTotal : undefined;
-  const grade = accuracyGradeFromRatio(ratio);
   const absDelta = hasActual ? actualTotal! - predictedTotal : undefined;
   const verdict = !hasActual
     ? "SCALE-Sim 결과가 아직 없어 비교할 수 없습니다."
@@ -1183,7 +952,6 @@ function externalComparisonMarkdown(
     "| 항목 | TileForge estimator | SCALE-Sim 실제 실행 | 차이 | 해석 |",
     "|---|---:|---:|---:|---|",
     `| 전체 cycle | ${predictedTotal.toLocaleString()} | ${hasActual ? actualTotal!.toLocaleString() : "대기 중"} | ${hasActual ? `${absDelta! >= 0 ? "+" : ""}${absDelta!.toLocaleString()} (${formatPctDelta(actualTotal!, predictedTotal)})` : "대기 중"} | ${hasActual ? `SCALE-Sim / estimator = ${ratio!.toFixed(3)}배` : "full-pipeline 완료 후 갱신"} |`,
-    `| 정확도 등급 | - | - | ${hasActual ? `${grade.label} (${grade.description})` : "대기 중"} | ${hasActual && grade.label === "poor" ? "현재 workload에서는 활성 estimator 재학습 또는 guard 확인이 필요합니다." : "-"} |`,
     "",
     `- 분석: ${verdict}`,
     "- 주의: IREE compile 성공은 `generated.mlir`의 컴파일 가능성을 검증하는 단계입니다. 실제 성능 비교의 cycle 기준은 SCALE-Sim 결과를 사용합니다.",
@@ -1218,42 +986,20 @@ function externalComparisonMarkdown(
         `| ${index + 1} | ${item.shape.model}.${item.shape.opName} | ${item.best.cycles.toLocaleString()} | ${((item.best.cycles / predictedTotal) * 100).toFixed(1)}% |`,
       );
     }
-    lines.push(
-      "",
-      "### Full-layer op별 SCALE-Sim 비교",
-      "| 연산 | TileForge cycle | SCALE-Sim layer cycle | 차이 | 판정 |",
-      "|---|---:|---:|---:|---|",
-    );
-    for (const item of [...res.results].sort((a, b) => b.best.cycles - a.best.cycles)) {
-      const layer = matchScaleLayerForResult(item, scale.layers || []);
-      const pred = Number(item.best.cycles) || 0;
-      const actual = Number(layer?.cycles) || 0;
-      const err = actual > 0 && pred > 0 ? ((actual - pred) / pred) * 100 : undefined;
-      const opGrade = accuracyGradeFromRatio(actual > 0 && pred > 0 ? actual / pred : undefined);
-      lines.push(`| ${item.shape.model}.${item.shape.opName} | ${pred.toLocaleString()} | ${actual > 0 ? actual.toLocaleString() : "매칭 실패"} | ${err !== undefined ? `${err >= 0 ? "+" : ""}${err.toFixed(1)}%` : "-"} | ${opGrade.label} |`);
-    }
-    if (hasActual && grade.label === "poor") {
-      lines.push("", "- 경고: 전체 cycle 오차가 30%를 초과합니다. 이 실행에서 Roofline/energy 절대값과 learned ranking은 preliminary 결과로 해석하세요.");
-    }
     if (scale.candidateLayers?.length) {
       lines.push(
         "",
-        "### SCALE-Sim micro-run 참고 진단: 정확도 평가용 아님",
-        "| 연산 | rank | tile | TileForge tile-policy cycle | SCALE-Sim micro-run cycle | naive tile-count 외삽 | SCALE-Sim util | 해석 |",
-        "|---|---:|---|---:|---:|---:|---:|---|",
+        "### SCALE-Sim top3 tile 후보 검증",
+        "| 연산 | rank | tile | TileForge cycle | SCALE-Sim extrapolated cycle | 차이 | SCALE-Sim util |",
+        "|---|---:|---|---:|---:|---:|---:|",
       );
       for (const layer of scale.candidateLayers.slice(0, 12)) {
         const predicted = layer.predictedCycles ?? 0;
-        const raw = layer.scaleSimRawCycles ?? layer.cycles;
-        const extrapolated = layer.tileExtrapolatedCycles;
-        const interpretation = extrapolated && predicted > 0
-          ? "micro-run 외삽값입니다. full-layer 검증/학습 target으로 직접 쓰지 않습니다."
-          : "같은 후보의 micro-run 값입니다.";
+        const delta = predicted > 0 ? ((layer.cycles - predicted) / predicted) * 100 : 0;
         lines.push(
-          `| ${layer.opName ?? layer.name} | ${layer.rank ?? "-"} | ${layer.tileM}x${layer.tileN}x${layer.tileK} | ${predicted.toLocaleString()} | ${Math.round(raw).toLocaleString()} | ${extrapolated ? Math.round(extrapolated).toLocaleString() : "-"} | ${layer.overallUtil !== undefined ? `${layer.overallUtil.toFixed(1)}%` : "해당 없음"} | ${interpretation} |`,
+          `| ${layer.opName ?? layer.name} | ${layer.rank ?? "-"} | ${layer.tileM}x${layer.tileN}x${layer.tileK} | ${predicted.toLocaleString()} | ${Math.round(layer.cycles).toLocaleString()} | ${predicted > 0 ? `${delta >= 0 ? "+" : ""}${delta.toFixed(1)}%` : "해당 없음"} | ${layer.overallUtil !== undefined ? `${layer.overallUtil.toFixed(1)}%` : "해당 없음"} |`,
         );
       }
-      lines.push("", "- 주의: 위 top-k 표는 tile 후보별 micro-run 진단입니다. 전체 cycle 정확도 판정은 full-layer SCALE-Sim layer 비교를 우선합니다.");
     }
   }
   lines.push("");
@@ -1363,21 +1109,6 @@ function externalReportMarkdown(
   );
 }
 
-
-function validationSamplesFromScale(res: ReturnType<typeof estimateAll>, scale?: ExternalRunSummary): ValidationSample[] {
-  if (!scale?.ok || !Array.isArray(scale.layers)) return [];
-  return res.results.map((item) => {
-    const layer = matchScaleLayerForResult(item, scale.layers || []);
-    return {
-      model: item.shape.model,
-      opName: item.shape.opName,
-      predictedCycles: item.best.fullLayerRawCycles ?? item.best.rawCycles ?? item.best.cycles,
-      calibratedCycles: item.best.fullLayerCycles ?? item.best.cycles,
-      scaleSimCycles: layer?.cycles,
-    };
-  }).filter((row) => row.scaleSimCycles && row.scaleSimCycles > 0);
-}
-
 async function appendExternalReport(
   job: JobRecord,
   res: ReturnType<typeof estimateAll>,
@@ -1416,23 +1147,16 @@ async function appendExternalReport(
   const externalValidated = Boolean((scale?.ok && (scale.totalCycles ?? 0) > 0) && (iree?.ok && (iree.vmfbBytes ?? 0) > 0));
   const confidence = assessConfidence(res, {
     externalValidated,
-    estimatorSuiteSamples: (res as any).estimatorSuite?.applied ? (res as any).estimatorSuite.modelSamples ?? 0 : 0,
+    calibrationSamples: res.request.calibration?.samples?.length ?? 0,
     externalCycleRatio: scale?.cycleRatio,
   });
   await atomicWriteFile(path.join(dir, "confidence.md"), confidenceMarkdown(confidence));
-  const validationSamples = validationSamplesFromScale(res, scale);
-  if (validationSamples.length) {
-    const validation = buildValidationReport(res, validationSamples);
-    await atomicWriteFile(path.join(dir, "validation_report.md"), validation.markdown);
-    await atomicWriteFile(path.join(dir, "validation_report.csv"), validation.csv);
-  }
   job.artifacts = [
     ...new Set([
       ...(job.artifacts ?? []),
       "external_validation_report.md",
       "report.md",
       "confidence.md",
-      ...(validationSamples.length ? ["validation_report.md", "validation_report.csv"] : []),
     ]),
   ];
   await saveJob(job);

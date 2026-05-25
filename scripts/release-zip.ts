@@ -1,24 +1,18 @@
-import { readdirSync, readFileSync, statSync, writeFileSync, mkdirSync } from "node:fs";
+import { readdirSync, statSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import { createZip } from "../src/lib/zip";
-import { isGeneratedPath, toPosixPath } from "./generated-paths";
 
-const MAX_RELEASE_FILE_BYTES = 10 * 1024 * 1024;
+const ignore = new Set(["node_modules", ".next", ".tileforge", "dist", "coverage", "release"]);
 const files: Record<string, Buffer> = {};
-
-function walk(dir: string): void {
+function walk(dir: string) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (ignore.has(entry.name)) continue;
     const p = path.join(dir, entry.name);
-    const rel = toPosixPath(path.relative(process.cwd(), p));
-    if (isGeneratedPath(rel)) continue;
-    if (entry.isDirectory()) {
-      walk(p);
-      continue;
-    }
-    if (statSync(p).size <= MAX_RELEASE_FILE_BYTES) files[rel] = readFileSync(p);
+    const rel = path.relative(process.cwd(), p).replace(/\\/g, "/");
+    if (entry.isDirectory()) walk(p);
+    else if (statSync(p).size < 10 * 1024 * 1024) files[rel] = readFileSync(p);
   }
 }
-
 walk(process.cwd());
 mkdirSync("release", { recursive: true });
 writeFileSync("release/tileforge-workbench-v13.zip", createZip(files));

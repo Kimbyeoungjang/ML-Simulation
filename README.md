@@ -2,15 +2,6 @@
 
 TileForge Workbench는 GEMM/Conv 연산을 systolic array에서 실행할 때 어떤 하드웨어 설정과 타일 정책이 유리한지 빠르게 탐색하는 로컬 웹 워크벤치입니다. TileForge estimator로 후보를 빠르게 좁힌 뒤, 필요하면 SCALE-Sim과 IREE를 실제로 실행해 예측값을 교차 검증합니다.
 
-### Scoped Estimator Suite pipeline
-
-Full-layer SCALE-Sim results and tile micro-run extrapolations are different targets. Use the scoped pipeline to split them before training:
-
-- `full-layer`: SCALE-Sim full topology `COMPUTE_REPORT.csv` layer cycles for external validation/full-workload reports.
-- `tile-policy`: tile micro-run × tile-count extrapolation for tile ranking and design-space sweet spots.
-
-The API actions `split-dataset` and `scope-pipeline` write separate datasets, models, predictions, and reports under `datasets/full-layer`, `datasets/tile-policy`, `estimator-suite/full-layer`, and `estimator-suite/tile-policy`. See `docs/scoped-estimator-pipeline.md`.
-
 ## 핵심 기능
 
 - GEMM `M x N x K` workload 분석
@@ -67,14 +58,12 @@ npm run validate:external:required
 | `npm run dev` | 웹 UI와 worker를 함께 실행합니다. |
 | `npm run setup:env` | SCALE-Sim/IREE 실행 명령을 탐색하고 `.env`에 저장합니다. |
 | `npm run setup:fresh` | 생성물, 캐시, node_modules를 정리한 뒤 의존성과 `.env`를 다시 구성합니다. |
-| `npm run test:all` | 타입 검사, 전체 Vitest, 문서/예제/Windows 스크립트/mock 외부 검증을 묶어 실행합니다. |
+| `npm run test:all` | 타입 검사, 단위 테스트, mock/real 외부 검증을 묶어 실행합니다. |
 | `npm run validate:external:required` | 실제 SCALE-Sim/IREE 연동을 필수 조건으로 검증합니다. |
-| `npm run run:scalesim` | SCALE-Sim만 단독 실행/검증합니다. |
+| `npm run run:scalesim:required` | SCALE-Sim만 단독 검증합니다. |
 | `npm run run:iree` | IREE compile만 단독 실행합니다. |
 | `npm run jobs:stats` | job 저장소 통계를 출력합니다. |
 | `npm run jobs:clean` | 오래된 job artifact를 정리합니다. |
-| `npm run clean:generated` | `.tileforge`, build cache, VMFB/COMPUTE_REPORT 같은 로컬 생성물을 정리합니다. |
-| `npm run check:clean` | 소스 트리에 로컬 생성물이 섞였는지 검사합니다. |
 
 ## UI 사용 흐름
 
@@ -151,34 +140,12 @@ docs          설계와 운영 문서
 examples      예제 workload와 calibration 파일
 ```
 
-
-## 저장소 cleanup 정책
-
-소스 zip이나 PR에는 로컬 실행 산출물을 포함하지 않습니다. 다음 파일과 디렉터리는 `.gitignore`에 포함되어 있고, 필요하면 한 번에 삭제할 수 있습니다.
-
-```bash
-npm run clean:generated
-```
-
-정리 대상은 `.tileforge/`, `.next/`, `benchmarks/results/`, `reports/soak-worker.json`, `COMPUTE_REPORT.csv`, `model.vmfb`, `tsconfig.tsbuildinfo` 등입니다. SCALE-Sim/IREE 검증 결과는 job artifact로 다시 생성되므로 소스 베이스에는 포함하지 않는 것이 안전합니다.
-
-릴리스/공유 전에 다음 순서로 확인하는 것을 권장합니다.
-
-```bash
-npm run clean:generated
-npm run check:clean
-npm run release:zip
-```
-
-`release:zip`은 `.env`, `.tileforge`, `node_modules`, build cache, benchmark result 같은 로컬 산출물을 자동 제외하고, 경로를 정규화한 deterministic zip을 생성합니다.
-
 ## 권장 개발 루틴
 
 ```bash
 npm run setup:env
 npm run typecheck
 npm test
-npm run check:clean
 npm run validate:external:required
 npm run dev
 ```
@@ -213,9 +180,9 @@ TILEFORGE_MAX_PARALLEL_JOBS="2"
 
 ```powershell
 npm run test:basic     # typecheck + smoke
-npm run test:unit      # tests/*.test.ts 전체 Vitest 테스트
+npm run test:unit      # 핵심 estimator/validation/workbench 단위 테스트
 npm run test:extras    # 문서/예제/Windows 스크립트/mock 외부 검증
-npm run test:advanced  # property/metamorphic/integration/schema 등 확장 검증만 빠르게 재실행
+npm run test:advanced  # property/metamorphic/integration/schema 등 확장 검증
 npm run test:all       # setup:env + doctor + basic + unit + extras
 ```
 
@@ -223,16 +190,17 @@ npm run test:all       # setup:env + doctor + basic + unit + extras
 
 
 
-## Estimator Suite와 design-space sweet spot
+## SCALE-Sim 회귀 보정 워크플로우
 
-SCALE-Sim/IREE 측정값이 모이면 **Estimator Suite**로 analytical estimator를 보정할 수 있습니다. 보정 모델은 그래프 탭의 `Design-space sweet spot`에도 적용됩니다. 이 그래프는 TPU array, clock, SRAM, DRAM bandwidth와 M/N/K workload scale을 sweep하면서 다음 기준을 함께 봅니다.
+Estimator가 SCALE-Sim보다 지속적으로 높거나 낮게 예측한다면 `calibrate:scalesim` 스크립트로 보정 profile을 만들 수 있습니다.
 
-- `Norm speedup`: workload 크기가 바뀌어도 비교 가능하도록 `(ops/cycle) / (baseline ops/cycle)`로 정규화한 속도 향상입니다. 작은 M/N/K를 넣었을 때 총 cycle만 줄어드는 착시를 줄입니다.
-- `Sweet-spot score`: 정규화 speedup, 평균 utilization, SRAM 초과 패널티, 하드웨어 cost proxy를 함께 반영한 점수입니다.
-- `Consensus`: speedup, throughput, score가 같은 지점에서 얼마나 겹치는지 나타냅니다. 1에 가까울수록 여러 그래프의 sweet spot이 같은 후보에 모입니다.
-- `Pareto 후보`: speedup/throughput/score/cost 관점에서 다른 후보에게 지배되지 않는 설계 지점입니다.
+```powershell
+npm run dev
+# 다른 터미널에서
+npm run calibrate:scalesim:quick
+```
 
-자세한 내용은 `docs/design-space.md`와 `docs/estimator-suite.md`를 참고하세요.
+이 스크립트는 로컬 서버의 `/api/jobs`에 여러 full-pipeline 작업을 넣고, 완료된 작업의 `scalesim_summary.json`과 TileForge estimator 결과를 비교해 `profiles/scalesim-regression-profile.json`을 생성합니다. 생성된 보정 profile은 `measured / predicted` 비율을 기반으로 estimator의 1차 보정 계수를 제공합니다. SCALE-Sim 버전, layout 정책, hardware preset이 바뀌면 다시 생성하는 것을 권장합니다.
 
 ## layout.csv는 누가 정하는가?
 

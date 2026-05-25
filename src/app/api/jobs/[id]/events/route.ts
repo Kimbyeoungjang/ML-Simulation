@@ -1,4 +1,5 @@
 import { readJob } from "@/server/jobStore";
+import { assertSafeJobId } from "@/server/workspace";
 
 export const dynamic = "force-dynamic";
 
@@ -22,8 +23,10 @@ function sanitizeLogLines(lines: string[]): string[] {
 
 export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
+  try { assertSafeJobId(id); } catch { return new Response(JSON.stringify({ error: "invalid job id" }), { status: 400, headers: { "content-type": "application/json" } }); }
   const url = new URL(req.url);
-  const tail = Math.min(Math.max(Number(url.searchParams.get("tail") ?? 200), 20), 5000);
+  const rawTail = Number(url.searchParams.get("tail") ?? 200);
+  const tail = Number.isFinite(rawTail) ? Math.min(Math.max(Math.floor(rawTail), 20), 5000) : 200;
   let closed = false;
   const stream = new ReadableStream({
     async start(controller) {

@@ -2,6 +2,7 @@ import type { ArraySweepRequest, ArraySweepResult, HardwareConfig, HeatmapPoint,
 import { ceilDiv, clamp, mean } from "./math";
 import { generateArtifacts } from "./mlir";
 import { generateReportMarkdown } from "./report";
+import { applyCalibration, calibrationFactor } from "./calibration";
 import { analyzeBottlenecks } from "./bottleneck";
 import { computeRoofline } from "./roofline";
 import { computeEnergy } from "./energy";
@@ -9,15 +10,14 @@ import { Reservoir, TopK } from "./topk";
 import { pruneTileCandidates } from "./pruning";
 import { hashObject } from "./hash";
 import { assertSearchResponseInvariant, assertTileCandidateInvariant, runInvariant } from "./invariants";
-import { estimateFullLayerCycles } from "./fullLayerEstimator";
 
 export function estimateAll(req: SearchRequest, options: { includeArtifacts?: boolean } = {}): SearchResponse {
   const cache = new Map<string, OpSearchResult>();
   const results = req.shapes.map(shape => {
-    const key = hashObject({ shape: { m: shape.m, n: shape.n, k: shape.k, dtypeBytes: shape.dtypeBytes }, hardware: req.hardware, candidates: req.candidates, objective: req.objective, max: req.maxResultsPerOp ?? 32, scaleSim: req.scaleSim });
+    const key = hashObject({ shape: { m: shape.m, n: shape.n, k: shape.k, dtypeBytes: shape.dtypeBytes }, hardware: req.hardware, candidates: req.candidates, objective: req.objective, max: req.maxResultsPerOp ?? 32, calibration: req.calibration, scaleSim: req.scaleSim });
     const hit = cache.get(key);
     if (hit) return { ...hit, shape, best: { ...hit.best, shapeId: shape.id, model: shape.model, opName: shape.opName }, candidates: hit.candidates.map(c => ({ ...c, shapeId: shape.id, model: shape.model, opName: shape.opName })) };
-    const out = estimateForShape(req.hardware, shape, req.candidates, req.objective, req.maxResultsPerOp ?? 32, req.scaleSim);
+    const out = estimateForShape(req.hardware, shape, req.candidates, req.objective, req.maxResultsPerOp ?? 32, req.calibration, req.scaleSim);
     cache.set(key, out);
     return out;
   });
@@ -59,7 +59,8 @@ function emptyArtifacts(): SearchResponse["artifacts"] {
   };
 }
 
-export function estimateForShape(hw: HardwareConfig, shape: MatmulShape, cand: TileCandidates, objective: Objective, maxResults: number, scaleSim?: ScaleSimOverrides): OpSearchResult {
+export function estimateForShape(hw: HardwareConfig, shape: MatmulShape, cand: TileCandidates, objective: Objective, maxResults: number, calibration = undefined as SearchRequest["calibration"], scaleSim?: ScaleSimOverrides): OpSearchResult {
+  const factor = calibrationFactor(calibration, hw, shape);
   const maxKeep = Math.max(1, maxResults);
   const top = new TopK<TileCandidateResult>(maxKeep, compareCandidates);
   const paretoPool = new TopK<TileCandidateResult>(Math.max(maxKeep * 4, 64), compareCandidates);
@@ -78,7 +79,7 @@ export function estimateForShape(hw: HardwareConfig, shape: MatmulShape, cand: T
 
   for (const kept of pruned.kept) {
     const tm = kept.tileM, tn = kept.tileN, tk = kept.tileK;
-    const estimated = estimateTile(hw, shape, tm, tn, tk, objective, scaleSim);
+    const estimated = applyCalibration(estimateTile(hw, shape, tm, tn, tk, objective, scaleSim), factor);
     runInvariant("tile candidate", () => assertTileCandidateInvariant(estimated));
     top.push(estimated);
     paretoPool.push(estimated);
@@ -88,50 +89,9 @@ export function estimateForShape(hw: HardwareConfig, shape: MatmulShape, cand: T
   const sorted = top.toSorted();
   if (!sorted.length) throw new Error(`No tile candidates generated for ${shape.opName}`);
   const pareto = markPareto(paretoPool.toSorted()).sort(compareCandidates);
-  const best = toHardwareDesignBest(hw, shape, sorted[0], scaleSim);
+  const best = sorted[0];
   for (const c of sorted) c.isPareto = pareto.some(p => p.tileM === c.tileM && p.tileN === c.tileN && p.tileK === c.tileK);
   return { shape, best, candidates: sorted, pareto, heatmap: reservoir.toArray() };
-}
-
-function mappingEfficiencyPercent(hw: HardwareConfig, shape: MatmulShape) {
-  const ar = Math.max(1, Number(hw.arrayRows || 1));
-  const ac = Math.max(1, Number(hw.arrayCols || 1));
-  const kFit = Math.min(1, Math.max(1, Number(shape.k || 1)) / ar);
-  const nFit = Math.min(1, Math.max(1, Number(shape.n || 1)) / ac);
-  return (hw.dataflow === "OS" ? nFit : kFit) * 100;
-}
-
-function toHardwareDesignBest(hw: HardwareConfig, shape: MatmulShape, candidate: TileCandidateResult, scaleSim?: ScaleSimOverrides): TileCandidateResult {
-  const full = estimateFullLayerCycles(hw, shape, scaleSim);
-  const tilePolicyCycles = candidate.tilePolicyCycles ?? candidate.cycles;
-  const tilePolicyRawCycles = candidate.tilePolicyRawCycles ?? candidate.rawCycles ?? candidate.cycles;
-  const tileScratchBytes = candidate.tileScratchBytes ?? candidate.sramBytes;
-  const cycles = Math.max(1, Math.round(full.cycles));
-  const warnings = Array.isArray(candidate.warnings) ? [...candidate.warnings] : [];
-  if (full.stallCycles > Math.max(1024, full.computeCycles * 0.08)) {
-    warnings.push(`full-layer stall ${Math.round(full.stallCycles).toLocaleString()} cycles 예측`);
-  }
-  return {
-    ...candidate,
-    tilePolicyCycles,
-    tilePolicyRawCycles,
-    tileScratchBytes,
-    fullLayerRawCycles: full.cycles,
-    fullLayerCycles: cycles,
-    fullLayerComputeCycles: full.computeCycles,
-    fullLayerStallCycles: full.stallCycles,
-    fullLayerMappingEfficiency: mappingEfficiencyPercent(hw, shape),
-    fullLayerSramBytes: full.sramBytes,
-    fullLayerDramBytes: full.dramBytes,
-    predictionTarget: "full-layer",
-    rawCycles: full.cycles,
-    cycles,
-    timeUs: cycles / Math.max(1, hw.frequencyMHz),
-    utilization: full.utilization,
-    sramBytes: Math.max(tileScratchBytes, full.sramBytes),
-    warnings: Array.from(new Set(warnings)),
-    explanation: `${candidate.explanation} Hardware-design cycle은 full-layer systolic model(${full.formula}) 기준 ${cycles.toLocaleString()} cycles입니다. Tile-policy cost ${Math.round(tilePolicyCycles).toLocaleString()} cycles는 후보 ranking 참고값입니다.`,
-  };
 }
 
 function compareCandidates(a: TileCandidateResult, b: TileCandidateResult): number {

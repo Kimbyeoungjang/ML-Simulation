@@ -9,16 +9,14 @@ import { runJob } from "@/server/workerRunner";
 describe("worker integration", () => {
   it("runs a full pipeline with mock external tools and records summaries", async () => {
     const oldRoot = process.env.TILEFORGE_JOB_ROOT;
-    const oldWorkspace = process.env.TILEFORGE_WORKSPACE_ROOT;
     const oldScale = process.env.TILEFORGE_SCALE_SIM_CMD;
     const oldIree = process.env.TILEFORGE_IREE_COMPILE_CMD;
     const root = await mkdtemp(path.join(os.tmpdir(), "tileforge-it-"));
     process.env.TILEFORGE_JOB_ROOT = root;
-    process.env.TILEFORGE_WORKSPACE_ROOT = root;
     const scaleMock = path.join(root, "mock-scalesim.sh");
     const ireeMock = path.join(root, "mock-iree.sh");
-    await writeFile(scaleMock, "#!/bin/sh\nif [ \"$1\" = \"-h\" ] || [ \"$1\" = \"--version\" ]; then echo \"mock SCALE-Sim\"; exit 0; fi\ncat > COMPUTE_REPORT.csv <<'CSV'\nLayer Name,Cycles\nmock_layer,1234\nCSV\n", "utf8");
-    await writeFile(ireeMock, "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"mock iree-compile\"; exit 0; fi\nout=''\nwhile [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = '-o' ]; then shift; out=\"$1\"; fi\n  shift || true\ndone\nif [ -z \"$out\" ]; then out='model.vmfb'; fi\nprintf 'mock-vmfb' > \"$out\"\n", "utf8");
+    await writeFile(scaleMock, "#!/bin/sh\ncat > COMPUTE_REPORT.csv <<'CSV'\nLayer Name,Cycles\nmock_layer,1234\nCSV\n", "utf8");
+    await writeFile(ireeMock, "#!/bin/sh\nout=''\nwhile [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = '-o' ]; then shift; out=\"$1\"; fi\n  shift || true\ndone\nif [ -z \"$out\" ]; then out='model.vmfb'; fi\nprintf 'mock-vmfb' > \"$out\"\n", "utf8");
     await chmod(scaleMock, 0o755);
     await chmod(ireeMock, 0o755);
     process.env.TILEFORGE_SCALE_SIM_CMD = scaleMock;
@@ -43,7 +41,6 @@ describe("worker integration", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
       if (oldRoot === undefined) delete process.env.TILEFORGE_JOB_ROOT; else process.env.TILEFORGE_JOB_ROOT = oldRoot;
-      if (oldWorkspace === undefined) delete process.env.TILEFORGE_WORKSPACE_ROOT; else process.env.TILEFORGE_WORKSPACE_ROOT = oldWorkspace;
       if (oldScale === undefined) delete process.env.TILEFORGE_SCALE_SIM_CMD; else process.env.TILEFORGE_SCALE_SIM_CMD = oldScale;
       if (oldIree === undefined) delete process.env.TILEFORGE_IREE_COMPILE_CMD; else process.env.TILEFORGE_IREE_COMPILE_CMD = oldIree;
     }
