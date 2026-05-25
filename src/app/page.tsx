@@ -231,7 +231,7 @@ export default function Home() {
   const [selectedJobIds, setSelectedJobIds] = useState<string[]>([]);
   const liveEventSource = useRef<EventSource | null>(null);
   const [calibrationCsv, setCalibrationCsv] = useState(
-    "model,op_name,array,dataflow,tile_m,tile_n,tile_k,predicted_cycles,measured_cycles\nvit_s,qkv,128x128,WS,64,64,32,1000000,1120000",
+    "model,op_name,array,dataflow,predicted_cycles,measured_cycles\nvit_s,qkv,128x128,WS,1000000,1120000",
   );
   const [calibrationRow, setCalibrationRow] = useState({
     model: "vit_s",
@@ -272,13 +272,6 @@ export default function Home() {
     }),
     [tileM, tileN, tileK],
   );
-
-  const candidateGridCount = useMemo(
-    () => Math.max(1, candidates.tileM.length * candidates.tileN.length * candidates.tileK.length),
-    [candidates],
-  );
-  const estimatorTrainingTopK = Math.max(1, Math.min(Number(scaleSim.trainingTopK ?? Math.min(candidateGridCount, 24)) || 1, candidateGridCount));
-
   const request: SearchRequest = useMemo(
     () => ({
       hardware: { ...hardware, dataflow: dataflowModes[0] ?? hardware.dataflow },
@@ -485,48 +478,6 @@ export default function Home() {
     await refreshJobs({ switchTab: true, updateReport: true });
     if (created[0]?.id && autoAttachNewJob) startLiveJob(created[0].id);
   }
-  function applyTileRangePreset(kind: "quick" | "full") {
-    if (kind === "quick") {
-      setTileM("32, 64, 128, 256");
-      setTileN("32, 64, 128, 256");
-      setTileK("32, 64, 128");
-      updateScaleSim({ trainingTopK: 48 });
-      setServerMessage("Estimator 학습 범위를 quick grid로 설정했습니다. 필요하면 tileM/N/K를 직접 수정하세요.");
-    } else {
-      setTileM("16, 32, 48, 64, 96, 128, 192, 256");
-      setTileN("16, 32, 48, 64, 96, 128, 192, 256");
-      setTileK("16, 32, 48, 64, 96, 128");
-      updateScaleSim({ trainingTopK: 384 });
-      setServerMessage("Estimator 학습 범위를 full grid로 설정했습니다. 후보 수가 많으므로 SCALE-Sim 실행 시간을 확인하세요.");
-    }
-  }
-
-  async function createEstimatorTrainingJobs() {
-    const modes = dataflowModes.length ? dataflowModes : [hardware.dataflow];
-    const topK = Math.max(1, Math.min(Math.floor(Number(scaleSim.trainingTopK ?? candidateGridCount) || candidateGridCount), candidateGridCount));
-    const created: any[] = [];
-    for (const df of modes) {
-      const dfHardware = { ...hardware, dataflow: df };
-      const dfRequest: SearchRequest = {
-        ...request,
-        hardware: dfHardware,
-        maxResultsPerOp: topK,
-        scaleSim: { ...scaleSim, trainingTopK: topK, runName: `${scaleSim.runName ?? "tileforge"}_train_${df}` },
-      };
-      const suffix = modes.length > 1 ? `_${df}` : "";
-      const r = await fetch("/api/jobs", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ kind: "full-pipeline", name: `${dfHardware.name}_estimator_training_top${topK}${suffix}`, request: dfRequest }),
-      });
-      created.push(await r.json());
-    }
-    const names = created.map((j) => j.name ?? j.id).filter(Boolean).join(", ");
-    setServerMessage(`Estimator 학습 작업 ${created.length}개 생성: 후보 ${topK}/${candidateGridCount}개 per op, ${names}`);
-    await refreshJobs({ switchTab: true, updateReport: true });
-    if (created[0]?.id && autoAttachNewJob) startLiveJob(created[0].id);
-  }
-
   async function fetchJobReport(id: string) {
     if (!id) return;
     try {
@@ -890,8 +841,8 @@ export default function Home() {
   }
 
   function appendCalibrationRow() {
-    const line = `${calibrationRow.model},${calibrationRow.opName},${calibrationRow.array},${calibrationRow.dataflow},,,,${calibrationRow.predictedCycles},${calibrationRow.measuredCycles}`;
-    const header = "model,op_name,array,dataflow,tile_m,tile_n,tile_k,predicted_cycles,measured_cycles";
+    const line = `${calibrationRow.model},${calibrationRow.opName},${calibrationRow.array},${calibrationRow.dataflow},${calibrationRow.predictedCycles},${calibrationRow.measuredCycles}`;
+    const header = "model,op_name,array,dataflow,predicted_cycles,measured_cycles";
     setCalibrationCsv((cur) => {
       const trimmed = cur.trim();
       return trimmed ? `${trimmed}\n${line}` : `${header}\n${line}`;
@@ -915,24 +866,17 @@ export default function Home() {
       const hw = response?.request?.hardware ?? hardware;
       const array = `${hw.arrayRows ?? hardware.arrayRows}x${hw.arrayCols ?? hardware.arrayCols}`;
       const dataflow = hw.dataflow ?? hardware.dataflow ?? "WS";
-      const header = "model,op_name,array,dataflow,tile_m,tile_n,tile_k,predicted_cycles,measured_cycles";
+      const header = "model,op_name,array,dataflow,predicted_cycles,measured_cycles";
       const added: string[] = [];
-      for (const c of Array.isArray(scaleJson?.candidateLayers) ? scaleJson.candidateLayers : []) {
-        const predicted = Number(c?.predictedCycles ?? 0);
-        const measured = Number(c?.cycles ?? 0);
-        if (predicted <= 0 || measured <= 0) continue;
-        added.push(`${c.model ?? hw.name ?? "job"},${c.opName ?? c.name ?? "candidate"},${array},${c.dataflow ?? dataflow},${c.tileM ?? ""},${c.tileN ?? ""},${c.tileK ?? ""},${Math.round(predicted)},${Math.round(measured)}`);
-      }
       for (let i = 0; i < Math.min(rows.length, layers.length); i++) {
         const shape = rows[i]?.shape;
-        const best = rows[i]?.best;
-        const predicted = Number(best?.cycles ?? rows[i]?.cycles ?? 0);
+        const predicted = Number(rows[i]?.best?.cycles ?? rows[i]?.cycles ?? 0);
         const measured = Number(layers[i]?.cycles ?? 0);
         if (!shape || predicted <= 0 || measured <= 0) continue;
-        added.push(`${shape.model},${shape.opName},${array},${dataflow},${best?.tileM ?? ""},${best?.tileN ?? ""},${best?.tileK ?? ""},${Math.round(predicted)},${Math.round(measured)}`);
+        added.push(`${shape.model},${shape.opName},${array},${dataflow},${Math.round(predicted)},${Math.round(measured)}`);
       }
       if (added.length === 0 && Number(response?.summary?.totalCycles) > 0 && Number(scaleJson?.totalCycles) > 0) {
-        added.push(`${hw.name ?? "job"},total,${array},${dataflow},,,,${Math.round(response.summary.totalCycles)},${Math.round(scaleJson.totalCycles)}`);
+        added.push(`${hw.name ?? "job"},total,${array},${dataflow},${Math.round(response.summary.totalCycles)},${Math.round(scaleJson.totalCycles)}`);
       }
       if (added.length === 0) throw new Error("추가할 predicted/measured cycle pair가 없습니다.");
       setCalibrationCsv((cur) => {
@@ -1590,35 +1534,15 @@ export default function Home() {
 
             {inputTab === "estimator" && (
               <>
-                <h3 title="현재 입력값을 TileForge analytic estimator로 계산하고, SCALE-Sim 후보 학습 범위를 설정합니다.">
+                <h3 title="현재 입력값을 TileForge analytic estimator로 계산합니다.">
                   TileForge Estimator
                 </h3>
-                <div className="info-box">
-                  <b>보정 방식 안내</b>
-                  <p className="small">현재 UI의 보정은 단순 linear regression 하나가 아니라, sample의 measured/predicted 비율을 robust median으로 묶어 전역·연산·배열·데이터플로우·타일별 계수를 섞어 적용합니다. 정확도를 높이려면 아래 학습 범위로 SCALE-Sim 후보를 많이 돌린 뒤 보정 CSV에 추가하세요.</p>
-                </div>
                 <p className="small" title="이 값은 SCALE-Sim/IREE를 실행하지 않은 estimator 미리보기입니다.">
                   현재 미리보기: {result.results.length}개 연산, 총 {Math.round(result.summary.totalCycles).toLocaleString()} cycles
                 </p>
                 <p className="small" title="선택된 주 데이터플로우와 후보 tile 범위를 요약합니다.">
                   기준 dataflow: <code>{request.hardware.dataflow}</code>, 후보 tileM/N/K: <code>{tileM}</code> / <code>{tileN}</code> / <code>{tileK}</code>
                 </p>
-                <div className="row3">
-                  <MiniField label="후보 조합" tip="tileM×tileN×tileK 조합 수입니다. 학습 작업은 이 범위 안에서 상위 N개 후보를 SCALE-Sim topology에 넣습니다.">
-                    <input readOnly value={`${candidateGridCount.toLocaleString()} candidates/op`} />
-                  </MiniField>
-                  <MiniField label="학습 후보 수" tip="SCALE-Sim candidate-training topology에 넣을 후보 수입니다. 전체 학습은 후보 조합 수와 같게 설정합니다.">
-                    <input type="number" value={estimatorTrainingTopK} min={1} max={candidateGridCount} onChange={(e) => updateScaleSim({ trainingTopK: Math.max(1, Math.min(candidateGridCount, +e.target.value || 1)) })} />
-                  </MiniField>
-                  <MiniField label="선택 dataflow" tip="여러 dataflow를 선택했다면 학습 job도 dataflow별로 생성됩니다.">
-                    <input readOnly value={dataflowModes.join(", ")} />
-                  </MiniField>
-                </div>
-                <div className="calibration-actions">
-                  <ActionButton className="secondary" tip="가벼운 4×4×3 타일 후보 범위를 설정합니다." onClick={() => applyTileRangePreset("quick")}>Quick 학습 범위</ActionButton>
-                  <ActionButton className="secondary" tip="더 넓은 8×8×6 타일 후보 범위를 설정합니다." onClick={() => applyTileRangePreset("full")}>Full 학습 범위</ActionButton>
-                  <ActionButton className="secondary" tip="현재 tileM/N/K 후보 조합 전체를 SCALE-Sim 학습 대상으로 설정합니다." onClick={() => updateScaleSim({ trainingTopK: candidateGridCount })}>현재 범위 전체 선택</ActionButton>
-                </div>
                 <ActionButton
                   tip="현재 입력값을 /api/estimate로 보내 서버 측 estimator를 실행합니다."
                   onClick={runServerEstimate}
@@ -1631,13 +1555,6 @@ export default function Home() {
                   onClick={() => createJob("full-pipeline")}
                 >
                   Estimator + SCALE-Sim/IREE 전체 실행
-                </ActionButton>
-                <ActionButton
-                  className="secondary"
-                  tip="현재 tileM/N/K 범위에서 선택한 후보 수만큼 topology_top3.csv 대신 candidate-training topology를 확장해 SCALE-Sim 학습 job을 생성합니다."
-                  onClick={createEstimatorTrainingJobs}
-                >
-                  범위 기반 Estimator 학습 작업 생성
                 </ActionButton>
                 {serverMessage && (
                   <p className="small warn" title="최근 estimator/API 실행 결과입니다.">

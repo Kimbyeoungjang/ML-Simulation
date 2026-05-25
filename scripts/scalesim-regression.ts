@@ -1,7 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { estimateAll } from "../src/lib/estimator";
-import { parseMeasurementCsv } from "../src/lib/calibration";
 import { defaultCandidates, defaultHardware } from "../src/lib/defaults";
 import { hardwarePresets, workloadPresets } from "../src/lib/presets";
 import type { SearchRequest, Dataflow } from "../src/types/domain";
@@ -9,7 +8,6 @@ import type { SearchRequest, Dataflow } from "../src/types/domain";
 const API = process.env.TILEFORGE_API ?? "http://localhost:3000";
 const outDir = path.join(process.cwd(), "profiles");
 const profilePath = path.join(outDir, "scalesim-regression-profile.json");
-const calibrationCsvPath = path.join(outDir, "scalesim-calibration-samples.csv");
 
 function arg(name: string, fallback?: string) {
   const idx = process.argv.indexOf(`--${name}`);
@@ -17,20 +15,12 @@ function arg(name: string, fallback?: string) {
 }
 
 function sleep(ms: number) { return new Promise((r) => setTimeout(r, ms)); }
-function defaultCandidateCount() { return defaultCandidates.tileM.length * defaultCandidates.tileN.length * defaultCandidates.tileK.length; }
-function trainingTopK() {
-  const raw = arg("top-k", arg("training-top-k", "24"));
-  if (raw === "all") return defaultCandidateCount();
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? Math.min(Math.floor(n), defaultCandidateCount()) : 24;
-}
 
 function requests(): SearchRequest[] {
   const hwNames = (arg("hardware", "TPUv2-like 128x128") ?? "").split(",").map(s => s.trim()).filter(Boolean);
   const wlNames = (arg("workload", "ViT-S encoder block,BERT-base seq384 block") ?? "").split(",").map(s => s.trim()).filter(Boolean);
   const dfs = (arg("dataflows", "WS,OS,IS") ?? "WS").split(",").map(s => s.trim()).filter(Boolean) as Dataflow[];
   const hws = hardwarePresets.filter(h => hwNames.includes(h.name));
-  const topK = trainingTopK();
   const reqs: SearchRequest[] = [];
   for (const hw of (hws.length ? hws : [defaultHardware])) {
     for (const wl of wlNames) {
@@ -42,8 +32,8 @@ function requests(): SearchRequest[] {
           shapes,
           candidates: defaultCandidates,
           objective: "balanced",
-          maxResultsPerOp: topK,
-          scaleSim: { runName: "regression", bandwidth: 128, interfaceBandwidth: "USER", useLayout: true, ifmapCustomLayout: false, filterCustomLayout: false, ifmapSRAMBankBandwidth: 10, ifmapSRAMBankNum: 10, ifmapSRAMBankPort: 2, filterSRAMBankBandwidth: 10, filterSRAMBankNum: 10, filterSRAMBankPort: 2, trainingTopK: topK },
+          maxResultsPerOp: 24,
+          scaleSim: { runName: "regression", bandwidth: 128, interfaceBandwidth: "USER", useLayout: true, ifmapCustomLayout: false, filterCustomLayout: false, ifmapSRAMBankBandwidth: 10, ifmapSRAMBankNum: 10, ifmapSRAMBankPort: 2, filterSRAMBankBandwidth: 10, filterSRAMBankNum: 10, filterSRAMBankPort: 2 },
         });
       }
     }
@@ -115,7 +105,6 @@ async function main() {
     }
   }
   const samples: any[] = [];
-  const calibrationRows = ["model,op_name,array,dataflow,tile_m,tile_n,tile_k,predicted_cycles,measured_cycles"];
   for (const item of jobs) {
     const job = await readJob(item.id).catch(() => null);
     if (!job || !["succeeded", "succeeded_with_warnings"].includes(job.status)) continue;
@@ -124,26 +113,13 @@ async function main() {
     const measured = parseScaleCycles(txt);
     if (!measured) continue;
     samples.push({ id: item.id, name: job.name, hardware: item.request.hardware.name, dataflow: item.request.hardware.dataflow, predicted, measured, ratio: measured / Math.max(1, predicted) });
-    const scale = JSON.parse(txt || "{}");
-    const hw = item.request.hardware;
-    const array = `${hw.arrayRows}x${hw.arrayCols}`;
-    const dataflow = hw.dataflow;
-    for (const c of Array.isArray(scale.candidateLayers) ? scale.candidateLayers : []) {
-      const pred = Number(c.predictedCycles ?? 0);
-      const ref = Number(c.cycles ?? 0);
-      if (pred > 0 && ref > 0) calibrationRows.push(`${c.model ?? hw.name},${c.opName ?? c.name ?? "candidate"},${array},${dataflow},${c.tileM ?? ""},${c.tileN ?? ""},${c.tileK ?? ""},${Math.round(pred)},${Math.round(ref)}`);
-    }
   }
   const fit = fitMultiplier(samples);
   await mkdir(outDir, { recursive: true });
-  const calibrationCsv = calibrationRows.join("\n") + "\n";
-  const calibrationProfile = calibrationRows.length > 1 ? parseMeasurementCsv(calibrationCsv, reqs[0]?.hardware.frequencyMHz ?? 1000) : undefined;
-  const profile = { kind: "tileforge-scalesim-regression", createdAt: new Date().toISOString(), api: API, samples, fit, calibrationProfile, note: "Legacy fit is kept for reference. The UI estimator now prefers the robust median calibrationProfile with array/dataflow/tile buckets when candidate training samples are available." };
+  const profile = { kind: "tileforge-scalesim-regression", createdAt: new Date().toISOString(), api: API, samples, fit, note: "Apply factor to estimator total cycles as a first-order calibration. Re-run when SCALE-Sim version, layout policy, or hardware preset changes." };
   await writeFile(profilePath, JSON.stringify(profile, null, 2), "utf8");
-  await writeFile(calibrationCsvPath, calibrationCsv, "utf8");
   console.log(`[regression] samples=${samples.length}, factor=${fit.factor.toFixed(4)}, MAE=${fit.maePct.toFixed(2)}%, RMSE=${fit.rmsePct.toFixed(2)}%`);
   console.log(`[regression] wrote ${profilePath}`);
-  console.log(`[regression] wrote ${calibrationCsvPath}`);
 }
 
 main().catch(e => { console.error(e); process.exit(1); });

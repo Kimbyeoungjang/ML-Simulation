@@ -60,6 +60,7 @@ function emptyArtifacts(): SearchResponse["artifacts"] {
 }
 
 export function estimateForShape(hw: HardwareConfig, shape: MatmulShape, cand: TileCandidates, objective: Objective, maxResults: number, calibration = undefined as SearchRequest["calibration"], scaleSim?: ScaleSimOverrides): OpSearchResult {
+  const factor = calibrationFactor(calibration, hw, shape);
   const maxKeep = Math.max(1, maxResults);
   const top = new TopK<TileCandidateResult>(maxKeep, compareCandidates);
   const paretoPool = new TopK<TileCandidateResult>(Math.max(maxKeep * 4, 64), compareCandidates);
@@ -78,7 +79,6 @@ export function estimateForShape(hw: HardwareConfig, shape: MatmulShape, cand: T
 
   for (const kept of pruned.kept) {
     const tm = kept.tileM, tn = kept.tileN, tk = kept.tileK;
-    const factor = calibrationFactor(calibration, hw, shape, { tileM: tm, tileN: tn, tileK: tk });
     const estimated = applyCalibration(estimateTile(hw, shape, tm, tn, tk, objective, scaleSim), factor);
     runInvariant("tile candidate", () => assertTileCandidateInvariant(estimated));
     top.push(estimated);
