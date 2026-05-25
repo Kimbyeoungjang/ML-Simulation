@@ -61,10 +61,8 @@ function appendLiveLog(logPath: string | undefined, text: string): void {
 
 export async function runExternalCommand(command: string, args: string[], options: ExternalCommandOptions): Promise<ExternalCommandResult> {
   const { exe, args: baseArgs } = splitCommand(command);
-  const rawTimeoutMs = Number(options.timeoutMs);
-  const timeoutMs = Number.isFinite(rawTimeoutMs) && rawTimeoutMs > 0 ? Math.min(Math.floor(rawTimeoutMs), 24 * 60 * 60 * 1000) : 60_000;
-  const rawMaxOutputBytes = Number(options.maxOutputBytes ?? process.env.TILEFORGE_MAX_EXTERNAL_OUTPUT_BYTES ?? 2_000_000);
-  const maxOutputBytes = Number.isFinite(rawMaxOutputBytes) && rawMaxOutputBytes > 0 ? Math.min(Math.floor(rawMaxOutputBytes), 100_000_000) : 2_000_000;
+  const timeoutMs = options.timeoutMs;
+  const maxOutputBytes = options.maxOutputBytes ?? Number(process.env.TILEFORGE_MAX_EXTERNAL_OUTPUT_BYTES ?? 2_000_000);
   let stdout = "";
   let stderr = "";
   let killedByTimeout = false;

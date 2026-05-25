@@ -75,39 +75,25 @@ export interface Conv2DShape {
 }
 
 export interface TileCandidates { tileM: number[]; tileN: number[]; tileK: number[]; }
-export interface CalibrationProfile {
-  name: string;
-  createdAt: string;
-  globalCycleFactor: number;
-  byArray?: Record<string, number>;
-  byDataflow?: Partial<Record<Dataflow, number>>;
-  byOp?: Record<string, number>;
-  samples: CalibrationSample[];
-}
-export interface CalibrationSample {
-  model?: string;
-  opName?: string;
-  arrayRows?: number;
-  arrayCols?: number;
-  dataflow?: Dataflow;
-  tileM?: number;
-  tileN?: number;
-  tileK?: number;
-  predictedCycles: number;
-  measuredCycles?: number;
-  measuredRuntimeUs?: number;
-  factor: number;
-}
-export interface SearchRequest { hardware: HardwareConfig; shapes: MatmulShape[]; candidates: TileCandidates; objective: Objective; maxResultsPerOp?: number; calibration?: CalibrationProfile; scaleSim?: ScaleSimOverrides; }
+export interface SearchRequest { hardware: HardwareConfig; shapes: MatmulShape[]; candidates: TileCandidates; objective: Objective; maxResultsPerOp?: number; scaleSim?: ScaleSimOverrides; }
 export interface TileCandidateResult {
   shapeId: string; model: string; opName: string;
   tileM: number; tileN: number; tileK: number;
   cycles: number; rawCycles?: number; calibrationFactor?: number; timeUs: number; utilization: number; paddingRatio: number; sramBytes: number;
+  learnedMetrics?: { sramBytes?: number; dramBytes?: number; utilization?: number; domainConfidence?: number; availableTargets?: string[] };
+  /** Tile-search cost before projecting to whole-layer hardware-design cycles. */
+  tilePolicyCycles?: number; tilePolicyRawCycles?: number; tileScratchBytes?: number;
+  /** Whole-layer cycle estimate used for hardware-design comparison. */
+  fullLayerCycles?: number; fullLayerRawCycles?: number; fullLayerComputeCycles?: number; fullLayerStallCycles?: number; fullLayerMappingEfficiency?: number; fullLayerSramBytes?: number; fullLayerDramBytes?: number; predictionTarget?: "full-layer" | "tile-policy";
   boundaryPenalty: number; score: number; isPareto: boolean; warnings: string[]; explanation: string;
 }
 export interface OpSearchResult { shape: MatmulShape; best: TileCandidateResult; candidates: TileCandidateResult[]; pareto: TileCandidateResult[]; heatmap: HeatmapPoint[]; }
 export interface HeatmapPoint { tileM: number; tileN: number; tileK: number; cycles: number; utilization: number; sramBytes: number; paddingRatio: number; score: number; }
 export interface SearchResponse { request: SearchRequest; results: OpSearchResult[]; summary: SummaryMetrics; artifacts: GeneratedArtifacts; designAdvice: string[]; bottlenecks?: BottleneckAnalysis; roofline?: RooflinePoint[]; energy?: EnergySummary; }
+
+export interface CalibrationSample { predictedCycles: number; measuredCycles: number; weight?: number; model?: string; opName?: string; }
+export interface CalibrationProfile { factor: number; samples: CalibrationSample[]; createdAt?: string; note?: string; }
+
 export interface SummaryMetrics { totalCycles: number; totalTimeUs: number; meanUtilization: number; meanPaddingRatio: number; maxSramBytes: number; bottleneckOp: string; }
 export interface BottleneckAnalysis { totalCycles: number; topOps: Array<{ opName: string; model: string; cycles: number; percent: number; issue: string; }>; lowUtilizationOps: string[]; highPaddingOps: string[]; sramRiskOps: string[]; }
 export interface RooflinePoint { opName: string; model: string; arithmeticIntensity: number; achievedGops: number; computeRoofGops: number; memoryRoofGops: number; bound: "compute" | "memory"; }

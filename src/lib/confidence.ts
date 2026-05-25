@@ -10,7 +10,7 @@ export interface ConfidenceAssessment {
   validationMetrics?: RankingMetrics;
 }
 
-export function assessConfidence(response: SearchResponse, opts: { externalValidated?: boolean; calibrationSamples?: number; validationMetrics?: RankingMetrics; externalCycleRatio?: number } = {}): ConfidenceAssessment {
+export function assessConfidence(response: SearchResponse, opts: { externalValidated?: boolean; estimatorSuiteSamples?: number; validationMetrics?: RankingMetrics; externalCycleRatio?: number } = {}): ConfidenceAssessment {
   let score = 0.75;
   const reasons: string[] = [];
   const req: SearchRequest = response.request;
@@ -26,7 +26,7 @@ export function assessConfidence(response: SearchResponse, opts: { externalValid
     const err = Math.abs(ratio - 1);
     if (err <= 0.15) { score += 0.10; reasons.push(`SCALE-Sim 대비 전체 cycle 오차가 낮습니다 (비율 ${ratio.toFixed(3)}배).`); }
     else if (err <= 0.35) { score += 0.03; reasons.push(`SCALE-Sim 대비 전체 cycle 차이가 보통 수준입니다 (비율 ${ratio.toFixed(3)}배).`); }
-    else { score -= 0.12; reasons.push(`SCALE-Sim 대비 전체 cycle 차이가 큽니다 (비율 ${ratio.toFixed(3)}배). 보정 sample 추가를 권장합니다.`); }
+    else { score -= 0.12; reasons.push(`SCALE-Sim 대비 전체 cycle 차이가 큽니다 (비율 ${ratio.toFixed(3)}배). Estimator Suite 학습 데이터 보강을 권장합니다.`); }
   }
 
   const metrics = opts.validationMetrics;
@@ -39,10 +39,10 @@ export function assessConfidence(response: SearchResponse, opts: { externalValid
     else if (metrics.medianRegret > 1.2) { score -= 0.12; reasons.push(`중앙 regret이 높습니다 (${metrics.medianRegret.toFixed(3)}).`); }
   }
 
-  const calibrationSamples = opts.calibrationSamples ?? req.calibration?.samples?.length ?? 0;
-  if (calibrationSamples >= 20) { score += 0.10; reasons.push(`보정 sample이 ${calibrationSamples}개 있습니다.`); }
-  else if (calibrationSamples > 0) { score += 0.03; reasons.push(`보정 sample이 ${calibrationSamples}개뿐입니다.`); }
-  else { score -= 0.08; reasons.push("보정 profile이 적용되지 않았습니다."); }
+  const estimatorSuiteSamples = opts.estimatorSuiteSamples ?? 0;
+  if (estimatorSuiteSamples >= 20) { score += 0.10; reasons.push(`Estimator Suite sample이 ${estimatorSuiteSamples}개 있습니다.`); }
+  else if (estimatorSuiteSamples > 0) { score += 0.03; reasons.push(`Estimator Suite sample이 ${estimatorSuiteSamples}개뿐입니다.`); }
+  else { score -= 0.08; reasons.push("활성 Estimator Suite가 적용되지 않았습니다."); }
 
   if (avgPadding > 0.35) { score -= 0.12; reasons.push(`평균 패딩이 높습니다 (${(avgPadding * 100).toFixed(1)}%).`); }
   if (avgUtil < 0.5) { score -= 0.10; reasons.push(`평균 PE 사용률이 낮습니다 (${(avgUtil * 100).toFixed(1)}%).`); }
@@ -52,15 +52,15 @@ export function assessConfidence(response: SearchResponse, opts: { externalValid
 
   score = Math.max(0, Math.min(1, score));
   const level: ConfidenceLevel = score >= 0.78 ? "high" : score >= 0.52 ? "medium" : "low";
-  const uncertaintyPct = estimateUncertaintyPct(score, avgPadding, avgUtil, calibrationSamples, opts.externalValidated ?? false, metrics, opts.externalCycleRatio);
+  const uncertaintyPct = estimateUncertaintyPct(score, avgPadding, avgUtil, estimatorSuiteSamples, opts.externalValidated ?? false, metrics, opts.externalCycleRatio);
   return { level, score, reasons, uncertaintyPct, validationMetrics: metrics };
 }
 
-export function estimateUncertaintyPct(score: number, padding: number, util: number, calibrationSamples: number, externalValidated: boolean, metrics?: RankingMetrics, externalCycleRatio?: number): number {
+export function estimateUncertaintyPct(score: number, padding: number, util: number, estimatorSuiteSamples: number, externalValidated: boolean, metrics?: RankingMetrics, externalCycleRatio?: number): number {
   let pct = 8 + (1 - score) * 30 + Math.min(20, padding * 25) + Math.max(0, 0.55 - util) * 20;
   if (!externalValidated) pct += 8;
   if (externalValidated && externalCycleRatio && Number.isFinite(externalCycleRatio)) pct += Math.min(18, Math.abs(externalCycleRatio - 1) * 28);
-  if (calibrationSamples === 0) pct += 6;
+  if (estimatorSuiteSamples === 0) pct += 6;
   if (metrics?.medianRegret != null) pct += Math.max(0, metrics.medianRegret - 1.05) * 30;
   if (metrics?.top3Recall != null && metrics.top3Recall < 0.85) pct += (0.85 - metrics.top3Recall) * 20;
   return Math.max(5, Math.min(60, pct));

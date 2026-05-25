@@ -1,8 +1,7 @@
 import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
-import { assertSafeJobId, assertPublicArtifactPath, jobArtifactPath, jobDir } from "./workspace";
+import { jobDir } from "./workspace";
 
 export type ArtifactIntegrity = {
   name: string;
@@ -14,22 +13,14 @@ export type ArtifactIntegrity = {
 };
 
 export async function sha256File(filePath: string): Promise<string> {
-  const hash = createHash("sha256");
-  await new Promise<void>((resolve, reject) => {
-    const stream = createReadStream(filePath);
-    stream.on("data", (chunk) => hash.update(chunk));
-    stream.on("error", reject);
-    stream.on("end", resolve);
-  });
-  return hash.digest("hex");
+  const data = await readFile(filePath);
+  return createHash("sha256").update(data).digest("hex");
 }
 
 export async function computeArtifactIntegrity(jobId: string, name: string, schemaVersion?: string): Promise<ArtifactIntegrity> {
-  assertSafeJobId(jobId);
-  const safeName = assertPublicArtifactPath(name);
-  const filePath = jobArtifactPath(jobId, safeName);
+  const filePath = path.join(jobDir(jobId), name);
   const s = await stat(filePath);
-  return { name: safeName, path: filePath, sizeBytes: s.size, sha256: await sha256File(filePath), verifiedAt: new Date().toISOString(), schemaVersion };
+  return { name, path: filePath, sizeBytes: s.size, sha256: await sha256File(filePath), verifiedAt: new Date().toISOString(), schemaVersion };
 }
 
 export async function verifyArtifactIntegrity(record: ArtifactIntegrity): Promise<{ ok: boolean; reason?: string }> {
@@ -53,27 +44,12 @@ export async function computeJobIntegrityManifest(jobId: string, names: string[]
 
 export async function verifyJobIntegrityFromManifest(jobId: string): Promise<{ ok: boolean; failures: Array<{ name: string; reason: string }> }> {
   try {
-    assertSafeJobId(jobId);
     const manifestPath = path.join(jobDir(jobId), "artifact_integrity.json");
     const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
     const failures: Array<{ name: string; reason: string }> = [];
     for (const item of manifest.artifacts ?? []) {
-      const name = String(item?.name ?? "");
-      try {
-        const safeName = assertPublicArtifactPath(name);
-        const filePath = jobArtifactPath(jobId, safeName);
-        const result = await verifyArtifactIntegrity({
-          name: safeName,
-          path: filePath,
-          sizeBytes: Number(item?.sizeBytes),
-          sha256: String(item?.sha256 ?? ""),
-          schemaVersion: item?.schemaVersion,
-          verifiedAt: item?.verifiedAt,
-        });
-        if (!result.ok) failures.push({ name: safeName, reason: result.reason ?? "unknown integrity failure" });
-      } catch (error: any) {
-        failures.push({ name: name || "<missing>", reason: error?.message ?? String(error) });
-      }
+      const result = await verifyArtifactIntegrity(item);
+      if (!result.ok) failures.push({ name: item.name, reason: result.reason ?? "unknown integrity failure" });
     }
     return { ok: failures.length === 0, failures };
   } catch (e: any) {

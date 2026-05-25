@@ -5,7 +5,6 @@ import { defaultCandidates, defaultHardware, defaultShapes } from "@/lib/default
 import type { HardwareConfig, MatmulShape, TileCandidates } from "@/types/domain";
 import type { SearchResponse } from "@/types/domain";
 import { commandLabel, formatCandidateErrors, ireeCompileCommandCandidates, scaleSimArgs, scaleSimCommandCandidates, withPrependedPythonPath } from "@/server/externalToolCandidates";
-import { parseCsvRecords } from "@/lib/csv";
 export { commandLabel, formatCandidateErrors, ireeCompileCommandCandidates, scaleSimArgs, scaleSimCommandCandidates } from "@/server/externalToolCandidates";
 
 export interface CliOptions { [key: string]: string | boolean | undefined; }
@@ -71,7 +70,39 @@ export async function writeArtifacts(outDir: string, response: SearchResponse): 
 }
 
 export function csvRows(text: string): Array<Record<string, string>> {
-  return parseCsvRecords(text);
+  const lines = text.trim().split(/\r?\n/).filter(Boolean);
+  if (lines.length < 2) return [];
+  const headers = splitCsvLine(lines[0]).map(h => h.trim());
+  return lines.slice(1).map(line => {
+    const values = splitCsvLine(line);
+    const row: Record<string, string> = {};
+    headers.forEach((h, i) => { row[h] = values[i] ?? ""; });
+    return row;
+  });
+}
+
+function splitCsvLine(line: string): string[] {
+  const values: string[] = [];
+  let current = "";
+  let quoted = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (quoted && line[i + 1] === '"') {
+        current += '"';
+        i++;
+      } else {
+        quoted = !quoted;
+      }
+    } else if (ch === "," && !quoted) {
+      values.push(current);
+      current = "";
+    } else {
+      current += ch;
+    }
+  }
+  values.push(current);
+  return values;
 }
 
 export function numberFromRow(row: Record<string, string>, names: string[]): number | undefined {

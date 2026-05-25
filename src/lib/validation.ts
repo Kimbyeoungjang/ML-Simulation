@@ -7,7 +7,7 @@ const boundedCandidateList = z.array(positiveInt).min(1).max(64).transform(value
 
 export const DataflowSchema = z.enum(["WS", "OS", "IS"]);
 export const ObjectiveSchema = z.enum(["balanced", "cycles", "utilization", "hardware-design", "pareto"]);
-export const JobKindSchema = z.enum(["estimate", "scalesim", "iree-compile", "full-pipeline"]);
+export const JobKindSchema = z.enum(["estimate", "scalesim", "iree-compile", "full-pipeline", "estimator-suite-train"]);
 
 export const HardwareSchema = z.object({
   name: z.string().min(1).default("custom"),
@@ -48,22 +48,6 @@ export const TileCandidatesSchema = z.object({
   }
 });
 
-export const CalibrationSampleSchema = z.object({
-  model: z.string().optional(),
-  opName: z.string().optional(),
-  arrayRows: positiveInt.optional(),
-  arrayCols: positiveInt.optional(),
-  dataflow: DataflowSchema.optional(),
-  tileM: positiveInt.optional(),
-  tileN: positiveInt.optional(),
-  tileK: positiveInt.optional(),
-  predictedCycles: positiveNum,
-  measuredCycles: positiveNum.optional(),
-  measuredRuntimeUs: positiveNum.optional(),
-  factor: positiveNum
-});
-
-
 export const ScaleSimOverridesSchema = z.object({
   runName: z.string().min(1).optional(),
   bandwidth: positiveNum.optional(),
@@ -88,23 +72,12 @@ export const ScaleSimOverridesSchema = z.object({
   emitLayoutSection: z.boolean().optional()
 }).optional();
 
-export const CalibrationProfileSchema = z.object({
-  name: z.string().min(1),
-  createdAt: z.string().min(1),
-  globalCycleFactor: positiveNum,
-  byArray: z.record(z.string(), positiveNum).optional(),
-  byDataflow: z.record(DataflowSchema, positiveNum).optional(),
-  byOp: z.record(z.string(), positiveNum).optional(),
-  samples: z.array(CalibrationSampleSchema).default([])
-}).optional();
-
 export const SearchRequestSchema = z.object({
   hardware: HardwareSchema,
   shapes: z.array(MatmulShapeSchema).min(1).max(4096),
   candidates: TileCandidatesSchema,
   objective: ObjectiveSchema.default("balanced"),
   maxResultsPerOp: positiveInt.max(4096).optional(),
-  calibration: CalibrationProfileSchema,
   scaleSim: ScaleSimOverridesSchema
 }).superRefine((req, ctx) => {
   const combos = req.candidates.tileM.length * req.candidates.tileN.length * req.candidates.tileK.length * req.shapes.length;

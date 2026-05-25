@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
-import type { JobRecord, JobStatus } from "@/types/job";
+import type { JobRecord } from "@/types/job";
 import { getWorkspaceRoot } from "./workspace";
 import { runSqliteMigrations } from "./dbMigrations";
 import type { ArtifactIntegrity } from "./artifactIntegrity";
@@ -60,54 +60,74 @@ export function listJobsSqlite(): JobRecord[] | undefined {
   return rows.map((r: any) => JSON.parse(r.json));
 }
 
-
-export interface ListJobsSqlitePageOptions {
-  limit: number;
-  cursor?: string;
-  status?: JobStatus;
-  since?: string;
-}
-
-function parseJobRow(row: any): JobRecord | undefined {
-  try { return JSON.parse(row.json) as JobRecord; }
-  catch { return undefined; }
-}
-
-export function listJobsSqlitePaged(options: ListJobsSqlitePageOptions): { jobs: JobRecord[]; nextCursor?: string; total: number } | undefined {
+export function countJobsSqlite(status?: string): number | undefined {
   const d = getSqliteDb();
   if (!d) return undefined;
+  if (!status) return Number(d.prepare(`SELECT COUNT(*) AS n FROM jobs`).get().n ?? 0);
+  return Number(d.prepare(`SELECT COUNT(*) AS n FROM jobs WHERE status=?`).get(status).n ?? 0);
+}
 
-  const where: string[] = [];
-  const params: Record<string, unknown> = {};
-  if (options.status) {
-    where.push("status = @status");
-    params.status = options.status;
+export function selectQueuedJobsSqlite(limit = 50, excludeIds: string[] = []): JobRecord[] | undefined {
+  const d = getSqliteDb();
+  if (!d) return undefined;
+  const safeLimit = Math.max(1, Math.min(Math.floor(limit), 500));
+  let sql = `SELECT json FROM jobs WHERE status='queued'`;
+  const params: string[] = [];
+  if (excludeIds.length > 0) {
+    const ids = excludeIds.slice(0, 250);
+    sql += ` AND id NOT IN (${ids.map(() => '?').join(',')})`;
+    params.push(...ids);
   }
-  if (options.since) {
-    where.push("created_at >= @since");
-    params.since = options.since;
-  }
+  sql += ` ORDER BY created_at ASC LIMIT ${safeLimit}`;
+  const rows = d.prepare(sql).all(...params);
+  return rows.map((r: any) => JSON.parse(r.json));
+}
 
-  const cursorRow = options.cursor
-    ? d.prepare(`SELECT created_at AS createdAt, id FROM jobs WHERE id = ?`).get(options.cursor)
-    : undefined;
-  if (cursorRow) {
-    where.push(`(created_at < @cursorCreatedAt OR (created_at = @cursorCreatedAt AND id < @cursorId))`);
-    params.cursorCreatedAt = cursorRow.createdAt;
-    params.cursorId = cursorRow.id;
-  }
+export function countJobsByStatusSqlite(): Record<string, number> | undefined {
+  const d = getSqliteDb();
+  if (!d) return undefined;
+  const rows = d.prepare(`SELECT status, COUNT(*) AS n FROM jobs GROUP BY status`).all();
+  const out: Record<string, number> = {};
+  for (const r of rows) out[String(r.status)] = Number(r.n ?? 0);
+  return out;
+}
 
-  const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
-  const countWhere = where.filter((clause) => !clause.includes("@cursorCreatedAt"));
-  const countWhereSql = countWhere.length ? `WHERE ${countWhere.join(" AND ")}` : "";
-  const countParams = { ...params };
-  delete countParams.cursorCreatedAt;
-  delete countParams.cursorId;
-  const totalRow = d.prepare(`SELECT COUNT(*) AS count FROM jobs ${countWhereSql}`).get(countParams);
-  const rows = d.prepare(`SELECT json FROM jobs ${whereSql} ORDER BY created_at DESC, id DESC LIMIT @limit`).all({ ...params, limit: options.limit + 1 });
-  const parsed = rows.map(parseJobRow).filter((job: JobRecord | undefined): job is JobRecord => !!job);
-  const page = parsed.slice(0, options.limit);
-  return { jobs: page, nextCursor: parsed.length > options.limit ? page.at(-1)?.id : undefined, total: Number(totalRow?.count ?? 0) };
+export function listDashboardJobsSqlite(limit = 80): { jobs: JobRecord[]; total: number; counts: Record<string, number> } | undefined {
+  const d = getSqliteDb();
+  if (!d) return undefined;
+  const safeLimit = Math.max(1, Math.min(Math.floor(limit), 500));
+  const counts = countJobsByStatusSqlite() ?? {};
+  const total = Number(d.prepare(`SELECT COUNT(*) AS n FROM jobs`).get().n ?? 0);
+  const picked = new Map<string, JobRecord>();
+  const addRows = (rows: any[]) => {
+    for (const r of rows) {
+      if (picked.size >= safeLimit) break;
+      const job = JSON.parse(r.json);
+      if (!picked.has(job.id)) picked.set(job.id, job);
+    }
+  };
+  addRows(d.prepare(`SELECT json FROM jobs WHERE status='running' ORDER BY updated_at DESC LIMIT ?`).all(safeLimit));
+  addRows(d.prepare(`SELECT json FROM jobs WHERE status='queued' ORDER BY created_at ASC LIMIT ?`).all(Math.max(10, safeLimit)));
+  addRows(d.prepare(`SELECT json FROM jobs WHERE status IN ('succeeded','succeeded_with_warnings','failed','cancelled') ORDER BY updated_at DESC LIMIT ?`).all(safeLimit));
+  return { jobs: [...picked.values()], total, counts };
+}
+
+export function listJobsPageSqlite(limit = 80, page = 1, status?: string): { jobs: JobRecord[]; total: number; counts: Record<string, number> } | undefined {
+  const d = getSqliteDb();
+  if (!d) return undefined;
+  const safeLimit = Math.max(1, Math.min(Math.floor(limit), 1000));
+  const safePage = Math.max(1, Math.floor(page));
+  const counts = countJobsByStatusSqlite() ?? {};
+  const params: any[] = [];
+  let where = "";
+  if (status) {
+    where = " WHERE status=?";
+    params.push(status);
+  }
+  const total = Number(d.prepare(`SELECT COUNT(*) AS n FROM jobs${where}`).get(...params).n ?? 0);
+  const offset = (safePage - 1) * safeLimit;
+  const rows = d.prepare(`SELECT json FROM jobs${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`).all(...params, safeLimit, offset);
+  return { jobs: rows.map((r: any) => JSON.parse(r.json)), total, counts };
 }
 
 export function mirrorJob(job: JobRecord) { saveJobSqlite(job); }

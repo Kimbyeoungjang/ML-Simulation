@@ -2,22 +2,16 @@ import { NextResponse } from "next/server";
 import { mkdir, readdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { atomicWriteFile } from "@/server/atomic";
-import { apiBodyLimitBytes, bodyLimitErrorResponse, readLimitedJsonBody } from "@/server/requestLimits";
 
 const PRESET_ROOT = path.join(process.cwd(), "presets");
 const DEFAULT_DIR = path.join(PRESET_ROOT, "default");
 const USER_DIR = path.join(PRESET_ROOT, "user");
 const HARDWARE_DIR = path.join(PRESET_ROOT, "hardware");
 const WORKLOAD_DIR = path.join(PRESET_ROOT, "workload");
+const ESTIMATOR_DIR = path.join(PRESET_ROOT, "estimator");
 
-function safePresetName(name: string, fallback = "preset"): string {
-  const cleaned = name.trim().replace(/[^A-Za-z0-9가-힣_.-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 120);
-  if (!cleaned || cleaned === "." || cleaned === ".." || /^\.+$/.test(cleaned)) return fallback;
-  return cleaned;
-}
-
-function parsePresetKind(value: unknown): "user" | "hardware" | "workload" {
-  return value === "hardware" || value === "workload" ? value : "user";
+function safePresetName(name: string): string {
+  return name.trim().replace(/[^A-Za-z0-9가-힣_.-]+/g, "_").replace(/^_+|_+$/g, "") || "preset";
 }
 
 
@@ -49,18 +43,13 @@ export async function GET() {
   ].sort((a, b) => String(a.name).localeCompare(String(b.name)));
   const hardwarePresets = (await readPresetDir(HARDWARE_DIR, "hardware")).sort((a, b) => String(a.name).localeCompare(String(b.name)));
   const workloadPresets = (await readPresetDir(WORKLOAD_DIR, "workload")).sort((a, b) => String(a.name).localeCompare(String(b.name)));
-  return NextResponse.json({ presets, hardwarePresets, workloadPresets });
+  const estimatorPresets = (await readPresetDir(ESTIMATOR_DIR, "estimator")).sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  return NextResponse.json({ presets, hardwarePresets, workloadPresets, estimatorPresets });
 }
 
 export async function POST(req: Request) {
-  let body: any;
-  try { body = await readLimitedJsonBody(req, apiBodyLimitBytes("TILEFORGE_PRESET_MAX_BODY_BYTES", 2_000_000), {}); }
-  catch (error) {
-    const limit = bodyLimitErrorResponse(error);
-    if (limit) return NextResponse.json(limit, { status: limit.status });
-    return NextResponse.json({ error: "Invalid preset request" }, { status: 400 });
-  }
-  const kind = parsePresetKind(body.kind);
+  const body = await req.json().catch(() => ({}));
+  const kind = String(body.kind ?? "user");
   const name = safePresetName(String(body.name ?? "preset"));
   const savedAt = body.savedAt ?? new Date().toISOString();
 
@@ -84,6 +73,25 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: true, preset });
   }
 
+  if (kind === "estimator") {
+    if (!body.planOptions || !body.trainOptions) {
+      return NextResponse.json({ error: "planOptions and trainOptions are required" }, { status: 400 });
+    }
+    await mkdir(ESTIMATOR_DIR, { recursive: true });
+    const preset = {
+      kind,
+      id: `user-${name}`,
+      name,
+      description: body.description ?? "사용자 Estimator 학습/표본 프리셋",
+      planOptions: body.planOptions,
+      trainOptions: body.trainOptions,
+      savedAt,
+      source: "estimator",
+    };
+    await atomicWriteFile(path.join(ESTIMATOR_DIR, `${name}.json`), JSON.stringify(preset, null, 2));
+    return NextResponse.json({ ok: true, preset });
+  }
+
   const preset = { ...body, name, source: "user", savedAt };
   await mkdir(USER_DIR, { recursive: true });
   await atomicWriteFile(path.join(USER_DIR, `${name}.json`), JSON.stringify(preset, null, 2));
@@ -92,12 +100,10 @@ export async function POST(req: Request) {
 
 export async function DELETE(req: Request) {
   const url = new URL(req.url);
-  const rawName = url.searchParams.get("name");
-  if (!rawName?.trim()) return NextResponse.json({ error: "name is required" }, { status: 400 });
-  const name = safePresetName(rawName, "");
-  if (!name) return NextResponse.json({ error: "invalid preset name" }, { status: 400 });
-  const kind = parsePresetKind(url.searchParams.get("kind"));
-  const dir = kind === "hardware" ? HARDWARE_DIR : kind === "workload" ? WORKLOAD_DIR : USER_DIR;
+  const name = safePresetName(url.searchParams.get("name") ?? "");
+  const kind = String(url.searchParams.get("kind") ?? "user");
+  if (!name) return NextResponse.json({ error: "name is required" }, { status: 400 });
+  const dir = kind === "hardware" ? HARDWARE_DIR : kind === "workload" ? WORKLOAD_DIR : kind === "estimator" ? ESTIMATOR_DIR : USER_DIR;
   await rm(path.join(dir, `${name}.json`), { force: true });
   return NextResponse.json({ ok: true, kind, name });
 }
