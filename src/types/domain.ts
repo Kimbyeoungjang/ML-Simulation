@@ -24,6 +24,8 @@ export interface ScaleSimOverrides {
   filterSRAMBankNum?: number;
   filterSRAMBankPort?: number;
   emitLayoutSection?: boolean;
+  /** Number of ranked tile candidates per op emitted into SCALE-Sim candidate-training topology. */
+  trainingTopK?: number;
 }
 
 export interface HardwareConfig {
@@ -82,6 +84,11 @@ export interface CalibrationProfile {
   byArray?: Record<string, number>;
   byDataflow?: Partial<Record<Dataflow, number>>;
   byOp?: Record<string, number>;
+  /** Interaction factor for `${arrayRows}x${arrayCols}/${dataflow}` when enough samples exist. */
+  byArrayDataflow?: Record<string, number>;
+  /** Optional tile-specific factor for `${tileM}x${tileN}x${tileK}`. */
+  byTile?: Record<string, number>;
+  method?: "robust-median" | "legacy-multiplier" | string;
   samples: CalibrationSample[];
 }
 export interface CalibrationSample {

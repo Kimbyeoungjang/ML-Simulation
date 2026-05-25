@@ -159,7 +159,12 @@ export interface ScaleSimTopkCandidate {
   predictedPaddingRatio: number;
   predictedSramBytes: number;
 }
-export function scaleSimTopkCandidates(res: SearchResponse, topK = 3): ScaleSimTopkCandidate[] {
+function scaleSimTrainingTopK(res: SearchResponse, fallback = 3): number {
+  const raw = Number(res.request.scaleSim?.trainingTopK ?? fallback);
+  return Number.isFinite(raw) && raw > 0 ? Math.min(Math.floor(raw), 5000) : fallback;
+}
+
+export function scaleSimTopkCandidates(res: SearchResponse, topK = scaleSimTrainingTopK(res)): ScaleSimTopkCandidate[] {
   const out: ScaleSimTopkCandidate[] = [];
   for (const r of res.results) {
     const s = r.shape;

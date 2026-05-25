@@ -8,6 +8,8 @@ function median(xs: number[]): number {
 }
 function keyArray(r?: number, c?: number) { return r && c ? `${r}x${c}` : undefined; }
 function keyOp(model?: string, opName?: string) { return model && opName ? `${model}/${opName}` : opName; }
+function keyArrayDataflow(r?: number, c?: number, df?: Dataflow) { const arr = keyArray(r, c); return arr && df ? `${arr}/${df}` : undefined; }
+function keyTile(m?: number, n?: number, k?: number) { return m && n && k ? `${m}x${n}x${k}` : undefined; }
 
 export function parseMeasurementCsv(text: string, frequencyMHz = 1000): CalibrationProfile {
   const lines = text.trim().split(/\r?\n/).filter(Boolean);
@@ -37,20 +39,29 @@ export function parseMeasurementCsv(text: string, frequencyMHz = 1000): Calibrat
   for (const k of new Set(samples.map(s=>keyOp(s.model,s.opName)).filter(Boolean) as string[])) byOp[k] = median(samples.filter(s=>keyOp(s.model,s.opName)===k).map(s=>s.factor));
   const byDataflow: Partial<Record<Dataflow, number>> = {};
   for (const df of ["WS","OS","IS"] as Dataflow[]) { const vals = samples.filter(s=>s.dataflow===df).map(s=>s.factor); if (vals.length) byDataflow[df] = median(vals); }
-  return { name: "measurement-calibration", createdAt: new Date().toISOString(), globalCycleFactor: median(samples.map(s=>s.factor)), byArray, byOp, byDataflow, samples };
+  const byArrayDataflow: Record<string, number> = {};
+  for (const k of new Set(samples.map(s=>keyArrayDataflow(s.arrayRows,s.arrayCols,s.dataflow)).filter(Boolean) as string[])) byArrayDataflow[k] = median(samples.filter(s=>keyArrayDataflow(s.arrayRows,s.arrayCols,s.dataflow)===k).map(s=>s.factor));
+  const byTile: Record<string, number> = {};
+  for (const k of new Set(samples.map(s=>keyTile(s.tileM,s.tileN,s.tileK)).filter(Boolean) as string[])) byTile[k] = median(samples.filter(s=>keyTile(s.tileM,s.tileN,s.tileK)===k).map(s=>s.factor));
+  return { name: "measurement-calibration", createdAt: new Date().toISOString(), globalCycleFactor: median(samples.map(s=>s.factor)), byArray, byOp, byDataflow, byArrayDataflow, byTile, method: "robust-median", samples };
 }
 
-export function calibrationFactor(profile: CalibrationProfile | undefined, hw: HardwareConfig, shape: MatmulShape): number {
+export function calibrationFactor(profile: CalibrationProfile | undefined, hw: HardwareConfig, shape: MatmulShape, tile?: { tileM?: number; tileN?: number; tileK?: number }): number {
   if (!profile) return 1;
-  const factors: number[] = [];
+  const factors: Array<{ value: number; weight: number }> = [];
   const opK = keyOp(shape.model, shape.opName);
-  if (opK && profile.byOp?.[opK]) factors.push(profile.byOp[opK]);
+  if (opK && profile.byOp?.[opK]) factors.push({ value: profile.byOp[opK], weight: 1.4 });
+  const adK = keyArrayDataflow(hw.arrayRows, hw.arrayCols, hw.dataflow);
+  if (adK && profile.byArrayDataflow?.[adK]) factors.push({ value: profile.byArrayDataflow[adK], weight: 1.8 });
+  const tileK = keyTile(tile?.tileM, tile?.tileN, tile?.tileK);
+  if (tileK && profile.byTile?.[tileK]) factors.push({ value: profile.byTile[tileK], weight: 1.2 });
   const arrK = keyArray(hw.arrayRows, hw.arrayCols);
-  if (arrK && profile.byArray?.[arrK]) factors.push(profile.byArray[arrK]);
-  if (profile.byDataflow?.[hw.dataflow]) factors.push(profile.byDataflow[hw.dataflow]!);
+  if (arrK && profile.byArray?.[arrK]) factors.push({ value: profile.byArray[arrK], weight: 1.0 });
+  if (profile.byDataflow?.[hw.dataflow]) factors.push({ value: profile.byDataflow[hw.dataflow]!, weight: 1.0 });
   if (!factors.length) return profile.globalCycleFactor || 1;
-  // Geometric-ish blend to avoid one noisy category dominating.
-  const weighted = factors.reduce((a,b)=>a*b, 1) ** (1 / factors.length);
+  // Weighted geometric blend: robust median buckets, not ordinary linear regression.
+  const weightSum = factors.reduce((a,b)=>a+b.weight, 0);
+  const weighted = Math.exp(factors.reduce((a,b)=>a + Math.log(Math.max(0.05, b.value)) * b.weight, 0) / Math.max(1e-9, weightSum));
   return Math.max(0.05, Math.min(50, weighted));
 }
 
@@ -62,7 +73,7 @@ export function applyCalibration(result: TileCandidateResult, factor: number): T
 
 export function profileToMarkdown(profile?: CalibrationProfile): string {
   if (!profile) return "보정 profile이 적용되지 않았습니다.";
-  return [`보정 profile: ${profile.name}`, `Sample 수: ${profile.samples.length}`, `전역 cycle 보정 계수: ${profile.globalCycleFactor.toFixed(4)}`, "", "배열별 보정 계수:", ...Object.entries(profile.byArray ?? {}).map(([k,v])=>`- ${k}: ${v.toFixed(4)}`), "", "데이터플로우별 보정 계수:", ...Object.entries(profile.byDataflow ?? {}).map(([k,v])=>`- ${k}: ${Number(v).toFixed(4)}`)].join("\n");
+  return [`보정 profile: ${profile.name}`, `Sample 수: ${profile.samples.length}`, `보정 방식: ${profile.method ?? "robust-median"}`, `전역 cycle 보정 계수: ${profile.globalCycleFactor.toFixed(4)}`, "", "배열별 보정 계수:", ...Object.entries(profile.byArray ?? {}).map(([k,v])=>`- ${k}: ${v.toFixed(4)}`), "", "데이터플로우별 보정 계수:", ...Object.entries(profile.byDataflow ?? {}).map(([k,v])=>`- ${k}: ${Number(v).toFixed(4)}`), "", "배열×데이터플로우 보정 계수:", ...Object.entries(profile.byArrayDataflow ?? {}).map(([k,v])=>`- ${k}: ${Number(v).toFixed(4)}`), "", "타일별 보정 계수:", ...Object.entries(profile.byTile ?? {}).slice(0, 20).map(([k,v])=>`- ${k}: ${Number(v).toFixed(4)}`)].join("\n");
 }
 
 export interface CalibrationSplitReport {
@@ -93,6 +104,10 @@ function buildProfileFromSamples(samples: CalibrationSample[], name: string): Ca
   for (const k of new Set(samples.map(s=>keyOp(s.model,s.opName)).filter(Boolean) as string[])) byOp[k] = median(samples.filter(s=>keyOp(s.model,s.opName)===k).map(s=>s.factor));
   const byDataflow: Partial<Record<Dataflow, number>> = {};
   for (const df of ["WS","OS","IS"] as Dataflow[]) { const vals = samples.filter(s=>s.dataflow===df).map(s=>s.factor); if (vals.length) byDataflow[df] = median(vals); }
-  return { name, createdAt: new Date().toISOString(), globalCycleFactor: median(samples.map(s=>s.factor)), byArray, byOp, byDataflow, samples };
+  const byArrayDataflow: Record<string, number> = {};
+  for (const k of new Set(samples.map(s=>keyArrayDataflow(s.arrayRows,s.arrayCols,s.dataflow)).filter(Boolean) as string[])) byArrayDataflow[k] = median(samples.filter(s=>keyArrayDataflow(s.arrayRows,s.arrayCols,s.dataflow)===k).map(s=>s.factor));
+  const byTile: Record<string, number> = {};
+  for (const k of new Set(samples.map(s=>keyTile(s.tileM,s.tileN,s.tileK)).filter(Boolean) as string[])) byTile[k] = median(samples.filter(s=>keyTile(s.tileM,s.tileN,s.tileK)===k).map(s=>s.factor));
+  return { name, createdAt: new Date().toISOString(), globalCycleFactor: median(samples.map(s=>s.factor)), byArray, byOp, byDataflow, byArrayDataflow, byTile, method: "robust-median", samples };
 }
 function mape(pairs: ReadonlyArray<readonly [number, number]>) { return pairs.length ? pairs.reduce((a,[pred,ref])=>a+Math.abs((pred-ref)/Math.max(1,ref))*100,0)/pairs.length : 0; }
