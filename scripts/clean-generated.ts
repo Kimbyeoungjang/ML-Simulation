@@ -1,5 +1,7 @@
 import { rm } from "node:fs/promises";
-import { cleanGeneratedTargets } from "./generated-paths";
+import { existsSync, readdirSync, statSync } from "node:fs";
+import path from "node:path";
+import { cleanGeneratedTargets, generatedSuffixes, isGeneratedPath, toPosixPath } from "./generated-paths";
 
 async function removePath(p: string): Promise<void> {
   try {
@@ -10,8 +12,35 @@ async function removePath(p: string): Promise<void> {
   }
 }
 
+function generatedSuffixFiles(root = process.cwd()): string[] {
+  const out: string[] = [];
+  const ignored = new Set([".git", "node_modules"]);
+  function walk(dir: string): void {
+    if (!existsSync(dir)) return;
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      const rel = toPosixPath(path.relative(root, full));
+      if (ignored.has(rel)) continue;
+      if (entry.isDirectory()) {
+        if (isGeneratedPath(rel)) continue;
+        walk(full);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      if (generatedSuffixes.some(suffix => rel.endsWith(suffix))) out.push(rel);
+    }
+  }
+  try {
+    if (statSync(root).isDirectory()) walk(root);
+  } catch {
+    return out;
+  }
+  return out.sort();
+}
+
 async function main(): Promise<void> {
-  await Promise.all(cleanGeneratedTargets.map(removePath));
+  const suffixTargets = generatedSuffixFiles();
+  await Promise.all([...cleanGeneratedTargets, ...suffixTargets].map(removePath));
 }
 
 main().catch(error => {

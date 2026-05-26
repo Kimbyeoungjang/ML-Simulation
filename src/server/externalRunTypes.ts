@@ -1,0 +1,46 @@
+export type ScaleSimLayerSummary = {
+  name: string;
+  opName?: string;
+  shapeId?: string;
+  rank?: number;
+  tileM?: number;
+  tileN?: number;
+  tileK?: number;
+  tileCount?: number;
+  cycles: number;
+  cyclesPerTile?: number;
+  scaleSimRawCycles?: number;
+  scaleSimRows?: number;
+  tileExtrapolatedCycles?: number;
+  predictedCycles?: number;
+  predictedTimeUs?: number;
+  predictedUtilization?: number;
+  predictedPaddingRatio?: number;
+  predictedSramBytes?: number;
+  totalCyclesInclPrefetch?: number;
+  stallCycles?: number;
+  overallUtil?: number;
+  mappingEfficiency?: number;
+  computeUtil?: number;
+  sramAccesses?: number;
+  dramAccesses?: number;
+};
+
+export type ExternalRunSummary = {
+  ok: boolean;
+  skipped: boolean;
+  tool: "scalesim" | "iree";
+  command?: string;
+  triedCommands: string[];
+  elapsedMs?: number;
+  error?: string;
+  logPath?: string;
+  computeReport?: string;
+  layerCount?: number;
+  totalCycles?: number;
+  cycleRatio?: number;
+  vmfb?: string;
+  vmfbBytes?: number;
+  layers?: ScaleSimLayerSummary[];
+  candidateLayers?: ScaleSimLayerSummary[];
+};

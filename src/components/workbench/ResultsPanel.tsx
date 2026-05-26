@@ -1,217 +1,59 @@
-import { Jobs } from "@/components/workbench/JobsPanel";
-import {
-  ArraySweep,
-  Bottleneck,
-  Energy,
-  Exports,
-  Graphs,
-  Iree,
-  Metric,
-  Policy,
-  ReportTab,
-  ResultContextBar,
-  Roofline,
-  StatusTab,
-} from "@/components/workbench/resultTabs";
-import { fmt } from "@/lib/math";
+import { ResultContextBar } from "@/components/workbench/resultTabs";
+import { ResultsSummaryCards } from "./ResultsSummaryCards";
+import { ResultsTabContent } from "./ResultsTabContent";
+import type { ResultsPanelProps } from "./resultsPanelTypes";
+import type { Tab } from "./workbenchTabs";
 
-type Tab =
-  | "policy"
-  | "bottleneck"
-  | "roofline"
-  | "energy"
-  | "array"
-  | "iree"
-  | "exports"
-  | "graphs"
-  | "report"
-  | "jobs"
-  | "status";
+const RESULT_TAB_ORDER: Tab[] = [
+  "policy",
+  "bottleneck",
+  "roofline",
+  "energy",
+  "array",
+  "iree",
+  "exports",
+  "graphs",
+  "report",
+  "jobs",
+  "status",
+];
 
-type ResultsPanelProps = Record<string, any>;
-
-export function ResultsPanel(props: ResultsPanelProps) {
-  const {
-    tab,
-    tabTips,
-    tabLabels,
-    setTab,
-    result,
-    uncertainty,
-    confidence,
-    confidenceSource,
-    arraySweep,
-    download,
-    analysisJobId,
-    setAnalysisJobId,
-    jobsPayload,
-    jobsViewMode,
-    setJobsViewMode,
-    jobsPage,
-    setJobsPage,
-    jobsPageSize,
-    setJobsPageSize,
-    serverReportMarkdown,
-    serverReportJobId,
-    fetchJobReport,
-    deleteJobById,
-    activeEstimatorSuite,
-    jobsJson,
-    liveJobId,
-    liveJob,
-    liveLogs,
-    liveConnected,
-    liveAutoScroll,
-    setLiveAutoScroll,
-    stopLiveJob,
-    autoRefreshEnabled,
-    setAutoRefreshEnabled,
-    autoAttachNewJob,
-    setAutoAttachNewJob,
-    startLiveJob,
-    selectedJobIds,
-    setSelectedJobIds,
-    deleteJobsByIds,
-    cancelJobsByIds,
-    cancelJobById,
-    statusJson,
-    statusPayload,
-    updateParallelJobs,
-  } = props;
-
+export function ResultsPanel({ tabs, estimate, jobs, report, external, estimatorSuite, download }: ResultsPanelProps) {
+  const { tab, tabTips, tabLabels, setTab } = tabs;
   return (
-        <section className="results-section" title="오른쪽 패널에서 추정 결과, 분석 탭, 내보내기 산출물을 확인합니다.">
-          <div className="cards">
-            <Metric
-              title="총 사이클"
-              tip="현재 workload 전체에 대한 예상 총 cycle과 불확실성입니다."
-              value={`${fmt(result.summary.totalCycles, 0)} ±${uncertainty.uncertaintyPct.toFixed(1)}%`}
-            />
-            <Metric
-              title="평균 활용률"
-              tip="선택된 최적 타일들의 평균 PE utilization입니다."
-              value={`${(result.summary.meanUtilization * 100).toFixed(1)}%`}
-            />
-            <Metric
-              title="신뢰도"
-              tip={confidenceSource === "selected-job" ? "선택한 작업의 confidence.md와 동일한 신뢰도입니다." : "현재 입력 미리보기 기준 신뢰도입니다. 작업을 선택하면 report/confidence.md 기준으로 표시됩니다."}
-              value={`${confidence.level} (${(confidence.score * 100).toFixed(0)}%)${confidenceSource === "selected-job" ? " · 작업" : " · 미리보기"}`}
-            />
-            <Metric
-              title="주요 병목"
-              tip="전체 사이클에서 가장 큰 비중을 차지하는 연산입니다."
-              value={result.summary.bottleneckOp}
-            />
-            {result.estimatorSuite?.applied && (
-              <Metric
-                title="Learned 보정"
-                tip="활성 Estimator Suite가 analytical estimator cycle을 보정한 평균 계수입니다."
-                value={`×${result.estimatorSuite.averageCycleFactor.toFixed(3)}`}
-              />
-            )}
-          </div>
-          <div className={`panel alt ${tab === "jobs" ? "jobs-panel" : ""}`} style={{ marginTop: 16 }}>
-            <ResultContextBar
-              jobsPayload={jobsPayload}
-              selectedJobId={analysisJobId}
-              onSelect={(id) => { setAnalysisJobId(id); if (id) void fetchJobReport(id); }}
-            />
-            <div className="tabs">
-              {(
-                [
-                  "policy",
-                  "bottleneck",
-                  "roofline",
-                  "energy",
-                  "array",
-                  "iree",
-                  "exports",
-                  "graphs",
-                  "report",
-                  "jobs",
-                  "status",
-                ] as Tab[]
-              ).map((t) => (
-                <button
-                  key={t}
-                  title={tabTips[t]}
-                  className={tab === t ? "" : "secondary"}
-                  onClick={() => setTab(t)}
-                >
-                  {tabLabels[t]}
-                </button>
-              ))}
-            </div>
-            {tab === "policy" && <Policy result={result} download={download} jobId={analysisJobId} jobsPayload={jobsPayload} />}
-            {tab === "bottleneck" && <Bottleneck result={result} jobId={analysisJobId} />}
-            {tab === "roofline" && <Roofline result={result} jobId={analysisJobId} />}
-            {tab === "energy" && <Energy result={result} jobId={analysisJobId} />}
-            {tab === "array" && (
-              <ArraySweep
-                rows={arraySweep}
-                comparisonCsv={result.artifacts.experimentComparisonCsv ?? ""}
-                download={download}
-              />
-            )}
-            {tab === "iree" && <Iree result={result} download={download} jobId={analysisJobId} />}
-            {tab === "exports" && (
-              <Exports result={result} download={download} jobId={analysisJobId} jobsPayload={jobsPayload} />
-            )}
-            {tab === "graphs" && <Graphs result={result} download={download} jobId={analysisJobId} jobsPayload={jobsPayload} activeEstimatorSuite={activeEstimatorSuite} />}
-            {tab === "report" && (
-              <ReportTab
-                report={serverReportMarkdown || result.artifacts.reportMarkdown}
-                sourceJobId={serverReportJobId}
-                fallback={!serverReportMarkdown}
-                download={download}
-                confidence={confidence}
-                jobsPayload={jobsPayload}
-                onSelectJobReport={(id) => { setAnalysisJobId(id); void fetchJobReport(id); }}
-                onDeleteJob={(id) => void deleteJobById(id)}
-              />
-            )}
-            {tab === "jobs" && (
-              <Jobs
-                text={jobsJson || "작업 목록을 자동으로 불러오는 중입니다."}
-                download={download}
-                liveJobId={liveJobId}
-                liveJob={liveJob}
-                liveLogs={liveLogs}
-                liveConnected={liveConnected}
-                autoScroll={liveAutoScroll}
-                setAutoScroll={setLiveAutoScroll}
-                onStop={stopLiveJob}
-                autoRefreshEnabled={autoRefreshEnabled}
-                setAutoRefreshEnabled={setAutoRefreshEnabled}
-                jobsPayload={jobsPayload}
-                jobsViewMode={jobsViewMode}
-                setJobsViewMode={setJobsViewMode}
-                jobsPage={jobsPage}
-                setJobsPage={setJobsPage}
-                jobsPageSize={jobsPageSize}
-                setJobsPageSize={setJobsPageSize}
-                autoAttachNewJob={autoAttachNewJob}
-                setAutoAttachNewJob={setAutoAttachNewJob}
-                onWatchJob={startLiveJob}
-                onDeleteJob={(id) => void deleteJobById(id)}
-                selectedJobIds={selectedJobIds}
-                setSelectedJobIds={setSelectedJobIds}
-                onDeleteSelected={(ids) => void deleteJobsByIds(ids)}
-                onCancelSelected={(ids) => void cancelJobsByIds(ids)}
-                onCancelJob={(id) => void cancelJobById(id)}
-              />
-            )}
-            {tab === "status" && (
-              <StatusTab
-                text={statusJson || "시스템 상태를 자동으로 불러오는 중입니다."}
-                payload={statusPayload}
-                download={download}
-                autoRefreshEnabled={autoRefreshEnabled}
-                setAutoRefreshEnabled={setAutoRefreshEnabled}
-                onParallelChange={(value) => void updateParallelJobs(value)}
-              />
-            )}
-          </div>
-        </section>
+    <section className="results-section" title="오른쪽 패널에서 추정 결과, 분석 탭, 내보내기 산출물을 확인합니다.">
+      <ResultsSummaryCards estimate={estimate} />
+      <div className={`panel alt ${tab === "jobs" ? "jobs-panel" : ""}`} style={{ marginTop: 16 }}>
+        <ResultContextBar
+          jobsPayload={jobs.jobsPayload}
+          selectedJobId={jobs.analysisJobId}
+          onSelect={(id) => {
+            jobs.setAnalysisJobId(id);
+            if (id) void report.fetchJobReport(id);
+          }}
+        />
+        <div className="tabs">
+          {RESULT_TAB_ORDER.map((t) => (
+            <button
+              key={t}
+              title={tabTips[t]}
+              className={tab === t ? "" : "secondary"}
+              onClick={() => setTab(t)}
+            >
+              {tabLabels[t]}
+            </button>
+          ))}
+        </div>
+        <ResultsTabContent
+          tab={tab}
+          estimate={estimate}
+          jobs={jobs}
+          report={report}
+          external={external}
+          estimatorSuite={estimatorSuite}
+          download={download}
+        />
+      </div>
+    </section>
   );
 }

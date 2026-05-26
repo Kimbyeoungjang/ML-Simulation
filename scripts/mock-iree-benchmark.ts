@@ -1,0 +1,10 @@
+const args = process.argv.slice(2);
+const moduleArg = args.find((a) => a.startsWith("--module=")) ?? args[args.indexOf("--module") + 1] ?? "unknown.vmfb";
+const functionArg = args.find((a) => a.startsWith("--function=")) ?? args[args.indexOf("--function") + 1] ?? "main";
+const modulePath = moduleArg.replace(/^--module=/, "");
+const fn = functionArg.replace(/^--function=/, "");
+const isHinted = /hinted/i.test(modulePath);
+const base = isHinted ? 0.94 : 1.10;
+const samples = [base, base * 1.02, base * 0.98, base * 1.01, base * 0.99];
+for (const value of samples) console.log(`BM_${fn}/real_time ${value.toFixed(4)} ms ${value.toFixed(4)} ms 10`);
+console.log(`module=${modulePath}`);

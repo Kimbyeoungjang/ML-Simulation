@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { commandLabel, csvRows, getStringOpt, hasFlag, makeDemoArtifacts, numberFromRow, parseArgs, runScaleSimUntilReport, scaleSimArgs, scaleSimCommandCandidates } from "./external-utils";
+import { commandLabel, csvRows, getStringOpt, hasFlag, ensureArtifactInputs, makeDemoArtifacts, numberFromRow, parseArgs, runScaleSimUntilReport, scaleSimArgs, scaleSimCommandCandidates } from "./external-utils";
 
 async function main(): Promise<void> {
   const opts = parseArgs();
@@ -11,12 +11,22 @@ async function main(): Promise<void> {
   const preferredCommand = getStringOpt(opts, "cmd", process.env.TILEFORGE_SCALE_SIM_CMD ?? "");
   const commands = scaleSimCommandCandidates(preferredCommand);
 
-  await makeDemoArtifacts(artifactDir, hasFlag(opts, "full") ? "default" : "smoke");
+  const useTopK = hasFlag(opts, "top-k");
+  const required = useTopK ? ["scalesim.cfg", "topology_top3.csv"] : ["scalesim.cfg", "topology.csv"];
+  const demoMode = hasFlag(opts, "full") ? "default" : "smoke";
+  const artifactPrep = await ensureArtifactInputs(artifactDir, required, {
+    demoMode,
+    forceDemo: hasFlag(opts, "demo"),
+    allowDemoIfMissing: !hasFlag(opts, "no-demo"),
+  });
+  if (artifactPrep.createdDemo) {
+    console.log(`demo artifact 생성: ${artifactDir} (missing: ${artifactPrep.missingBefore.join(", ") || "forced"})`);
+  }
   await mkdir(outDir, { recursive: true });
 
   const cfg = path.join(artifactDir, "scalesim.cfg");
-  const topology = path.join(artifactDir, "topology.csv");
-  const layout = path.join(artifactDir, "layout.csv");
+  const topology = path.join(artifactDir, useTopK ? "topology_top3.csv" : "topology.csv");
+  const layout = path.join(artifactDir, useTopK ? "layout_top3.csv" : "layout.csv");
   try {
     const startedAt = Date.now();
     const run = await runScaleSimUntilReport(commands, scaleSimArgs({ config: cfg, topology, layout, outDir }), outDir, (command: string) => ({

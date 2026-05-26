@@ -67,7 +67,10 @@
     "estimator:compare": "tsx -r tsconfig-paths/register scripts/estimator-lab.ts compare",
     "estimator:suite": "tsx -r tsconfig-paths/register scripts/estimator-lab.ts suite",
     "clean:generated": "tsx -r tsconfig-paths/register scripts/clean-generated.ts",
-    "check:clean": "tsx -r tsconfig-paths/register scripts/check-clean-tree.ts"
+    "check:clean": "tsx -r tsconfig-paths/register scripts/check-clean-tree.ts",
+    "benchmark:iree": "npm run setup:env && tsx -r tsconfig-paths/register scripts/benchmark-iree.ts",
+    "validation:plan": "tsx -r tsconfig-paths/register scripts/validation-plan.ts",
+    "validation:execute": "tsx -r tsconfig-paths/register scripts/validation-execute.ts"
   },
   "dependencies": {
     "@next/env": "^15.1.0",

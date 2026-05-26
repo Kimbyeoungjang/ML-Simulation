@@ -84,7 +84,7 @@ export interface TileCandidateResult {
   /** Tile-search cost before projecting to whole-layer hardware-design cycles. */
   tilePolicyCycles?: number; tilePolicyRawCycles?: number; tileScratchBytes?: number;
   /** Whole-layer cycle estimate used for hardware-design comparison. */
-  fullLayerCycles?: number; fullLayerRawCycles?: number; fullLayerComputeCycles?: number; fullLayerStallCycles?: number; fullLayerMappingEfficiency?: number; fullLayerSramBytes?: number; fullLayerDramBytes?: number; predictionTarget?: "full-layer" | "tile-policy";
+  fullLayerCycles?: number; fullLayerRawCycles?: number; fullLayerComputeCycles?: number; fullLayerStallCycles?: number; fullLayerMappingEfficiency?: number; fullLayerSramBytes?: number; fullLayerDramBytes?: number; predictionTarget?: "full-layer" | "tile-policy"; predictionConfidence?: number; predictionNotes?: string[];
   boundaryPenalty: number; score: number; isPareto: boolean; warnings: string[]; explanation: string;
 }
 export interface OpSearchResult { shape: MatmulShape; best: TileCandidateResult; candidates: TileCandidateResult[]; pareto: TileCandidateResult[]; heatmap: HeatmapPoint[]; }
@@ -94,11 +94,27 @@ export interface SearchResponse { request: SearchRequest; results: OpSearchResul
 export interface CalibrationSample { predictedCycles: number; measuredCycles: number; weight?: number; model?: string; opName?: string; }
 export interface CalibrationProfile { factor: number; samples: CalibrationSample[]; createdAt?: string; note?: string; }
 
-export interface SummaryMetrics { totalCycles: number; totalTimeUs: number; meanUtilization: number; meanPaddingRatio: number; maxSramBytes: number; bottleneckOp: string; }
+export interface SummaryMetrics {
+  totalCycles: number;
+  totalTimeUs: number;
+  meanUtilization: number;
+  meanPaddingRatio: number;
+  /** Backward-compatible alias for the maximum tile-local scratch footprint. */
+  maxSramBytes: number;
+  /** Maximum tile-local A/B/C scratch footprint; use this for SRAM fit checks. */
+  maxTileScratchBytes?: number;
+  /** Maximum full-layer operand working set; use this for spill/refill and DRAM traffic discussion, not direct tile fit. */
+  maxFullLayerSramBytes?: number;
+  /** Sum of candidate-ranking tile-policy cycles for selected tiles. */
+  totalTilePolicyCycles?: number;
+  /** Lowest analytical/learned full-layer confidence among selected ops. */
+  minPredictionConfidence?: number;
+  bottleneckOp: string;
+}
 export interface BottleneckAnalysis { totalCycles: number; topOps: Array<{ opName: string; model: string; cycles: number; percent: number; issue: string; }>; lowUtilizationOps: string[]; highPaddingOps: string[]; sramRiskOps: string[]; }
 export interface RooflinePoint { opName: string; model: string; arithmeticIntensity: number; achievedGops: number; computeRoofGops: number; memoryRoofGops: number; bound: "compute" | "memory"; }
 export interface EnergySummary { totalEnergyUJ: number; totalMacEnergyUJ: number; totalSramEnergyUJ: number; totalDramEnergyUJ: number; totalStaticEnergyUJ: number; edp: number; byOp: Array<{ opName: string; model: string; energyUJ: number; energyPercent: number; }>; }
-export interface GeneratedArtifacts { policyCsv: string; mlir: string; transformDialect: string; reportMarkdown: string; scaleSimConfig: string; scaleSimTopology: string; scaleSimLayout?: string; scaleSimTopkTopology?: string; scaleSimTopkLayout?: string; projectJson: string; manifestJson?: string; ireeCommand?: string; latexTable?: string; svgSummary?: string; experimentComparisonCsv?: string; validationMarkdown?: string; validationCsv?: string; robustPolicyMarkdown?: string; robustPolicyCsv?: string; dataflowComparisonCsv?: string; memoryTrafficCsv?: string; pruneReportMarkdown?: string; tileScheduleSvg?: string; }
+export interface GeneratedArtifacts { policyCsv: string; mlir: string; transformDialect: string; reportMarkdown: string; scaleSimConfig: string; scaleSimTopology: string; scaleSimLayout?: string; scaleSimTopkTopology?: string; scaleSimTopkLayout?: string; projectJson: string; manifestJson?: string; ireeCommand?: string; latexTable?: string; svgSummary?: string; experimentComparisonCsv?: string; validationMarkdown?: string; validationCsv?: string; robustPolicyMarkdown?: string; robustPolicyCsv?: string; dataflowComparisonCsv?: string; memoryTrafficCsv?: string; pruneReportMarkdown?: string; tileScheduleSvg?: string; compilerHintsJson?: string; compilerHintsMarkdown?: string; predictionContractJson?: string; hardwareDesignPlanJson?: string; hardwareDesignPlanMarkdown?: string; tilingStrategyJson?: string; tilingStrategyMarkdown?: string; ireeBenchmarkPlanJson?: string; ireeBenchmarkPlanMarkdown?: string; }
 export interface ArraySweepRequest { baseHardware: HardwareConfig; shapes: MatmulShape[]; candidates: TileCandidates; arrays: Array<{ rows: number; cols: number }>; objective: Objective; }
 export interface ArraySweepResult { arrayRows: number; arrayCols: number; totalCycles: number; meanUtilization: number; maxSramBytes: number; score: number; advice: string[]; }
 export interface ProjectFile { version: string; name: string; createdAt: string; hardware: HardwareConfig; shapes: MatmulShape[]; candidates: TileCandidates; objective: Objective; scaleSim?: ScaleSimOverrides; notes?: string; }

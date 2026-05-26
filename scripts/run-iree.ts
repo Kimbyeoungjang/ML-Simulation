@@ -1,7 +1,7 @@
 import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { runExternalCommand } from "@/server/externalCommand";
-import { commandLabel, getStringOpt, hasFlag, ireeCompileCommandCandidates, makeDemoArtifacts, parseArgs } from "./external-utils";
+import { commandLabel, ensureArtifactInputs, getStringOpt, hasFlag, ireeCompileCommandCandidates, makeDemoArtifacts, parseArgs } from "./external-utils";
 
 async function fileSizeStrict(file: string, label: string): Promise<number> {
   let s: Awaited<ReturnType<typeof stat>>;
@@ -25,12 +25,20 @@ async function main(): Promise<void> {
   const artifactDir = path.resolve(getStringOpt(opts, "artifact", path.join(".tileforge", "external", "artifact")));
   const outDir = path.resolve(getStringOpt(opts, "out", path.join(artifactDir, "iree")));
   const requireExternal = hasFlag(opts, "require-external");
-  const withTransform = hasFlag(opts, "with-transform");
   const timeoutMs = Number(getStringOpt(opts, "timeout-ms", "120000"));
   const preferredCommand = getStringOpt(opts, "cmd", process.env.TILEFORGE_IREE_COMPILE_CMD ?? "");
   const commands = ireeCompileCommandCandidates(preferredCommand);
 
-  await makeDemoArtifacts(artifactDir);
+  const withTransform = hasFlag(opts, "with-transform");
+  const required = withTransform ? ["generated.mlir", "transform.mlir"] : ["generated.mlir"];
+  const artifactPrep = await ensureArtifactInputs(artifactDir, required, {
+    demoMode: hasFlag(opts, "smoke") ? "smoke" : "default",
+    forceDemo: hasFlag(opts, "demo"),
+    allowDemoIfMissing: !hasFlag(opts, "no-demo"),
+  });
+  if (artifactPrep.createdDemo) {
+    console.log(`demo artifact 생성: ${artifactDir} (missing: ${artifactPrep.missingBefore.join(", ") || "forced"})`);
+  }
   await mkdir(outDir, { recursive: true });
 
   const inputMlir = path.join(artifactDir, "generated.mlir");

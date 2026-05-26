@@ -1,5 +1,30 @@
 import type { HardwareConfig, MatmulShape, ScaleSimOverrides } from "@/types/domain";
 import { ceilDiv, clamp } from "./math";
+import { SPILL_CALIBRATION } from "./fullLayerModelCard";
+
+function modelConfidence(shape: MatmulShape, hw: HardwareConfig, spillRatio: number, dramRoofCycles: number, computeCycles: number) {
+  let confidence = 0.92;
+  const notes: string[] = [];
+  const ar = Math.max(1, Math.round(hw.arrayRows));
+  const ac = Math.max(1, Math.round(hw.arrayCols));
+  if (shape.m < ar / 2 || shape.n < ac / 2) {
+    confidence -= 0.12;
+    notes.push("shape가 array보다 작아 PE under-fill 영향이 큽니다");
+  }
+  if (spillRatio > 0.25) {
+    confidence -= Math.min(0.22, spillRatio * 0.08);
+    notes.push("operand가 SRAM partition을 넘어서 refill/spill 보정이 적용되었습니다");
+  }
+  if (dramRoofCycles > computeCycles * 1.25) {
+    confidence -= 0.10;
+    notes.push("DRAM roof가 compute cycle보다 커서 bandwidth 가정에 민감합니다");
+  }
+  if (shape.k > Math.max(ar, ac) * 32) {
+    confidence -= 0.05;
+    notes.push("K reduction이 매우 길어 IREE/runtime scheduling 차이가 커질 수 있습니다");
+  }
+  return { confidence: clamp(confidence, 0.45, 0.97), notes };
+}
 
 export interface FullLayerCycleEstimate {
   cycles: number;
@@ -9,6 +34,9 @@ export interface FullLayerCycleEstimate {
   sramBytes: number;
   dramBytes: number;
   formula: string;
+  confidence: number;
+  assumptions: string[];
+  limitations: string[];
 }
 
 function bandwidths(hw: HardwareConfig, scaleSim?: ScaleSimOverrides) {
@@ -72,21 +100,21 @@ function scalesimLikeBufferStall(
   const nFolds = ceilDiv(n, ac);
 
   if (dataflow === "OS") {
-    const base = mTail * ar * 2.95;
-    const longReduction = Math.max(0, kFolds - 6) * 640;
+    const base = mTail * ar * SPILL_CALIBRATION.osMTailScale;
+    const longReduction = Math.max(0, kFolds - 6) * SPILL_CALIBRATION.osLongReductionScale;
     return base + longReduction;
   }
   if (dataflow === "IS") {
     if (mTail <= 0) return 0;
-    const base = mTail * ar * 23.3;
-    const projectionLike = kFolds <= 6 && nFolds >= 12 && nFolds <= 20 ? 1.95 : 1;
+    const base = mTail * ar * SPILL_CALIBRATION.isMTailScale;
+    const projectionLike = kFolds <= 6 && nFolds >= 12 && nFolds <= 20 ? SPILL_CALIBRATION.isProjectionLikeMultiplier : 1;
     return base * projectionLike;
   }
 
   // WS: spilled filters dominate the common transformer projection cases.
   // The main penalty scales with the non-resident M tail rather than N because
   // the N folds are streamed while weights stay stationary.
-  if (mem.filter > caps.filter && mTail > 0) return mTail * ar * 2.28;
+  if (mem.filter > caps.filter && mTail > 0) return mTail * ar * SPILL_CALIBRATION.wsFilterSpillScale;
   return 0;
 }
 
@@ -137,6 +165,7 @@ export function estimateFullLayerCycles(
   const bw = bandwidths(hw, scaleSim);
   const mem = memoryBytes({ ...shape, m, n, k }, bytes);
   const caps = sramBufferCaps(hw, scaleSim);
+  const spillRatio = bufferSpillRatio(mem, caps);
 
   let computeCycles = 0;
   let stallCycles = 0;
@@ -182,6 +211,7 @@ export function estimateFullLayerCycles(
   const computeAndLocalStall = computeCycles + stallCycles;
   const cycles = Math.max(1, Math.round(Math.max(computeAndLocalStall, dramRoofCycles)));
   const modeledStall = Math.max(0, cycles - computeCycles);
+  const confidenceModel = modelConfidence({ ...shape, m, n, k }, hw, spillRatio, dramRoofCycles, computeCycles);
   // This is the required full-layer working-set footprint.  Do not cap it by
   // available SRAM; design-space SRAM sweeps need the true requirement to show
   // when a smaller SRAM point spills/overflows.
@@ -194,5 +224,12 @@ export function estimateFullLayerCycles(
     sramBytes,
     dramBytes: mem.total,
     formula,
+    confidence: confidenceModel.confidence,
+    assumptions: [
+      "full-layer cycle은 hardware-design 비교용 대표값입니다",
+      "tile-policy cycle은 MLIR/IREE 타일 후보 ranking용 별도 값입니다",
+      "SCALE-Sim GEMM 호환 입력은 1D conv row로 인코딩됩니다",
+    ],
+    limitations: confidenceModel.notes,
   };
 }

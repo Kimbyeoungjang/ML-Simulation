@@ -22,13 +22,19 @@ export function estimateAll(req: SearchRequest, options: { includeArtifacts?: bo
     return out;
   });
   const bests = results.map(r => r.best);
+  const maxTileScratchBytes = Math.max(...bests.map(b => b.tileScratchBytes ?? b.sramBytes), 0);
+  const maxFullLayerSramBytes = Math.max(...bests.map(b => b.fullLayerSramBytes ?? b.sramBytes), 0);
   const summary = {
     totalCycles: bests.reduce((a,b)=>a+b.cycles,0),
     totalTimeUs: bests.reduce((a,b)=>a+b.timeUs,0),
     meanUtilization: mean(bests.map(b=>b.utilization)),
     meanPaddingRatio: mean(bests.map(b=>b.paddingRatio)),
-    maxSramBytes: Math.max(...bests.map(b=>b.sramBytes), 0),
-    bottleneckOp: bests.slice().sort((a,b)=>b.cycles-a.cycles)[0]?.opName ?? "none"
+    maxSramBytes: maxTileScratchBytes,
+    maxTileScratchBytes,
+    maxFullLayerSramBytes,
+    totalTilePolicyCycles: bests.reduce((a,b)=>a + Math.max(1, b.tilePolicyCycles ?? b.cycles), 0),
+    minPredictionConfidence: Math.min(...bests.map(b => b.predictionConfidence ?? 1), 1),
+    bottleneckOp: bests.slice().sort((a,b)=>(b.fullLayerCycles ?? b.cycles)-(a.fullLayerCycles ?? a.cycles))[0]?.opName ?? "none"
   };
   const designAdvice = makeDesignAdvice(req.hardware, bests);
   const pairs = results.map(r => ({ shape: r.shape, best: r.best }));
@@ -111,6 +117,8 @@ function toHardwareDesignBest(hw: HardwareConfig, shape: MatmulShape, candidate:
   if (full.stallCycles > Math.max(1024, full.computeCycles * 0.08)) {
     warnings.push(`full-layer stall ${Math.round(full.stallCycles).toLocaleString()} cycles 예측`);
   }
+  if (full.confidence < 0.75) warnings.push(`full-layer model confidence ${(full.confidence * 100).toFixed(0)}% — SCALE-Sim/IREE 측정 우선`);
+  for (const note of full.limitations) warnings.push(note);
   return {
     ...candidate,
     tilePolicyCycles,
@@ -124,13 +132,17 @@ function toHardwareDesignBest(hw: HardwareConfig, shape: MatmulShape, candidate:
     fullLayerSramBytes: full.sramBytes,
     fullLayerDramBytes: full.dramBytes,
     predictionTarget: "full-layer",
+    predictionConfidence: full.confidence,
+    predictionNotes: [...full.assumptions, ...full.limitations],
     rawCycles: full.cycles,
     cycles,
     timeUs: cycles / Math.max(1, hw.frequencyMHz),
     utilization: full.utilization,
-    sramBytes: Math.max(tileScratchBytes, full.sramBytes),
+    // Keep sramBytes backward-compatible as the tile-local scratch footprint.
+    // Full-layer working set is exposed separately through fullLayerSramBytes.
+    sramBytes: tileScratchBytes,
     warnings: Array.from(new Set(warnings)),
-    explanation: `${candidate.explanation} Hardware-design cycle은 full-layer systolic model(${full.formula}) 기준 ${cycles.toLocaleString()} cycles입니다. Tile-policy cost ${Math.round(tilePolicyCycles).toLocaleString()} cycles는 후보 ranking 참고값입니다.`,
+    explanation: `${candidate.explanation} Hardware-design cycle은 full-layer systolic model(${full.formula}) 기준 ${cycles.toLocaleString()} cycles입니다. Tile-policy cost ${Math.round(tilePolicyCycles).toLocaleString()} cycles는 후보 ranking 참고값입니다. confidence ${(full.confidence * 100).toFixed(0)}%.`,
   };
 }
 
@@ -263,7 +275,7 @@ export function makeDesignAdvice(hw: HardwareConfig, bests: TileCandidateResult[
   const maxSram = Math.max(...bests.map(b=>b.sramBytes), 0);
   if (avgUtil < 0.55) advice.push(`평균 PE 사용률이 ${(avgUtil*100).toFixed(1)}%입니다. 더 작은 배열, 비대칭 배열, 또는 M/N 차원과 더 잘 맞는 shape 구성을 검토하세요.`);
   if (avgPad > 0.25) advice.push(`평균 패딩 오버헤드가 ${(avgPad*100).toFixed(1)}%입니다. 타일 후보를 더 추가하거나 주요 M/N/K 차원을 나누어떨어지게 하는 타일 크기를 우선 검토하세요.`);
-  if (maxSram > hw.sramKB*1024) advice.push(`최소 하나 이상의 최적 타일이 SRAM 용량을 초과합니다. tileK/tileN을 줄이거나 로컬 SRAM을 늘리는 방안을 검토하세요.`);
+  if (maxSram > hw.sramKB*1024) advice.push(`최소 하나 이상의 최적 타일 scratch가 SRAM 용량을 초과합니다. tileK/tileN을 줄이거나 로컬 SRAM을 늘리는 방안을 검토하세요.`);
   if (hw.arrayRows === hw.arrayCols && bests.some(b=>b.tileM !== b.tileN)) advice.push(`최적 타일이 비대칭인 경우가 많습니다. ${hw.arrayRows}x${hw.arrayCols*2} 또는 ${hw.arrayRows*2}x${hw.arrayCols} 같은 직사각형 배열 sweep을 검토하세요.`);
   if (!advice.length) advice.push("현재 하드웨어와 타일 후보는 이 workload에 비교적 균형적입니다. 다음 단계로 SCALE-Sim 및 IREE benchmark로 검증하세요.");
   return advice;

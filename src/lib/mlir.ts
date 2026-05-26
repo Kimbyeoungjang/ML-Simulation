@@ -10,6 +10,11 @@ import { compareDataflows, dataflowComparisonCsv } from "./dataflow";
 import { memoryTrafficFor, memoryTrafficCsv } from "./memoryTraffic";
 import { pruneTileCandidates, compactPruneReport } from "./pruning";
 import { tileScheduleSvg } from "./scheduleViz";
+import { buildCompilerHints, compilerHintsMarkdown } from "./compilerHints";
+import { buildPredictionContract } from "./predictionContract";
+import { buildHardwareDesignPlan, hardwareDesignPlanMarkdown } from "./hardwareDesignPlan";
+import { buildTilingStrategyReport, tilingStrategyMarkdown } from "./tilingStrategy";
+import { buildIreeBenchmarkPlan, ireeBenchmarkPlanMarkdown } from "./ireeBenchmarkPlan";
 
 export function generateArtifacts(res: Omit<SearchResponse, "artifacts"> & { artifacts?: any }) {
   const policyCsv = generatePolicyCsv(res as SearchResponse);
@@ -35,13 +40,26 @@ export function generateArtifacts(res: Omit<SearchResponse, "artifacts"> & { art
   const first = res.results[0];
   const prune = first ? compactPruneReport(pruneTileCandidates(res.request.hardware, first.shape, res.request.candidates)) : "shape가 없습니다";
   const scheduleSvg = first ? tileScheduleSvg(res.request.hardware, first.shape, first.best) : "";
-  return { policyCsv, mlir, transformDialect, reportMarkdown: "", scaleSimConfig, scaleSimTopology, scaleSimLayout, scaleSimTopkTopology, scaleSimTopkLayout, projectJson, manifestJson, ireeCommand, latexTable, svgSummary, experimentComparisonCsv, validationMarkdown: validation.markdown, validationCsv: validation.csv, robustPolicyMarkdown: robust.markdown, robustPolicyCsv: robust.csv, dataflowComparisonCsv: dataflowCsv, memoryTrafficCsv: trafficCsv, pruneReportMarkdown: prune, tileScheduleSvg: scheduleSvg };
+  const compilerHints = buildCompilerHints(res as SearchResponse);
+  const compilerHintsJson = JSON.stringify(compilerHints, null, 2);
+  const compilerHintsMd = compilerHintsMarkdown(compilerHints);
+  const predictionContractJson = JSON.stringify(buildPredictionContract(res as SearchResponse), null, 2);
+  const hardwareDesignPlan = buildHardwareDesignPlan(res as SearchResponse);
+  const hardwareDesignPlanJson = JSON.stringify(hardwareDesignPlan, null, 2);
+  const hardwareDesignPlanMd = hardwareDesignPlanMarkdown(hardwareDesignPlan);
+  const tilingStrategy = buildTilingStrategyReport(res as SearchResponse);
+  const tilingStrategyJson = JSON.stringify(tilingStrategy, null, 2);
+  const tilingStrategyMd = tilingStrategyMarkdown(tilingStrategy);
+  const ireeBenchmarkPlan = buildIreeBenchmarkPlan(res as SearchResponse);
+  const ireeBenchmarkPlanJson = JSON.stringify(ireeBenchmarkPlan, null, 2);
+  const ireeBenchmarkPlanMd = ireeBenchmarkPlanMarkdown(ireeBenchmarkPlan);
+  return { policyCsv, mlir, transformDialect, reportMarkdown: "", scaleSimConfig, scaleSimTopology, scaleSimLayout, scaleSimTopkTopology, scaleSimTopkLayout, projectJson, manifestJson, ireeCommand, latexTable, svgSummary, experimentComparisonCsv, validationMarkdown: validation.markdown, validationCsv: validation.csv, robustPolicyMarkdown: robust.markdown, robustPolicyCsv: robust.csv, dataflowComparisonCsv: dataflowCsv, memoryTrafficCsv: trafficCsv, pruneReportMarkdown: prune, tileScheduleSvg: scheduleSvg, compilerHintsJson, compilerHintsMarkdown: compilerHintsMd, predictionContractJson, hardwareDesignPlanJson, hardwareDesignPlanMarkdown: hardwareDesignPlanMd, tilingStrategyJson, tilingStrategyMarkdown: tilingStrategyMd, ireeBenchmarkPlanJson, ireeBenchmarkPlanMarkdown: ireeBenchmarkPlanMd };
 }
 export function generatePolicyCsv(res: SearchResponse): string {
-  const rows = ["모델(model),연산(op_name),M,N,K,배열_rows(array_rows),배열_cols(array_cols),데이터플로우(dataflow),타일_M(tile_m),타일_N(tile_n),타일_K(tile_k),tileM,tileN,tileK,사이클(cycles),full_layer_cycles,tile_policy_cycles,시간_us(time_us),PE_사용률(utilization),패딩_비율(padding_ratio),SRAM_bytes,점수(score),경고(warnings),설명(explanation)"];
+  const rows = ["모델(model),연산(op_name),M,N,K,배열_rows(array_rows),배열_cols(array_cols),데이터플로우(dataflow),타일_M(tile_m),타일_N(tile_n),타일_K(tile_k),tileM,tileN,tileK,사이클(cycles),full_layer_cycles,tile_policy_cycles,시간_us(time_us),PE_사용률(utilization),패딩_비율(padding_ratio),tile_scratch_bytes,full_layer_working_set_bytes,점수(score),경고(warnings),설명(explanation)"];
   for (const r of res.results) {
     const b = r.best, s = r.shape, h = res.request.hardware;
-    rows.push([s.model,s.opName,s.m,s.n,s.k,h.arrayRows,h.arrayCols,h.dataflow,b.tileM,b.tileN,b.tileK,b.tileM,b.tileN,b.tileK,b.cycles,b.fullLayerCycles ?? b.cycles,b.tilePolicyCycles ?? b.cycles,b.timeUs.toFixed(4),b.utilization.toFixed(6),b.paddingRatio.toFixed(6),b.sramBytes,b.score.toFixed(6),`"${b.warnings.join("; ")}"`,`"${b.explanation.replaceAll('"','""')}"`].join(","));
+    rows.push([s.model,s.opName,s.m,s.n,s.k,h.arrayRows,h.arrayCols,h.dataflow,b.tileM,b.tileN,b.tileK,b.tileM,b.tileN,b.tileK,b.cycles,b.fullLayerCycles ?? b.cycles,b.tilePolicyCycles ?? b.cycles,b.timeUs.toFixed(4),b.utilization.toFixed(6),b.paddingRatio.toFixed(6),b.tileScratchBytes ?? b.sramBytes,b.fullLayerSramBytes ?? b.sramBytes,b.score.toFixed(6),`"${b.warnings.join("; ")}"`,`"${b.explanation.replaceAll('"','""')}"`].join(","));
   }
   return rows.join("\n");
 }

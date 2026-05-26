@@ -14,6 +14,40 @@ function pythonScriptCommandCandidates(scriptPath: string): string[] {
   return pythonCommandCandidates().map(candidate => commandLineFor(candidate, [scriptPath]));
 }
 
+
+function splitCommandTokens(command: string): string[] {
+  return command.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g)?.map(token => token.replace(/^(['"])(.*)\1$/, "$2")) ?? [];
+}
+
+function quoteCommandToken(token: string): string {
+  if (!/[\s"']/.test(token)) return token;
+  return `"${token.replace(/"/g, '\\"')}"`;
+}
+
+function looksLikeRelativeScriptPath(token: string): boolean {
+  if (!token || path.isAbsolute(token)) return false;
+  const normalized = token.replace(/\\/g, "/");
+  return (
+    normalized.startsWith("scripts/") ||
+    normalized.startsWith("./scripts/") ||
+    normalized.startsWith("external/") ||
+    normalized.startsWith("./external/") ||
+    /\.(py|ts|tsx|js|mjs|cjs)$/i.test(normalized)
+  );
+}
+
+export function absolutizeConfiguredToolCommand(command: string, root = process.cwd()): string {
+  const tokens = splitCommandTokens(command);
+  if (tokens.length === 0) return command;
+  const normalized = tokens.map((token, index) => {
+    // Keep the executable token unchanged. Convert relative script/config paths
+    // that are passed to wrappers such as `npx tsx`, `py -3`, or `python`.
+    if (index === 0 || !looksLikeRelativeScriptPath(token)) return token;
+    return path.resolve(root, token);
+  });
+  return normalized.map(quoteCommandToken).join(" ");
+}
+
 export function scaleSimSourceCommandCandidates(): string[] {
   const scriptCandidates = [
     path.resolve("external", "SCALE-Sim", "scalesim", "scale.py"),
@@ -28,7 +62,7 @@ export function scaleSimCommandCandidates(preferred?: string, options: { ignoreE
   // the single source of truth. This prevents noisy fallback probes such as
   // Windows `python3` command-not-found errors after setup has found a working
   // command.
-  if (raw?.trim()) return uniqueCommands([raw]);
+  if (raw?.trim()) return uniqueCommands([absolutizeConfiguredToolCommand(raw)]);
 
   // Prefer the installed module form because it is independent of cwd.
   // SCALE-Sim is intentionally executed from its output directory so older
@@ -44,7 +78,7 @@ export function scaleSimCommandCandidates(preferred?: string, options: { ignoreE
 export function ireeCompileCommandCandidates(preferred?: string, options: { ignoreEnv?: boolean } = {}): string[] {
   const raw = preferred || (options.ignoreEnv ? undefined : process.env.TILEFORGE_IREE_COMPILE_CMD);
   // Same rule as SCALE-Sim: a configured command is authoritative.
-  if (raw?.trim()) return uniqueCommands([raw]);
+  if (raw?.trim()) return uniqueCommands([absolutizeConfiguredToolCommand(raw)]);
   return uniqueCommands([
     "iree-compile",
     // The Python package exposes the console entry point through this module.
