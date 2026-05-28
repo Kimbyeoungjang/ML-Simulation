@@ -42,6 +42,26 @@ export interface TpuMeasurementRow {
   reps?: number;
 }
 
+export interface TpuSampleRow {
+  id?: string;
+  model?: string;
+  opName?: string;
+  m: number;
+  n: number;
+  k: number;
+  dtype?: string;
+  rep: number;
+  measuredUs: number;
+}
+
+export interface TpuSampleComparisonRow extends TpuSampleRow {
+  predictedTimeUs: number;
+  predictedCycles: number;
+  measuredCycles: number;
+  errorPct: number;
+  runtimeRatio: number;
+}
+
 export interface TpuComparisonRow extends TpuBenchmarkExportRow {
   measuredUs: number;
   measuredCycles: number;
@@ -87,6 +107,23 @@ const COMPARISON_HEADERS: Array<keyof TpuComparisonRow> = [
   "meanUs",
   "p90Us",
   "reps",
+];
+
+const SAMPLE_COMPARISON_HEADERS: Array<keyof TpuSampleComparisonRow> = [
+  "id",
+  "model",
+  "opName",
+  "m",
+  "n",
+  "k",
+  "dtype",
+  "rep",
+  "measuredUs",
+  "predictedTimeUs",
+  "predictedCycles",
+  "measuredCycles",
+  "errorPct",
+  "runtimeRatio",
 ];
 
 function csvEscape(value: unknown): string {
@@ -277,6 +314,25 @@ export function parseTpuMeasurementCsv(text: string): TpuMeasurementRow[] {
   });
 }
 
+export function parseTpuSampleCsv(text: string): TpuSampleRow[] {
+  const trimmed = String(text || "").trim();
+  if (!trimmed) return [];
+  return parseCsvRecords(trimmed).map((record, i) => {
+    const rowNumber = i + 2;
+    return {
+      id: first(record, ["id"]),
+      model: first(record, ["model"]),
+      opName: first(record, ["op_name", "opName", "op"]),
+      m: parseNumber(first(record, ["m"]), "m", rowNumber, { required: true, positive: true }) ?? 1,
+      n: parseNumber(first(record, ["n"]), "n", rowNumber, { required: true, positive: true }) ?? 1,
+      k: parseNumber(first(record, ["k"]), "k", rowNumber, { required: true, positive: true }) ?? 1,
+      dtype: first(record, ["dtype"]),
+      rep: parseNumber(first(record, ["rep", "iteration", "sample"]), "rep", rowNumber, { required: true }) ?? i,
+      measuredUs: parseNumber(first(record, ["measured_us", "measuredUs", "sample_us", "sampleUs", "us"]), "measuredUs", rowNumber, { required: true, positive: true }) ?? 1,
+    };
+  });
+}
+
 export function compareTpuMeasurements(predicted: TpuBenchmarkExportRow[], measurements: TpuMeasurementRow[]): TpuComparisonRow[] {
   const byFullKey = new Map<string, TpuMeasurementRow>();
   const byShapeKey = new Map<string, TpuMeasurementRow>();
@@ -316,8 +372,50 @@ export function compareTpuMeasurements(predicted: TpuBenchmarkExportRow[], measu
   return rows;
 }
 
+export function compareTpuSamples(predicted: TpuBenchmarkExportRow[], samples: TpuSampleRow[]): TpuSampleComparisonRow[] {
+  const byFullKey = new Map<string, TpuBenchmarkExportRow>();
+  const byShapeKey = new Map<string, TpuBenchmarkExportRow>();
+  for (const pred of predicted) {
+    byFullKey.set(rowKey(pred), pred);
+    if (!byShapeKey.has(shapeKey(pred))) byShapeKey.set(shapeKey(pred), pred);
+  }
+
+  const rows: TpuSampleComparisonRow[] = [];
+  for (const sample of samples) {
+    const synthetic = {
+      id: sample.id || "",
+      model: sample.model || "",
+      opName: sample.opName || "",
+      m: sample.m,
+      n: sample.n,
+      k: sample.k,
+    };
+    const pred = byFullKey.get(rowKey(synthetic)) ?? byShapeKey.get(shapeKey(sample));
+    if (!pred) continue;
+    const measuredCycles = sample.measuredUs * pred.frequencyMHz;
+    const errorPct = ((measuredCycles - pred.predictedCycles) / pred.predictedCycles) * 100;
+    rows.push({
+      ...sample,
+      id: sample.id || pred.id,
+      model: sample.model || pred.model,
+      opName: sample.opName || pred.opName,
+      dtype: sample.dtype || pred.dtype,
+      predictedTimeUs: pred.predictedTimeUs,
+      predictedCycles: pred.predictedCycles,
+      measuredCycles,
+      errorPct,
+      runtimeRatio: sample.measuredUs / pred.predictedTimeUs,
+    });
+  }
+  return rows;
+}
+
 export function tpuComparisonRowsToCsv(rows: TpuComparisonRow[]): string {
   return rowsToCsv(rows as unknown as Array<Record<string, unknown>>, COMPARISON_HEADERS);
+}
+
+export function tpuSampleComparisonRowsToCsv(rows: TpuSampleComparisonRow[]): string {
+  return rowsToCsv(rows as unknown as Array<Record<string, unknown>>, SAMPLE_COMPARISON_HEADERS);
 }
 
 export function tpuCalibrationCsv(rows: TpuComparisonRow[]): string {
@@ -335,6 +433,143 @@ export function tpuCalibrationCsv(rows: TpuComparisonRow[]): string {
     })),
     ["model", "op_name", "array", "dataflow", "predicted_cycles", "measured_cycles", "measured_us", "error_pct", "source"],
   );
+}
+
+
+export type TpuRecommendationMode = "runtime" | "throughput";
+
+export interface TpuRecommendationCandidateRow {
+  key: string;
+  label: string;
+  shape: string;
+  tile: string;
+  predictedMetric: number;
+  measuredMetric: number;
+  predictedRank: number;
+  measuredRank: number;
+  isPredictedBest: boolean;
+  isMeasuredBest: boolean;
+}
+
+export interface TpuRecommendationStats {
+  mode: TpuRecommendationMode;
+  lowerIsBetter: boolean;
+  unit: string;
+  candidateCount: number;
+  predictedBestKey: string;
+  predictedBestLabel: string;
+  measuredBestKey: string;
+  measuredBestLabel: string;
+  top1Hit: boolean;
+  top3Hit: boolean;
+  predictedBestMeasuredRank: number;
+  measuredBestPredictedRank: number;
+  regretPercent: number;
+  spearmanRankCorrelation?: number;
+  rows: TpuRecommendationCandidateRow[];
+}
+
+function candidateComparisonKey(row: TpuComparisonRow, index: number): string {
+  const tile = `${row.bestTileM}x${row.bestTileN}x${row.bestTileK}`;
+  return [row.id || `row_${index}`, row.model, row.opName, row.m, row.n, row.k, tile].join("|");
+}
+
+function tflopsFor(row: Pick<TpuComparisonRow, "m" | "n" | "k">, timeUs: number): number {
+  return (2 * row.m * row.n * row.k) / Math.max(1e-9, timeUs) / 1e6;
+}
+
+function rankMap<T>(items: T[], key: (item: T) => string, value: (item: T) => number, lowerIsBetter: boolean): Map<string, number> {
+  const sorted = [...items].sort((a, b) => lowerIsBetter ? value(a) - value(b) : value(b) - value(a));
+  const out = new Map<string, number>();
+  sorted.forEach((item, index) => out.set(key(item), index + 1));
+  return out;
+}
+
+function spearman(xs: number[], ys: number[]): number | undefined {
+  if (xs.length < 2 || xs.length !== ys.length) return undefined;
+  const n = xs.length;
+  const meanX = xs.reduce((a, b) => a + b, 0) / n;
+  const meanY = ys.reduce((a, b) => a + b, 0) / n;
+  let cov = 0;
+  let vx = 0;
+  let vy = 0;
+  for (let i = 0; i < n; i++) {
+    const dx = xs[i] - meanX;
+    const dy = ys[i] - meanY;
+    cov += dx * dy;
+    vx += dx * dx;
+    vy += dy * dy;
+  }
+  const denom = Math.sqrt(vx * vy);
+  return denom > 0 ? cov / denom : undefined;
+}
+
+export function summarizeTpuRecommendation(rows: TpuComparisonRow[]): TpuRecommendationStats | undefined {
+  const candidates = rows.filter((row) => Number.isFinite(row.predictedTimeUs) && Number.isFinite(row.measuredUs));
+  if (candidates.length < 2) return undefined;
+  const shapeSet = new Set(candidates.map((row) => shapeKey(row)));
+  const mode: TpuRecommendationMode = shapeSet.size === 1 ? "runtime" : "throughput";
+  const lowerIsBetter = mode === "runtime";
+  const keyed = candidates.map((row, index) => {
+    const key = candidateComparisonKey(row, index);
+    const shape = `${row.m}x${row.n}x${row.k}`;
+    const tile = `${row.bestTileM}x${row.bestTileN}x${row.bestTileK}`;
+    const measuredMetric = mode === "runtime" ? row.measuredUs : (row.achievedTflops ?? tflopsFor(row, row.measuredUs));
+    const predictedMetric = mode === "runtime" ? row.predictedTimeUs : tflopsFor(row, row.predictedTimeUs);
+    return {
+      row,
+      key,
+      label: row.opName || row.id || `candidate_${index + 1}`,
+      shape,
+      tile,
+      measuredMetric,
+      predictedMetric,
+    };
+  });
+  const predictedRanks = rankMap(keyed, (item) => item.key, (item) => item.predictedMetric, lowerIsBetter);
+  const measuredRanks = rankMap(keyed, (item) => item.key, (item) => item.measuredMetric, lowerIsBetter);
+  const predictedBest = keyed.find((item) => predictedRanks.get(item.key) === 1) ?? keyed[0];
+  const measuredBest = keyed.find((item) => measuredRanks.get(item.key) === 1) ?? keyed[0];
+  const predictedBestMeasuredRank = measuredRanks.get(predictedBest.key) ?? candidates.length;
+  const measuredBestPredictedRank = predictedRanks.get(measuredBest.key) ?? candidates.length;
+  const regretPercent = lowerIsBetter
+    ? ((predictedBest.measuredMetric - measuredBest.measuredMetric) / Math.max(1e-9, measuredBest.measuredMetric)) * 100
+    : ((measuredBest.measuredMetric - predictedBest.measuredMetric) / Math.max(1e-9, measuredBest.measuredMetric)) * 100;
+  const rankPairs = keyed.map((item) => ({
+    predicted: predictedRanks.get(item.key) ?? candidates.length,
+    measured: measuredRanks.get(item.key) ?? candidates.length,
+  }));
+  const rowsOut: TpuRecommendationCandidateRow[] = keyed
+    .map((item) => ({
+      key: item.key,
+      label: item.label,
+      shape: item.shape,
+      tile: item.tile,
+      predictedMetric: item.predictedMetric,
+      measuredMetric: item.measuredMetric,
+      predictedRank: predictedRanks.get(item.key) ?? candidates.length,
+      measuredRank: measuredRanks.get(item.key) ?? candidates.length,
+      isPredictedBest: item.key === predictedBest.key,
+      isMeasuredBest: item.key === measuredBest.key,
+    }))
+    .sort((a, b) => a.measuredRank - b.measuredRank);
+  return {
+    mode,
+    lowerIsBetter,
+    unit: mode === "runtime" ? "µs" : "TFLOPS",
+    candidateCount: candidates.length,
+    predictedBestKey: predictedBest.key,
+    predictedBestLabel: predictedBest.label,
+    measuredBestKey: measuredBest.key,
+    measuredBestLabel: measuredBest.label,
+    top1Hit: predictedBest.key === measuredBest.key,
+    top3Hit: predictedBestMeasuredRank <= 3,
+    predictedBestMeasuredRank,
+    measuredBestPredictedRank,
+    regretPercent: Math.max(0, regretPercent),
+    spearmanRankCorrelation: spearman(rankPairs.map((p) => p.predicted), rankPairs.map((p) => p.measured)),
+    rows: rowsOut,
+  };
 }
 
 export function makeHardwareFromCli(base: HardwareConfig, options: Record<string, string | undefined>): HardwareConfig {

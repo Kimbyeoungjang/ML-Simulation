@@ -98,7 +98,7 @@ def jax_dtype(jnp, dtype_name: str):
     raise ValueError(f"Unsupported dtype '{dtype_name}'. Use bf16, f32, or f16.")
 
 
-def bench_shape(shape: Shape, reps: int, warmup: int, donate: bool) -> dict[str, float | int | str]:
+def bench_shape(shape: Shape, reps: int, warmup: int, donate: bool) -> tuple[dict[str, float | int | str], list[dict[str, float | int | str]]]:
     import jax
     import jax.numpy as jnp
 
@@ -120,16 +120,31 @@ def bench_shape(shape: Shape, reps: int, warmup: int, donate: bool) -> dict[str,
         matmul(a, b).block_until_ready()
 
     times_us: list[float] = []
-    for _ in range(reps):
+    sample_rows: list[dict[str, float | int | str]] = []
+    for rep in range(reps):
         t0 = time.perf_counter()
         matmul(a, b).block_until_ready()
         t1 = time.perf_counter()
-        times_us.append((t1 - t0) * 1e6)
+        measured_us = (t1 - t0) * 1e6
+        times_us.append(measured_us)
+        sample_rows.append(
+            {
+                "id": shape.id,
+                "model": shape.model,
+                "op_name": shape.op_name,
+                "m": shape.m,
+                "n": shape.n,
+                "k": shape.k,
+                "dtype": shape.dtype,
+                "rep": rep,
+                "measured_us": measured_us,
+            }
+        )
 
     flops = 2 * shape.m * shape.n * shape.k
     median_us = statistics.median(times_us)
     achieved_tflops = flops / (median_us * 1e-6) / 1e12
-    return {
+    summary = {
         "id": shape.id,
         "model": shape.model,
         "op_name": shape.op_name,
@@ -145,7 +160,7 @@ def bench_shape(shape: Shape, reps: int, warmup: int, donate: bool) -> dict[str,
         "achieved_tflops": achieved_tflops,
         "reps": reps,
     }
-
+    return summary, sample_rows
 
 def write_rows(path: str, rows: Iterable[dict[str, float | int | str]]) -> None:
     rows = list(rows)
@@ -172,10 +187,31 @@ def write_rows(path: str, rows: Iterable[dict[str, float | int | str]]) -> None:
         writer.writerows(rows)
 
 
+def write_sample_rows(path: str, rows: Iterable[dict[str, float | int | str]]) -> None:
+    rows = list(rows)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    fieldnames = [
+        "id",
+        "model",
+        "op_name",
+        "m",
+        "n",
+        "k",
+        "dtype",
+        "rep",
+        "measured_us",
+    ]
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Benchmark TileForge GEMM shapes on JAX/TPU.")
     parser.add_argument("--shapes", default=".tileforge/tpu/tpu_benchmark_shapes.csv")
     parser.add_argument("--out", default="tpu_measurements.csv")
+    parser.add_argument("--samples-out", default="", help="Optional per-repetition raw timing CSV path")
     parser.add_argument("--reps", type=int, default=50)
     parser.add_argument("--warmup", type=int, default=10)
     parser.add_argument("--dtype", default=None, help="Override CSV dtype: bf16, f32, or f16")
@@ -190,13 +226,19 @@ def main() -> None:
         raise SystemExit("No shapes to benchmark")
 
     rows: list[dict[str, float | int | str]] = []
+    sample_rows: list[dict[str, float | int | str]] = []
     for shape in shapes:
-        result = bench_shape(shape, reps=args.reps, warmup=args.warmup, donate=args.donate)
+        result, samples = bench_shape(shape, reps=args.reps, warmup=args.warmup, donate=args.donate)
         rows.append(result)
+        sample_rows.extend(samples)
         print(result, flush=True)
         write_rows(args.out, rows)
+        if args.samples_out:
+            write_sample_rows(args.samples_out, sample_rows)
 
     print(f"Wrote {len(rows)} TPU measurement rows to {args.out}")
+    if args.samples_out:
+        print(f"Wrote {len(sample_rows)} TPU raw timing samples to {args.samples_out}")
 
 
 if __name__ == "__main__":

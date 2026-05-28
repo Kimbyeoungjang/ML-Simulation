@@ -6,12 +6,17 @@ import { parseSearchRequest, formatZodError } from "@/lib/validation";
 import {
   buildTpuBenchmarkRows,
   compareTpuMeasurements,
+  compareTpuSamples,
   parseTpuBenchmarkExportCsv,
   parseTpuMeasurementCsv,
+  parseTpuSampleCsv,
   tpuBenchmarkRowsToCsv,
   tpuCalibrationCsv,
   tpuComparisonRowsToCsv,
+  tpuSampleComparisonRowsToCsv,
+  summarizeTpuRecommendation,
   type TpuComparisonRow,
+  type TpuSampleComparisonRow,
 } from "@/lib/tpuBenchmark";
 import { nowIso, stableId } from "@/lib/determinism";
 
@@ -38,12 +43,62 @@ function csvSummary(rows: TpuComparisonRow[]): Record<string, number> {
   };
 }
 
+function sampleSummary(rows: TpuSampleComparisonRow[]): Record<string, number> {
+  if (!rows.length) {
+    return { sampleRows: 0, sampleMapePercent: 0, sampleMedianRatio: 0, sampleP10Ratio: 0, sampleP90Ratio: 0 };
+  }
+  const ratios = rows.map((row) => row.runtimeRatio).sort((a, b) => a - b);
+  const absErrors = rows.map((row) => Math.abs(row.errorPct));
+  const quantile = (q: number) => {
+    const pos = (ratios.length - 1) * q;
+    const lo = Math.floor(pos);
+    const hi = Math.ceil(pos);
+    if (lo === hi) return ratios[lo];
+    return ratios[lo] * (hi - pos) + ratios[hi] * (pos - lo);
+  };
+  return {
+    sampleRows: rows.length,
+    sampleMapePercent: absErrors.reduce((a, b) => a + b, 0) / absErrors.length,
+    sampleMedianRatio: quantile(0.5),
+    sampleP10Ratio: quantile(0.1),
+    sampleP90Ratio: quantile(0.9),
+  };
+}
+
 function fmt(value: number, digits = 2): string {
   return Number.isFinite(value) ? value.toFixed(digits) : "n/a";
 }
 
-function summaryMarkdown(rows: TpuComparisonRow[]): string {
+function summaryMarkdown(rows: TpuComparisonRow[], sampleRows: TpuSampleComparisonRow[] = []): string {
   const stats = csvSummary(rows);
+  const sampleStats = sampleSummary(sampleRows);
+  const recommendation = summarizeTpuRecommendation(rows);
+  const sampleLines = sampleRows.length
+    ? [
+        "",
+        "## Raw sample distribution",
+        "",
+        `- Raw timing samples: ${sampleStats.sampleRows}`,
+        `- Sample median runtime ratio: ${fmt(sampleStats.sampleMedianRatio, 4)}`,
+        `- Sample P10-P90 runtime ratio: ${fmt(sampleStats.sampleP10Ratio, 4)} ~ ${fmt(sampleStats.sampleP90Ratio, 4)}`,
+        `- Sample MAPE: ${fmt(sampleStats.sampleMapePercent)}%`,
+      ]
+    : [];
+  const recommendationLines = recommendation
+    ? [
+        "",
+        "## Recommendation ranking check",
+        "",
+        `- Comparison mode: ${recommendation.mode === "runtime" ? "same-shape runtime, lower is better" : "different-shape throughput, higher is better"}`,
+        `- TileForge predicted best: ${recommendation.predictedBestLabel}`,
+        `- TPU measured best: ${recommendation.measuredBestLabel}`,
+        `- Top-1 hit: ${recommendation.top1Hit ? "yes" : "no"}`,
+        `- Top-3 hit: ${recommendation.top3Hit ? "yes" : "no"}`,
+        `- Measured rank of predicted best: ${recommendation.predictedBestMeasuredRank}`,
+        `- Regret vs measured best: ${fmt(recommendation.regretPercent)}%`,
+        `- Spearman rank correlation: ${recommendation.spearmanRankCorrelation === undefined ? "n/a" : fmt(recommendation.spearmanRankCorrelation, 3)}`,
+      ]
+    : [];
   const lines = [
     "# TileForge TPU Web Comparison",
     "",
@@ -54,6 +109,8 @@ function summaryMarkdown(rows: TpuComparisonRow[]): string {
     `- Median runtime ratio: ${fmt(stats.medianRuntimeRatio, 4)}`,
     `- MAPE: ${fmt(stats.mapePercent)}%`,
     `- Max absolute error: ${fmt(stats.maxAbsErrorPercent)}%`,
+    ...sampleLines,
+    ...recommendationLines,
     "",
     "| op | shape | predicted us | measured us | ratio | error % | achieved TFLOPS |",
     "|---|---:|---:|---:|---:|---:|---:|",
@@ -72,9 +129,9 @@ function runnerReadme(): string {
     "1) Copy shapes.csv and run_on_tpu.py to a TPU VM.",
     "2) On the TPU VM, run:",
     "",
-    "   python run_on_tpu.py --shapes shapes.csv --out measurements.csv",
+    "   python run_on_tpu.py --shapes shapes.csv --out measurements.csv --samples-out tpu_samples.csv",
     "",
-    "3) In the TileForge web UI, paste or upload measurements.csv in the TPU 비교 tab.",
+    "3) In the TileForge web UI, paste or upload measurements.csv and tpu_samples.csv in the TPU 비교 tab.",
     "",
     "If the TileForge web server itself is running on a TPU VM and TILEFORGE_ENABLE_TPU_WEB_RUN=1,",
     "you can use the '서버에서 바로 실행' button instead.",
@@ -104,20 +161,25 @@ async function prepare(body: any) {
 async function compare(body: any) {
   const predicted = parseTpuBenchmarkExportCsv(String(body.predictionsCsv || ""));
   const measurements = parseTpuMeasurementCsv(String(body.measurementsCsv || ""));
+  const samples = parseTpuSampleCsv(String(body.samplesCsv || ""));
   const rows = compareTpuMeasurements(predicted, measurements);
+  const sampleRows = compareTpuSamples(predicted, samples);
   if (!rows.length) {
     return NextResponse.json({ ok: false, error: "No matching TPU measurements found. shape/id/model/op_name을 확인하세요." }, { status: 400 });
   }
   const comparisonCsv = tpuComparisonRowsToCsv(rows);
   const calibrationCsv = tpuCalibrationCsv(rows);
-  const summaryMd = summaryMarkdown(rows);
+  const sampleComparisonCsv = tpuSampleComparisonRowsToCsv(sampleRows);
+  const summaryMd = summaryMarkdown(rows, sampleRows);
   return NextResponse.json({
     ok: true,
     action: "compare",
     rows,
-    stats: csvSummary(rows),
+    sampleRows,
+    stats: { ...csvSummary(rows), ...sampleSummary(sampleRows), recommendation: summarizeTpuRecommendation(rows) },
     comparisonCsv,
     calibrationCsv,
+    sampleComparisonCsv,
     summaryMd,
   });
 }
@@ -166,30 +228,38 @@ async function runServer(body: any) {
   const shapesPath = path.join(dir, "shapes.csv");
   const runnerPath = path.join(dir, "run_on_tpu.py");
   const measurementsPath = path.join(dir, "measurements.csv");
+  const samplesPath = path.join(dir, "tpu_samples.csv");
   await writeFile(shapesPath, predictionsCsv, "utf8");
   await writeFile(runnerPath, await readFile(path.join(process.cwd(), "scripts", "tpu_matmul_bench.py"), "utf8"), "utf8");
   const reps = String(Math.max(1, Math.min(Number(body.reps ?? 30), 1000)));
   const warmup = String(Math.max(0, Math.min(Number(body.warmup ?? 5), 1000)));
   const timeoutMs = Math.max(10_000, Math.min(Number(body.timeoutMs ?? DEFAULT_TIMEOUT_MS), 60 * 60 * 1000));
-  const runLog = await runPython([runnerPath, "--shapes", shapesPath, "--out", measurementsPath, "--reps", reps, "--warmup", warmup], process.cwd(), timeoutMs);
+  const runLog = await runPython([runnerPath, "--shapes", shapesPath, "--out", measurementsPath, "--samples-out", samplesPath, "--reps", reps, "--warmup", warmup], process.cwd(), timeoutMs);
   const measurementsCsv = await readFile(measurementsPath, "utf8");
+  const samplesCsv = await readFile(samplesPath, "utf8").catch(() => "");
   const comparisonRows = compareTpuMeasurements(rows, parseTpuMeasurementCsv(measurementsCsv));
+  const sampleRows = compareTpuSamples(rows, parseTpuSampleCsv(samplesCsv));
   const comparisonCsv = tpuComparisonRowsToCsv(comparisonRows);
   const calibrationCsv = tpuCalibrationCsv(comparisonRows);
-  const summaryMd = summaryMarkdown(comparisonRows);
+  const sampleComparisonCsv = tpuSampleComparisonRowsToCsv(sampleRows);
+  const summaryMd = summaryMarkdown(comparisonRows, sampleRows);
   await writeFile(path.join(dir, "comparison.csv"), comparisonCsv, "utf8");
   await writeFile(path.join(dir, "calibration.csv"), calibrationCsv, "utf8");
+  await writeFile(path.join(dir, "sample-comparison.csv"), sampleComparisonCsv, "utf8");
   await writeFile(path.join(dir, "summary.md"), summaryMd, "utf8");
   return NextResponse.json({
     ok: true,
     action: "run-server",
     runId,
     rows: comparisonRows,
-    stats: csvSummary(comparisonRows),
+    sampleRows,
+    stats: { ...csvSummary(comparisonRows), ...sampleSummary(sampleRows), recommendation: summarizeTpuRecommendation(comparisonRows) },
     predictionsCsv,
     measurementsCsv,
+    samplesCsv,
     comparisonCsv,
     calibrationCsv,
+    sampleComparisonCsv,
     summaryMd,
     log: [runLog.stdout, runLog.stderr].filter(Boolean).join("\n"),
   });

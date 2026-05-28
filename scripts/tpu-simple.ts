@@ -7,14 +7,18 @@ import { defaultHardware } from "@/lib/defaults";
 import {
   buildTpuBenchmarkRows,
   compareTpuMeasurements,
+  compareTpuSamples,
   defaultTpuCandidates,
   makeHardwareFromCli,
   parseTpuBenchmarkExportCsv,
   parseTpuMeasurementCsv,
+  parseTpuSampleCsv,
   tpuBenchmarkRowsToCsv,
   tpuCalibrationCsv,
   tpuComparisonRowsToCsv,
+  tpuSampleComparisonRowsToCsv,
   type TpuComparisonRow,
+  type TpuSampleComparisonRow,
 } from "@/lib/tpuBenchmark";
 import type { MatmulShape, Objective } from "@/types/domain";
 import { parseCliArgs, printHelpAndExit } from "./cli-utils";
@@ -58,11 +62,24 @@ function comparisonSummary(rows: TpuComparisonRow[]): string {
   ].join("\n");
 }
 
-function comparisonMarkdown(rows: TpuComparisonRow[], outDir: string): string {
+function sampleSummary(rows: TpuSampleComparisonRow[]): string {
+  if (!rows.length) return "raw_sample_rows: 0\n";
+  const absErrors = rows.map((row) => Math.abs(row.errorPct));
+  const ratios = rows.map((row) => row.runtimeRatio);
+  return [
+    `raw_sample_rows: ${rows.length}`,
+    `raw_sample_median_ratio: ${formatNumber(median(ratios), 4)}`,
+    `raw_sample_mape_percent: ${formatNumber(absErrors.reduce((a, b) => a + b, 0) / absErrors.length)}`,
+    "",
+  ].join("\n");
+}
+
+function comparisonMarkdown(rows: TpuComparisonRow[], outDir: string, sampleRows: TpuSampleComparisonRow[] = []): string {
   const header = [
     "# TileForge TPU Simple Comparison",
     "",
     comparisonSummary(rows).trimEnd(),
+    sampleSummary(sampleRows).trimEnd(),
     "",
     "| op | shape | predicted us | measured us | ratio | error % | achieved TFLOPS |",
     "|---|---:|---:|---:|---:|---:|---:|",
@@ -83,6 +100,7 @@ function comparisonMarkdown(rows: TpuComparisonRow[], outDir: string): string {
     "Generated files:",
     `- ${path.join(outDir, "comparison.csv")}`,
     `- ${path.join(outDir, "calibration.csv")}`,
+    `- ${path.join(outDir, "sample-comparison.csv")}`,
     `- ${path.join(outDir, "summary.md")}`,
     "",
   ].join("\n");
@@ -92,8 +110,10 @@ function readmeText(outDir: string): string {
   const shapesPath = path.join(outDir, "shapes.csv");
   const pyPath = path.join(outDir, "run_on_tpu.py");
   const measurementsPath = path.join(outDir, "measurements.csv");
-  return `TileForge TPU simple test\n\n1) Copy this folder to a TPU VM.\n\n2) On the TPU VM, run:\n\n   python ${path.basename(pyPath)} --shapes ${path.basename(shapesPath)} --out ${path.basename(measurementsPath)}\n\n3) Copy ${path.basename(measurementsPath)} back to this folder on your local machine.\n\n4) In the TileForge project root, run:\n\n   npm run tpu:simple -- --measurements ${measurementsPath}\n\nOne-command mode on a TPU VM with Node + project dependencies installed:\n\n   npm run tpu:simple -- --run\n\nUseful files:\n- ${shapesPath}: TileForge predictions and GEMM shapes\n- ${pyPath}: standalone JAX benchmark script\n- ${measurementsPath}: TPU runtime measurements\n- ${path.join(outDir, "summary.md")}: final human-readable comparison\n`;
+  const samplesPath = path.join(outDir, "tpu_samples.csv");
+  return `TileForge TPU simple test\n\n1) Copy this folder to a TPU VM.\n\n2) On the TPU VM, run:\n\n   python ${path.basename(pyPath)} --shapes ${path.basename(shapesPath)} --out ${path.basename(measurementsPath)} --samples-out ${path.basename(samplesPath)}\n\n3) Copy ${path.basename(measurementsPath)} and ${path.basename(samplesPath)} back to this folder on your local machine.\n\n4) In the TileForge project root, run:\n\n   npm run tpu:simple -- --measurements ${measurementsPath} --samples ${samplesPath}\n\nOne-command mode on a TPU VM with Node + project dependencies installed:\n\n   npm run tpu:simple -- --run\n\nUseful files:\n- ${shapesPath}: TileForge predictions and GEMM shapes\n- ${pyPath}: standalone JAX benchmark script\n- ${measurementsPath}: TPU runtime measurement summary\n- ${samplesPath}: per-repetition raw timing samples for distribution graphs\n- ${path.join(outDir, "sample-comparison.csv")}: raw samples joined with TileForge predictions\n- ${path.join(outDir, "summary.md")}: final human-readable comparison\n`;
 }
+
 
 async function prepare(args: Record<string, string | undefined>, outDir: string): Promise<string> {
   const hardware = makeHardwareFromCli(defaultHardware, {
@@ -129,23 +149,27 @@ async function prepare(args: Record<string, string | undefined>, outDir: string)
   return predictionPath;
 }
 
-async function compare(outDir: string, measurementPath: string): Promise<TpuComparisonRow[]> {
+async function compare(outDir: string, measurementPath: string, samplePath?: string): Promise<TpuComparisonRow[]> {
   const predictionsPath = path.join(outDir, "shapes.csv");
   const predicted = parseTpuBenchmarkExportCsv(await readFile(predictionsPath, "utf8"));
   const measurements = parseTpuMeasurementCsv(await readFile(measurementPath, "utf8"));
+  const samplesText = samplePath && existsSync(samplePath) ? await readFile(samplePath, "utf8") : "";
   const rows = compareTpuMeasurements(predicted, measurements);
+  const sampleRows = compareTpuSamples(predicted, parseTpuSampleCsv(samplesText));
   if (!rows.length) {
     throw new Error(`No matching TPU measurements found. Expected shapes from ${predictionsPath}, got ${measurementPath}.`);
   }
   await writeFile(path.join(outDir, "comparison.csv"), tpuComparisonRowsToCsv(rows), "utf8");
   await writeFile(path.join(outDir, "calibration.csv"), tpuCalibrationCsv(rows), "utf8");
-  await writeFile(path.join(outDir, "summary.md"), comparisonMarkdown(rows, outDir), "utf8");
+  await writeFile(path.join(outDir, "sample-comparison.csv"), tpuSampleComparisonRowsToCsv(sampleRows), "utf8");
+  await writeFile(path.join(outDir, "summary.md"), comparisonMarkdown(rows, outDir, sampleRows), "utf8");
   return rows;
 }
 
 function runPythonBenchmark(outDir: string, reps: string | undefined, warmup: string | undefined): string {
   const py = process.platform === "win32" ? "python" : "python3";
   const measurementPath = path.join(outDir, "measurements.csv");
+  const samplePath = path.join(outDir, "tpu_samples.csv");
   const result = spawnSync(
     py,
     [
@@ -154,6 +178,8 @@ function runPythonBenchmark(outDir: string, reps: string | undefined, warmup: st
       path.join(outDir, "shapes.csv"),
       "--out",
       measurementPath,
+      "--samples-out",
+      samplePath,
       "--reps",
       reps || "30",
       "--warmup",
@@ -182,6 +208,7 @@ Default behavior:
 Options:
   --run                    Prepare, run JAX benchmark, and compare in one command. Use this on a TPU VM.
   --measurements <csv>      Import TPU measurements and create comparison.csv, calibration.csv, summary.md.
+  --samples <csv>           Optional tpu_samples.csv raw timing data for distribution analysis.
   --shapes <csv>            Use your own GEMM shape CSV. If omitted, uses 128/512/1024 quick GEMMs.
   --out-dir <dir>           Default: .tileforge/tpu-simple
   --array <RxC>             Default: 128x128
@@ -207,7 +234,8 @@ Options:
   }
 
   if (measurementPath) {
-    const rows = await compare(outDir, measurementPath);
+    const samplePath = args.samples || args["samples-out"] || path.join(outDir, "tpu_samples.csv");
+    const rows = await compare(outDir, measurementPath, samplePath);
     console.log(comparisonSummary(rows));
     console.log(`Wrote ${path.join(outDir, "summary.md")}`);
     return;
@@ -218,9 +246,9 @@ Options:
     `  ${outDir}`,
     "",
     "Copy that folder to a TPU VM and run:",
-    `  python ${path.basename(bundledRunner)} --shapes ${path.basename(predictionsPath)} --out measurements.csv`,
+    `  python ${path.basename(bundledRunner)} --shapes ${path.basename(predictionsPath)} --out measurements.csv --samples-out tpu_samples.csv`,
     "",
-    "Then copy measurements.csv back and run:",
+    "Then copy measurements.csv and tpu_samples.csv back and run:",
     `  npm run tpu:simple -- --measurements ${path.join(outDir, "measurements.csv")}`,
     "",
     "Or, if this project is already on the TPU VM:",
