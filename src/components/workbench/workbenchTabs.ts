@@ -7,6 +7,7 @@ export type Tab =
   | "iree"
   | "exports"
   | "graphs"
+  | "tpu"
   | "report"
   | "jobs"
   | "status";
@@ -27,6 +28,7 @@ export const tabLabels: Record<Tab, string> = {
   iree: "컴파일",
   exports: "파일",
   graphs: "그래프",
+  tpu: "TPU 비교",
   report: "보고서",
   jobs: "작업 큐",
   status: "시스템",
@@ -58,6 +60,8 @@ export const envSettingKeys = [
   "TILEFORGE_JOB_STORE",
   "TILEFORGE_CACHE_DIR",
   "TILEFORGE_EXTERNAL_TIMEOUT_MS",
+  "TILEFORGE_ENABLE_TPU_WEB_RUN",
+  "TILEFORGE_TPU_WEB_TIMEOUT_MS",
 ];
 
 export const tabTips: Record<Tab, string> = {
@@ -69,6 +73,7 @@ export const tabTips: Record<Tab, string> = {
   iree: "MLIR/IREE 관련 산출물과 컴파일 명령을 확인합니다.",
   exports: "SCALE-Sim, MLIR, SVG, CSV, manifest 파일을 내려받습니다.",
   graphs: "cycle, memory, mapping, stall, sweet spot을 시각적으로 확인합니다.",
+  tpu: "현재 예측값을 실제 TPU JAX microbenchmark 측정 CSV와 비교합니다.",
   report: "핵심 결과만 정리한 Markdown 보고서를 확인합니다.",
   jobs: "검증 작업 큐, 진행 상태, 로그, artifact를 관리합니다.",
   status: "서버, 워커, 저장소, 외부 도구 상태를 점검합니다.",

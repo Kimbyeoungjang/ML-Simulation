@@ -97,11 +97,20 @@ export function generateTransformDialect(res: SearchResponse): string {
   lines.push("}");
   return lines.join("\n");
 }
+function scaleSimPositiveInt(value: unknown, fallback: number): number {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return Math.max(1, Math.round(fallback));
+  return Math.max(1, Math.round(n));
+}
+
 export function generateScaleSimConfig(res: SearchResponse): string {
   const h = res.request.hardware;
   const sc = res.request.scaleSim ?? {};
   const perBufferKb = Math.max(1, Math.floor(h.sramKB / 3));
   const bool = (v: boolean | undefined, fallback = false) => (v ?? fallback) ? "True" : "False";
+  const dramBandwidth = scaleSimPositiveInt(sc.dramBandwidth ?? sc.bandwidth, 128);
+  const ifmapSramBankBandwidth = scaleSimPositiveInt(sc.ifmapSRAMBankBandwidth, 10);
+  const filterSramBankBandwidth = scaleSimPositiveInt(sc.filterSRAMBankBandwidth, 10);
   const lines = [
     "[general]",
     `run_name = ${sc.runName ?? "tileforge_generated"}`,
@@ -115,7 +124,7 @@ export function generateScaleSimConfig(res: SearchResponse): string {
     `FilterOffset = ${Math.max(0, Math.floor(sc.filterOffset ?? 10000000))}`,
     `OfmapOffset = ${Math.max(0, Math.floor(sc.ofmapOffset ?? 20000000))}`,
     `Dataflow = ${String(sc.dataflow ?? h.dataflow).toLowerCase()}`,
-    `Bandwidth = ${sc.dramBandwidth ?? sc.bandwidth ?? 128}`,
+    `Bandwidth = ${dramBandwidth}`,
     "[run_presets]",
     `InterfaceBandwidth = ${sc.interfaceBandwidth ?? "USER"}`,
   ];
@@ -130,10 +139,10 @@ export function generateScaleSimConfig(res: SearchResponse): string {
     "[layout]",
     `IfmapCustomLayout = ${bool(sc.ifmapCustomLayout)}`,
     `FilterCustomLayout = ${bool(sc.filterCustomLayout)}`,
-    `IfmapSRAMBankBandwidth = ${sc.ifmapSRAMBankBandwidth ?? 10}`,
+    `IfmapSRAMBankBandwidth = ${ifmapSramBankBandwidth}`,
     `IfmapSRAMBankNum = ${sc.ifmapSRAMBankNum ?? 10}`,
     `IfmapSRAMBankPort = ${sc.ifmapSRAMBankPort ?? 2}`,
-    `FilterSRAMBankBandwidth = ${sc.filterSRAMBankBandwidth ?? 10}`,
+    `FilterSRAMBankBandwidth = ${filterSramBankBandwidth}`,
     `FilterSRAMBankNum = ${sc.filterSRAMBankNum ?? 10}`,
     `FilterSRAMBankPort = ${sc.filterSRAMBankPort ?? 2}`,
   );

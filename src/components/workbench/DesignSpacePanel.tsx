@@ -33,6 +33,8 @@ export function DesignSpacePanel({
 }) {
   const [designRows, setDesignRows] = useState<any[]>([]);
   const [designPending, setDesignPending] = useState(false);
+  const [activeLearningPending, setActiveLearningPending] = useState(false);
+  const [activeLearningMessage, setActiveLearningMessage] = useState("");
   const designSourceKey = useMemo(
     () =>
       JSON.stringify({
@@ -71,6 +73,53 @@ export function DesignSpacePanel({
   const designValidationRows = designValidationPlan.map((item) => item.row);
   const bestByAxis = useMemo(() => bestDesignRowsByAxis(designRows), [designRows]);
 
+  async function runRecommendedValidationAndTraining() {
+    if (!source?.request || activeLearningPending) return;
+    setActiveLearningPending(true);
+    setActiveLearningMessage("추천 후보와 앞뒤 범위를 확장해 최소 40개 학습 샘플을 만들 실험 batch를 등록하는 중입니다.");
+    try {
+      const response = await fetch("/api/estimator-suite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "design-active-learning",
+          request: source.request,
+          limit: 5,
+          minSamples: 40,
+          samplesPerRequest: Math.max(1, Array.isArray(source.request?.shapes) ? source.request.shapes.length : 1),
+          oversampleFactor: 1.2,
+          neighborhoodRadius: 4,
+          maxRequests: 128,
+          includeExistingCompletedJobs: true,
+          activate: true,
+          options: {
+            targetScope: "full-layer",
+            trees: 160,
+            maxDepth: 10,
+            hiddenUnits: 64,
+            epochs: 900,
+            minSamplesPerScope: 40,
+          },
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload.ok === false) {
+        throw new Error(payload.error || payload.detail || "추천 실험 등록에 실패했습니다.");
+      }
+      const validationCount = Array.isArray(payload.validationJobs) ? payload.validationJobs.length : 0;
+      const plannedSamples = Number(payload.plannedSamples ?? validationCount);
+      const minSamples = Number(payload.minSamples ?? 40);
+      const trainName = payload.trainingJob?.name || payload.trainingJob?.id || "training job";
+      setActiveLearningMessage(
+        `추천 후보 주변 범위까지 확장해 실험 ${validationCount}개(예상 sample ${plannedSamples}개)를 큐에 등록했습니다. 최소 ${minSamples}개 유효 sample을 목표로 자동 수집 후 ${trainName}에서 재학습합니다.`,
+      );
+    } catch (error: any) {
+      setActiveLearningMessage(`실패: ${error?.message ?? error}`);
+    } finally {
+      setActiveLearningPending(false);
+    }
+  }
+
   return (
     <>
       <p className="small">
@@ -92,7 +141,20 @@ export function DesignSpacePanel({
         <ActionButton tip="검증 후보와 선정 이유를 JSON으로 저장합니다. 자동화 스크립트에서 읽기 쉽도록 rank, factor, uncertainty, rationale을 포함합니다." onClick={() => download("design-space-validation-plan.json", exportValidationPlanJson(designRows, 5), "application/json")}>
           검증 후보 JSON 다운로드
         </ActionButton>
+        <ActionButton
+          tip="추천 후보 5개와 각 후보의 앞뒤 sweep 범위를 함께 SCALE-Sim job으로 실행합니다. 단일 shape 기준으로도 최소 40개 유효 sample을 목표로 자동 수집·재학습합니다."
+          disabled={activeLearningPending || designPending || !designRows.length}
+          onClick={runRecommendedValidationAndTraining}
+        >
+          {activeLearningPending ? "확장 실험 등록 중..." : "추천 범위 원클릭 실행+학습"}
+        </ActionButton>
       </div>
+      {activeLearningMessage && (
+        <div className="info-box">
+          <b>Active learning</b>
+          <p className="small">{activeLearningMessage}</p>
+        </div>
+      )}
       {designBest && (
         <div className="cards graph-summary-cards">
           <Metric title="전체 최상위 sweet spot" value={`${designBest.label}`} tip="speedup·throughput·score가 가장 많이 겹치는 consensus sweet spot 후보입니다." />
@@ -103,7 +165,7 @@ export function DesignSpacePanel({
           <Metric title="Uncertainty" value={`±${designBest.uncertaintyPct.toFixed(1)}%`} tip="prediction confidence, SRAM overflow, 활용률, 확장 정도를 바탕으로 한 design-space용 예상 오차 범위입니다." />
           <Metric title="Consensus / ROI" value={`${niceNumber(designBest.agreementScore)} / ${niceNumber(designBest.roiScore)}`} tip="Consensus는 여러 성능 지표의 겹침, ROI는 비용 대비 추천 강도입니다." />
           <Metric title="Prediction confidence" value={`${((designBest.predictionConfidence ?? 1) * 100).toFixed(0)}%`} tip="활성 Estimator Suite 기준 학습 domain 안쪽인지 나타냅니다. analytical-only 실행은 100%로 표시합니다." />
-          <Metric title="검증 추천 후보" value={`${designValidationRows.length}개`} tip="SCALE-Sim으로 검증하면 학습 효과가 클 것으로 추정되는 active-learning 후보 수입니다." />
+          <Metric title="검증 추천 후보" value={`${designValidationRows.length}개`} tip="상위 seed 후보 수입니다. 원클릭 학습은 이 후보들의 앞뒤 sweep 범위까지 확장해 최소 40개 sample을 목표로 큐에 넣습니다." />
           <Metric title="Pareto 후보" value={`${designPareto.length}개`} tip="speedup/throughput/score/cost 기준에서 지배되지 않는 설계 후보 수입니다." />
         </div>
       )}

@@ -1,4 +1,5 @@
 import { Jobs } from "@/components/workbench/JobsPanel";
+import { TpuComparisonPanel } from "@/components/workbench/TpuComparisonPanel";
 import {
   ArraySweep,
   Bottleneck,
@@ -32,7 +33,7 @@ export function ResultsTabContent({
   estimatorSuite: ResultsEstimatorSuiteView;
   download: DownloadFn;
 }) {
-  const { result, arraySweep, confidence } = estimate;
+  const { request, result, arraySweep, confidence } = estimate;
   const {
     analysisJobId,
     setAnalysisJobId,
@@ -90,6 +91,7 @@ export function ResultsTabContent({
       />
     );
   }
+  if (tab === "tpu") return <TpuComparisonPanel request={request} download={download} />;
   if (tab === "report") {
     return (
       <ReportTab

@@ -8,9 +8,9 @@ import { applyEstimatorSuiteToSearchResponse } from "./estimatorSuiteApply";
 import type { EstimatorSuiteModel } from "./estimatorSuite";
 import { hashObject } from "./hash";
 
-import type { DesignMetric, DesignSweepRow } from "./designSpaceTypes";
+import type { DesignMetric, DesignSweepRow, ValidationPlanRow } from "./designSpaceTypes";
 export type { DesignMetric, DesignSweepRow, ValidationPlanRow } from "./designSpaceTypes";
-import { attachRecommendationScores, compareDesignRows, estimateDesignUncertaintyPct, validationDesignRows } from "./designSpaceScoring";
+import { attachRecommendationScores, compareDesignRows, estimateDesignUncertaintyPct, validationDesignRows, validationPlanRows as selectValidationPlanRows } from "./designSpaceScoring";
 export { exportValidationPlanCsv, exportValidationPlanJson, paretoDesignRows, validationDesignRows, validationPlanRows } from "./designSpaceScoring";
 
 const HARDWARE_FACTORS = Object.freeze([0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4]);
@@ -443,6 +443,319 @@ export function designAxisSummary(rows: DesignSweepRow[]) {
   }));
 }
 
+
+
+
+function safeRunNamePart(value: unknown) {
+  return String(value ?? "candidate")
+    .trim()
+    .replace(/[^A-Za-z0-9_.-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 64) || "candidate";
+}
+
+export function requestForDesignSweepRow(
+  baseRequest: SearchRequest,
+  row: Pick<DesignSweepRow, "axis" | "x" | "label">,
+  options: { rank?: number; runNamePrefix?: string } = {},
+): SearchRequest {
+  const factor = Number.isFinite(Number(row.x)) && Number(row.x) > 0 ? Number(row.x) : 1;
+  let next: SearchRequest;
+  const hw = { ...baseRequest.hardware };
+
+  if (row.axis === "array") {
+    next = {
+      ...baseRequest,
+      hardware: {
+        ...hw,
+        arrayRows: Math.max(1, Math.round(hw.arrayRows * factor)),
+        arrayCols: Math.max(1, Math.round(hw.arrayCols * factor)),
+      },
+    };
+  } else if (row.axis === "frequency") {
+    next = {
+      ...baseRequest,
+      hardware: {
+        ...hw,
+        frequencyMHz: Math.max(1, Math.round(hw.frequencyMHz * factor)),
+      },
+    };
+  } else if (row.axis === "sram") {
+    next = {
+      ...baseRequest,
+      hardware: { ...hw, sramKB: Math.max(1, Math.round(hw.sramKB * factor)) },
+    };
+  } else if (row.axis === "dram") {
+    next = scaleDramBandwidth(baseRequest, factor);
+  } else if (row.axis === "shape-m" || row.axis === "shape-n" || row.axis === "shape-k") {
+    const axis = row.axis.slice("shape-".length) as "m" | "n" | "k";
+    next = {
+      ...baseRequest,
+      shapes: baseRequest.shapes.map((shape) => scaledShape(shape, axis, factor)),
+    };
+  } else {
+    next = { ...baseRequest, hardware: hw, shapes: [...baseRequest.shapes] };
+  }
+
+  const rank = options.rank !== undefined ? String(options.rank).padStart(2, "0") : "xx";
+  const prefix = safeRunNamePart(options.runNamePrefix ?? "active_learning");
+  const axisPart = safeRunNamePart(row.axis);
+  const labelPart = safeRunNamePart(row.label);
+  const runName = `${prefix}_${rank}_${axisPart}_${labelPart}`;
+  return {
+    ...next,
+    hardware: {
+      ...next.hardware,
+      name: `${baseRequest.hardware.name || "hardware"}_${axisPart}_${labelPart}`.slice(0, 120),
+    },
+    scaleSim: { ...(next.scaleSim ?? {}), runName },
+  };
+}
+
+export function requestForValidationPlanRow(
+  baseRequest: SearchRequest,
+  item: ValidationPlanRow,
+  options: { runNamePrefix?: string } = {},
+): SearchRequest {
+  return requestForDesignSweepRow(baseRequest, item.row, {
+    rank: item.rank,
+    runNamePrefix: options.runNamePrefix,
+  });
+}
+
+
+
+
+export interface ExpandedValidationPlanOptions {
+  /** Number of top recommendation seeds to expand. */
+  seedLimit?: number;
+  /** Minimum valid measured samples the later training step needs. */
+  minSamples?: number;
+  /** Expected valid full-layer samples produced by one queued request. */
+  samplesPerRequest?: number;
+  /** Queue extra requests because some external SCALE-Sim runs may fail or be skipped. */
+  oversampleFactor?: number;
+  /** How many sweep points before/after each seed to include on the same axis. */
+  neighborhoodRadius?: number;
+  /** Hard cap to avoid accidentally queuing an extremely large active-learning batch. */
+  maxRequests?: number;
+}
+
+export interface ExpandedValidationPlanItem {
+  rank: number;
+  sourceRank: number;
+  row: DesignSweepRow;
+  selectionScore: number;
+  rationale: string;
+  variant: "seed" | "neighbor" | "fill";
+  offset: number;
+  plannedSamples: number;
+}
+
+function designCsvCell(value: unknown) {
+  const text = String(value ?? "");
+  return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function designRowKey(row: Pick<DesignSweepRow, "axis" | "x">) {
+  return `${row.axis}:${roundFactor(Number(row.x) || 1)}`;
+}
+
+function nearestRowIndex(rows: DesignSweepRow[], target: DesignSweepRow) {
+  const key = designRowKey(target);
+  const exact = rows.findIndex((row) => designRowKey(row) === key);
+  if (exact >= 0) return exact;
+  let best = 0;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  rows.forEach((row, index) => {
+    const d = Math.abs(Math.log(Math.max(1e-12, row.x)) - Math.log(Math.max(1e-12, target.x)));
+    if (d < bestDistance) {
+      best = index;
+      bestDistance = d;
+    }
+  });
+  return best;
+}
+
+function offsetOrder(radius: number) {
+  const out = [0];
+  for (let i = 1; i <= radius; i++) {
+    out.push(-i, i);
+  }
+  return out;
+}
+
+/**
+ * Expands the top active-learning recommendation points into an executable
+ * neighborhood plan.  The first pass keeps the user's mental model simple:
+ * each recommended point is tested together with the nearest points immediately
+ * before/after it on the same sweep axis.  If that neighborhood is not enough
+ * to satisfy the estimator's 40-sample training floor, the remaining slots are
+ * filled with the globally most useful validation rows.
+ */
+export function expandedValidationPlanRows(
+  rows: DesignSweepRow[],
+  options: ExpandedValidationPlanOptions = {},
+): ExpandedValidationPlanItem[] {
+  const cleanRows = rows.filter((row) => Number.isFinite(row.x) && row.x > 0);
+  if (!cleanRows.length) return [];
+
+  const seedLimit = Math.max(1, Math.min(Math.floor(options.seedLimit ?? 5), 25));
+  const minSamples = Math.max(1, Math.floor(options.minSamples ?? 40));
+  const samplesPerRequest = Math.max(1, Math.floor(options.samplesPerRequest ?? 1));
+  const oversampleFactor = Math.max(1, Number(options.oversampleFactor ?? 1.2));
+  const neighborhoodRadius = Math.max(1, Math.min(Math.floor(options.neighborhoodRadius ?? 4), 20));
+  const maxRequests = Math.max(1, Math.floor(options.maxRequests ?? 128));
+  const targetRequests = Math.min(
+    maxRequests,
+    Math.max(seedLimit, Math.ceil((minSamples / samplesPerRequest) * oversampleFactor)),
+  );
+
+  const seeds = selectValidationPlanRows(cleanRows, seedLimit);
+  const seedMeta = new Map(
+    seeds.map((item) => [designRowKey(item.row), item] as const),
+  );
+  const byAxis = new Map<string, DesignSweepRow[]>();
+  for (const row of cleanRows) {
+    const current = byAxis.get(row.axis) ?? [];
+    current.push(row);
+    byAxis.set(row.axis, current);
+  }
+  for (const axisRows of byAxis.values()) axisRows.sort((a, b) => a.x - b.x);
+
+  const selected = new Map<string, ExpandedValidationPlanItem>();
+  const add = (
+    row: DesignSweepRow | undefined,
+    sourceRank: number,
+    variant: ExpandedValidationPlanItem["variant"],
+    offset: number,
+    selectionScore?: number,
+    rationale?: string,
+  ) => {
+    if (!row || selected.size >= targetRequests) return;
+    const key = designRowKey(row);
+    if (selected.has(key)) return;
+    const seed = seedMeta.get(key);
+    selected.set(key, {
+      rank: selected.size + 1,
+      sourceRank,
+      row,
+      selectionScore: selectionScore ?? seed?.selectionScore ?? row.validationPriority ?? row.recommendationScore ?? 0,
+      rationale: rationale ?? seed?.rationale ?? (variant === "neighbor" ? "neighbor around recommended candidate" : "priority fill to reach training minimum"),
+      variant,
+      offset,
+      plannedSamples: samplesPerRequest,
+    });
+  };
+
+  const offsets = offsetOrder(neighborhoodRadius);
+  for (const seed of seeds) {
+    const axisRows = byAxis.get(seed.row.axis) ?? [];
+    const center = nearestRowIndex(axisRows, seed.row);
+    for (const offset of offsets) {
+      const row = axisRows[center + offset];
+      add(
+        row,
+        seed.rank,
+        offset === 0 ? "seed" : "neighbor",
+        offset,
+        offset === 0 ? seed.selectionScore : seed.selectionScore * Math.max(0.35, 1 - Math.abs(offset) * 0.08),
+        offset === 0
+          ? seed.rationale
+          : `neighbor ${offset > 0 ? "+" : ""}${offset} around rank ${seed.rank}: ${seed.rationale}`,
+      );
+    }
+  }
+
+  // If multiple top recommendations are on the same axis, their neighborhoods can
+  // overlap. Fill the remaining slots with the next highest-priority validation
+  // rows so a one-click run still reaches the training sample floor.
+  const rankedFill = validationDesignRows(cleanRows, cleanRows.length);
+  for (const row of rankedFill) {
+    add(row, seeds.length + 1, "fill", 0);
+  }
+
+  if (selected.size < targetRequests) {
+    const fallback = [...cleanRows].sort(compareDesignRows);
+    for (const row of fallback) add(row, seeds.length + 1, "fill", 0);
+  }
+
+  return [...selected.values()].map((item, index) => ({ ...item, rank: index + 1 }));
+}
+
+export function exportExpandedValidationPlanJson(items: ExpandedValidationPlanItem[]) {
+  return `${JSON.stringify({
+    generatedBy: "tileforge-design-space-expanded-active-learning",
+    queuedCandidates: items.map((item) => ({
+      rank: item.rank,
+      sourceRank: item.sourceRank,
+      variant: item.variant,
+      offset: item.offset,
+      axis: item.row.axis,
+      label: item.row.label,
+      factor: roundFactor(item.row.x),
+      plannedSamples: item.plannedSamples,
+      selectionScore: Number(item.selectionScore.toFixed(6)),
+      rationale: item.rationale,
+      validationPriority: Number(item.row.validationPriority.toFixed(6)),
+      uncertaintyPct: Number(item.row.uncertaintyPct.toFixed(4)),
+      predictionConfidence: Number(item.row.predictionConfidence.toFixed(6)),
+      outOfDomain: item.row.outOfDomain,
+      isKnee: item.row.isKnee,
+      speedup: Number(item.row.speedup.toFixed(6)),
+      throughput: Number(item.row.throughput.toFixed(6)),
+      totalCycles: Math.round(item.row.totalCycles),
+    })),
+  }, null, 2)}\n`;
+}
+
+export function exportExpandedValidationPlanCsv(items: ExpandedValidationPlanItem[]) {
+  const header = [
+    "rank",
+    "sourceRank",
+    "variant",
+    "offset",
+    "axis",
+    "label",
+    "factor",
+    "plannedSamples",
+    "selectionScore",
+    "rationale",
+    "validationPriority",
+    "uncertaintyPct",
+    "predictionConfidence",
+    "outOfDomain",
+    "isKnee",
+    "speedup",
+    "throughput",
+    "totalCycles",
+  ];
+  const lines = [header.join(",")];
+  for (const item of items) {
+    const row = item.row;
+    lines.push([
+      item.rank,
+      item.sourceRank,
+      item.variant,
+      item.offset,
+      row.axis,
+      row.label,
+      roundFactor(row.x),
+      item.plannedSamples,
+      item.selectionScore.toFixed(6),
+      item.rationale,
+      row.validationPriority.toFixed(6),
+      row.uncertaintyPct.toFixed(4),
+      row.predictionConfidence.toFixed(6),
+      row.outOfDomain ? "true" : "false",
+      row.isKnee ? "true" : "false",
+      row.speedup.toFixed(6),
+      row.throughput.toFixed(6),
+      Math.round(row.totalCycles),
+    ].map(designCsvCell).join(","));
+  }
+  return `${lines.join("\n")}\n`;
+}
 
 
 export function buildDesignSpaceSvg(

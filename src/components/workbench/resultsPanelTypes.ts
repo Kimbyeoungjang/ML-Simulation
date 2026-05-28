@@ -11,6 +11,7 @@ export type ResultsTabsView = {
 };
 
 export type ResultsEstimateView = {
+  request: any;
   result: any;
   uncertainty: any;
   confidence: any;

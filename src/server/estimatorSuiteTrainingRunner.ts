@@ -20,17 +20,60 @@ import {
 import { activateEstimatorSuiteModel } from "./activeEstimatorSuite";
 import {
   addLogImmediate,
+  listJobs,
   saveJob,
   updateJobStatus,
   updateProgressImmediate,
 } from "./jobStore";
-import { getWorkspaceRoot, jobDir } from "./workspace";
+import { getJobRoot, getWorkspaceRoot, jobDir } from "./workspace";
 import { throwIfCancelled } from "./jobExecutionGuards";
 import { resolveInsideRoot } from "./pathSafety";
+import { collectEstimatorSamplesFromJobs, mergeCollectedSamplesIntoCsv } from "@/lib/estimatorSuiteJobSamples";
 
 function suiteNum(payload: any, name: string, fallback: number) {
   const v = Number(payload?.options?.[name] ?? payload?.[name]);
   return Number.isFinite(v) ? v : fallback;
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isTerminalStatus(status: string | undefined) {
+  return status === "succeeded" ||
+    status === "succeeded_with_warnings" ||
+    status === "failed" ||
+    status === "cancelled" ||
+    status === "skipped_external_tool";
+}
+
+async function waitForAutoCollectJobs(job: JobRecord, jobIds: string[], maxWaitMs: number) {
+  const uniqueIds = [...new Set(jobIds.filter(Boolean))];
+  if (!uniqueIds.length) return await listJobs();
+  const deadline = Date.now() + Math.max(60_000, maxWaitMs);
+  const wanted = new Set(uniqueIds);
+  while (true) {
+    const jobs = await listJobs();
+    const selected = jobs.filter((candidate) => wanted.has(candidate.id));
+    const done = selected.filter((candidate) => isTerminalStatus(candidate.status)).length;
+    const failed = selected.filter((candidate) => candidate.status === "failed" || candidate.status === "cancelled" || candidate.status === "skipped_external_tool").length;
+    updateProgressImmediate(
+      job,
+      "preparing-dataset",
+      Math.min(32, 8 + Math.round((done / Math.max(1, uniqueIds.length)) * 20)),
+      `추천 검증 job 완료 대기 중: ${done}/${uniqueIds.length}${failed ? `, 실패/취소 ${failed}` : ""}`,
+    );
+    await throwIfCancelled(job);
+    if (done >= uniqueIds.length) return jobs;
+    if (Date.now() > deadline) {
+      const pending = uniqueIds.filter((id) => {
+        const found = selected.find((candidate) => candidate.id === id);
+        return !found || !isTerminalStatus(found.status);
+      });
+      throw new Error(`Active-learning validation jobs did not finish within ${Math.round(maxWaitMs / 1000)}s: ${pending.join(", ")}`);
+    }
+    await sleep(2000);
+  }
 }
 
 async function readDatasetFileFromJobDir(
@@ -70,6 +113,65 @@ export async function runEstimatorSuiteTrainingJob(job: JobRecord) {
   if (!csvText && payload.csvPath) {
     const csvAbs = resolveInsideRoot(localDir, String(payload.csvPath));
     if (csvAbs) csvText = await readFile(csvAbs, "utf8");
+  }
+
+  const autoCollect = payload.autoCollect ?? {};
+  if (Array.isArray(autoCollect.jobIds) && autoCollect.jobIds.length) {
+    addLogImmediate(
+      job,
+      `Active learning: 추천 검증 job ${autoCollect.jobIds.length}개의 완료를 기다린 뒤 학습 데이터로 수집합니다.`,
+    );
+    const allJobs = await waitForAutoCollectJobs(
+      job,
+      autoCollect.jobIds,
+      Number(autoCollect.maxWaitMs ?? 60 * 60 * 1000),
+    );
+    const collectIds = new Set(String(autoCollect.includeExistingCompletedJobs) === "false" ? autoCollect.jobIds : allJobs.map((candidate) => candidate.id));
+    const jobsToCollect = allJobs.filter((candidate) => collectIds.has(candidate.id));
+    const collected = await collectEstimatorSamplesFromJobs(jobsToCollect, getJobRoot());
+    csvText = mergeCollectedSamplesIntoCsv(csvText, collected.rows);
+    addLogImmediate(
+      job,
+      `Active learning: 수집 row=${collected.rows.length}, skipped=${collected.skipped.length}, includeExisting=${autoCollect.includeExistingCompletedJobs !== false}`,
+    );
+    await writeFile(
+      path.join(runDir, "active-learning-collected-samples.csv"),
+      csvText,
+      "utf8",
+    );
+    await writeFile(
+      path.join(runDir, "active-learning-collection-report.json"),
+      JSON.stringify({
+        collectedRows: collected.rows.length,
+        skipped: collected.skipped.slice(0, 200),
+        jobIds: autoCollect.jobIds,
+        includeExistingCompletedJobs: autoCollect.includeExistingCompletedJobs !== false,
+      }, null, 2),
+      "utf8",
+    );
+    await writeFile(
+      path.join(localDir, "active-learning-collected-samples.csv"),
+      csvText,
+      "utf8",
+    );
+    await writeFile(
+      path.join(localDir, "active-learning-collection-report.json"),
+      JSON.stringify({
+        collectedRows: collected.rows.length,
+        skipped: collected.skipped.slice(0, 200),
+        jobIds: autoCollect.jobIds,
+        includeExistingCompletedJobs: autoCollect.includeExistingCompletedJobs !== false,
+      }, null, 2),
+      "utf8",
+    );
+    job.artifacts = [
+      ...new Set([
+        ...(job.artifacts ?? []),
+        "active-learning-collected-samples.csv",
+        "active-learning-collection-report.json",
+      ]),
+    ];
+    await saveJob(job);
   }
 
   let samples = parseEstimatorSamplesCsv(csvText);

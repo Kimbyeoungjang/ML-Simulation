@@ -230,6 +230,7 @@ export default function Home() {
         <ResultsPanel
           tabs={{ tab, tabTips, tabLabels, setTab }}
           estimate={{
+            request: inputs.request,
             result,
             uncertainty,
             confidence: displayConfidence,

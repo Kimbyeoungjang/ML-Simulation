@@ -70,7 +70,12 @@
     "check:clean": "tsx -r tsconfig-paths/register scripts/check-clean-tree.ts",
     "benchmark:iree": "npm run setup:env && tsx -r tsconfig-paths/register scripts/benchmark-iree.ts",
     "validation:plan": "tsx -r tsconfig-paths/register scripts/validation-plan.ts",
-    "validation:execute": "tsx -r tsconfig-paths/register scripts/validation-execute.ts"
+    "validation:execute": "tsx -r tsconfig-paths/register scripts/validation-execute.ts",
+    "tpu:export": "tsx -r tsconfig-paths/register scripts/export-tpu-benchmark.ts",
+    "tpu:import": "tsx -r tsconfig-paths/register scripts/import-tpu-measurements.ts",
+    "tpu:bench:help": "python3 scripts/tpu_matmul_bench.py --help",
+    "tpu:simple": "tsx -r tsconfig-paths/register scripts/tpu-simple.ts",
+    "tpu": "npm run tpu:simple"
   },
   "dependencies": {
     "@next/env": "^15.1.0",

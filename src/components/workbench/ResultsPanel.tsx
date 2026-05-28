@@ -13,6 +13,7 @@ const RESULT_TAB_ORDER: Tab[] = [
   "iree",
   "exports",
   "graphs",
+  "tpu",
   "report",
   "jobs",
   "status",
