@@ -8,7 +8,7 @@ import type { SearchRequest } from "@/types/domain";
 import { hashObject } from "@/lib/hash";
 import { ensureJobRoot, getJobRoot, jobDir } from "./workspace";
 import { nowIso, stableId } from "@/lib/determinism";
-import { countJobsSqlite, deleteJobSqlite, listDashboardJobsSqlite, listJobsPageSqlite, listJobsSqlite, markStageSqlite, mirrorLog, readJobSqlite, saveJobSqlite, selectQueuedJobsSqlite, sqlitePrimary } from "./sqliteStore";
+import { countJobsSqlite, deleteJobSqlite, listDashboardJobsSqlite, listJobsByStatusSqlite, listJobsPageSqlite, listJobsSqlite, markStageSqlite, mirrorLog, readJobSqlite, saveJobSqlite, selectQueuedJobsSqlite, sqlitePrimary } from "./sqliteStore";
 import { atomicWriteFile } from "./atomic";
 import { appendJobEvent } from "./eventsLog";
 import { assertTransition, isTerminalStatus } from "@/lib/stateMachine";
@@ -220,15 +220,45 @@ export async function claimQueuedJob(excludeIds: string[] = []): Promise<JobReco
 }
 
 
+function isProcessAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error: any) {
+    if (error?.code === "EPERM") return true;
+    return false;
+  }
+}
+
+async function runningJobAbandoned(job: JobRecord, ageMs: number, staleMs: number): Promise<boolean> {
+  const crashGraceMs = Math.max(5_000, Number(process.env.TILEFORGE_STALE_RUNNING_GRACE_MS ?? 30_000));
+  const lockPath = path.join(jobDir(job.id), "job.lock");
+  try {
+    const raw = await readFile(lockPath, "utf8");
+    const lock = JSON.parse(raw);
+    const pid = Number(lock?.pid);
+    if (Number.isInteger(pid) && pid > 0) {
+      if (pid === process.pid) return false;
+      if (!isProcessAlive(pid)) return ageMs >= crashGraceMs;
+    }
+  } catch {
+    // A running job with no lock usually means the worker was killed between
+    // state updates. Do not wait for the external tool timeout in that case.
+    return ageMs >= crashGraceMs;
+  }
+  return ageMs >= staleMs;
+}
+
 export async function recoverStaleRunningJobs(): Promise<number> {
-  const jobs = await listJobs();
+  const sqliteRunning = sqlitePrimary() ? listJobsByStatusSqlite("running", 10000) : undefined;
+  const jobs = sqliteRunning ?? (await listJobs()).filter((job) => job.status === "running");
   const now = Date.now();
   let recovered = 0;
   for (const job of jobs) {
-    if (job.status !== "running") continue;
     const ageMs = now - Date.parse(job.updatedAt || job.createdAt || new Date(0).toISOString());
     const staleMs = Math.max(Number(job.timeoutMs ?? DEFAULT_TIMEOUT_MS) + 30_000, 90_000);
-    if (!Number.isFinite(ageMs) || ageMs < staleMs) continue;
+    if (!Number.isFinite(ageMs) || !(await runningJobAbandoned(job, ageMs, staleMs))) continue;
     job.status = "failed";
     job.stage = "failed" as any;
     job.progress = Math.max(job.progress ?? 0, 95);
@@ -239,6 +269,7 @@ export async function recoverStaleRunningJobs(): Promise<number> {
     }, null, 2);
     appendLogSync(job, "오래 갱신되지 않은 running job을 실패 처리하고 큐를 계속 진행합니다.");
     await saveJob(job);
+    await releaseJobLock(job);
     recovered++;
   }
   return recovered;

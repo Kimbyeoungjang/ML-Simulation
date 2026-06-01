@@ -2,9 +2,6 @@ import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { runExternalCommand } from "@/server/externalCommand";
 import { commandLabel, csvRows, formatCandidateErrors, getStringOpt, hasFlag, ireeCompileCommandCandidates, makeDemoArtifacts, numberFromRow, parseArgs, runScaleSimUntilReport, scaleSimArgs, scaleSimCommandCandidates } from "./external-utils";
-import { buildValidationEvidenceBundle, estimatorSuiteFeedbackCsv, estimatorSuiteFeedbackCsvForScope, validationEvidenceJson, validationEvidenceMarkdown } from "@/server/validationEvidence";
-import type { SearchResponse } from "@/types/domain";
-import { buildValidationFeedbackPolicyReport, validationFeedbackPolicyJson, validationFeedbackPolicyMarkdown } from "@/server/validationFeedbackPolicy";
 
 async function fileSizeStrict(file: string, label: string): Promise<number> {
   let s: Awaited<ReturnType<typeof stat>>;
@@ -58,13 +55,8 @@ async function main(): Promise<void> {
     const scaleCmd = run.command;
     const computeReport = run.computeReport;
     const rows = csvRows(await readFile(computeReport, "utf8"));
-    const layers = rows.map((row, index) => {
-      const cycles = numberFromRow(row, ["Cycles", "Total Cycles", "Total cycles", "Compute cycles"]) ?? 0;
-      const name = response.results[index]?.shape.opName || row["Layer Name"] || row["Layer name"] || row["Layer"] || row["layer"] || row["Name"] || row["name"] || `layer_${index + 1}`;
-      return { name, cycles };
-    });
-    const totalCycles = layers.reduce((sum, layer) => sum + layer.cycles, 0);
-    scaleSummary = { ok: true, skipped: false, command: commandLabel(scaleCmd), triedCommands: scaleCommands.map(commandLabel), elapsedMs: Date.now() - startedAt, computeReport, layerCount: rows.length, totalCycles, layers };
+    const totalCycles = rows.reduce((sum, row) => sum + (numberFromRow(row, ["Cycles", "Total Cycles", "Total cycles", "Compute cycles"]) ?? 0), 0);
+    scaleSummary = { ok: true, skipped: false, command: commandLabel(scaleCmd), triedCommands: scaleCommands.map(commandLabel), elapsedMs: Date.now() - startedAt, computeReport, layerCount: rows.length, totalCycles };
   } catch (error) {
     scaleSummary = { ok: false, skipped: !requireExternal, command: scaleCommands.map(commandLabel).join(" | "), triedCommands: scaleCommands.map(commandLabel), error: error instanceof Error ? error.message : String(error), installHint: "npm run setup:scalesim -- --force" };
   }
@@ -104,7 +96,7 @@ async function main(): Promise<void> {
 
   await writeFile(path.join(scaleDir, "scalesim_summary.json"), JSON.stringify(scaleSummary, null, 2), "utf8");
   await writeFile(path.join(ireeDir, "iree_summary.json"), JSON.stringify(ireeSummary, null, 2), "utf8");
-  await writeReport(root, response, scaleSummary, ireeSummary);
+  await writeReport(root, response.summary.totalCycles, scaleSummary, ireeSummary);
   console.log(`외부 검증 보고서: ${path.join(root, "external_validation_report.md")}`);
 
   if (requireExternal && (!scaleSummary.ok || !ireeSummary.ok)) {
@@ -125,8 +117,7 @@ async function printFailureDiagnostics(root: string): Promise<void> {
   }
 }
 
-async function writeReport(root: string, response: SearchResponse, scaleSummary: any, ireeSummary: any): Promise<void> {
-  const tileForgeCycles = response.summary.totalCycles;
+async function writeReport(root: string, tileForgeCycles: number, scaleSummary: any, ireeSummary: any): Promise<void> {
   const scaleCycles = typeof scaleSummary.totalCycles === "number" ? scaleSummary.totalCycles : undefined;
   const cycleRatio = scaleCycles ? scaleCycles / tileForgeCycles : undefined;
   const scaleApplied = Boolean(scaleSummary.ok && scaleSummary.computeReport);
@@ -165,18 +156,6 @@ async function writeReport(root: string, response: SearchResponse, scaleSummary:
   ].filter(line => line !== "").join("\n") + "\n";
   await writeFile(path.join(root, "external_validation_report.md"), markdown, "utf8");
   await writeFile(path.join(root, "external_validation_summary.json"), JSON.stringify({ tileForgeCycles, scaleSummary, ireeSummary, cycleRatio }, null, 2), "utf8");
-  const evidence = buildValidationEvidenceBundle(response, scaleSummary, { jobId: "external-validation" });
-  await writeFile(path.join(root, "validation_evidence.json"), validationEvidenceJson(evidence), "utf8");
-  await writeFile(path.join(root, "validation_evidence.md"), validationEvidenceMarkdown(evidence), "utf8");
-  const feedbackCsv = estimatorSuiteFeedbackCsv(evidence);
-  const feedbackFullLayerCsv = estimatorSuiteFeedbackCsvForScope(evidence, "full-layer");
-  const feedbackTilePolicyCsv = estimatorSuiteFeedbackCsvForScope(evidence, "tile-policy");
-  const feedbackPolicy = buildValidationFeedbackPolicyReport(evidence);
-  await writeFile(path.join(root, "validation_feedback_policy.json"), validationFeedbackPolicyJson(feedbackPolicy), "utf8");
-  await writeFile(path.join(root, "validation_feedback_policy.md"), validationFeedbackPolicyMarkdown(feedbackPolicy), "utf8");
-  if (feedbackCsv.trim()) await writeFile(path.join(root, "estimator_suite_feedback.csv"), feedbackCsv, "utf8");
-  if (feedbackFullLayerCsv.trim()) await writeFile(path.join(root, "estimator_suite_feedback_full_layer.csv"), feedbackFullLayerCsv, "utf8");
-  if (feedbackTilePolicyCsv.trim()) await writeFile(path.join(root, "estimator_suite_feedback_tile_policy.csv"), feedbackTilePolicyCsv, "utf8");
 }
 
 main().catch(error => {

@@ -2,11 +2,7 @@
 
 TileForge Workbench는 GEMM/Conv 연산을 systolic array에서 실행할 때 어떤 하드웨어 설정과 타일 정책이 유리한지 빠르게 탐색하는 로컬 웹 워크벤치입니다. TileForge estimator로 후보를 빠르게 좁힌 뒤, 필요하면 SCALE-Sim과 IREE를 실제로 실행해 예측값을 교차 검증합니다.
 
-## Prediction contract
-
-TileForge는 `full-layer cycle`, `tile-policy cycle`, `IREE lowering hint`를 같은 값처럼 취급하지 않습니다. 빠른 하드웨어 설계 비교는 full-layer estimate를 사용하고, 타일 전략과 compiler option 후보는 tile-policy score와 `compiler_hints.md/json`으로 분리합니다. 자세한 기준은 [`docs/prediction-contract.md`](docs/prediction-contract.md)를 참고하세요.
-
-## Scoped Estimator Suite pipeline
+### Scoped Estimator Suite pipeline
 
 Full-layer SCALE-Sim results and tile micro-run extrapolations are different targets. Use the scoped pipeline to split them before training:
 
@@ -75,8 +71,6 @@ npm run validate:external:required
 | `npm run validate:external:required` | 실제 SCALE-Sim/IREE 연동을 필수 조건으로 검증합니다. |
 | `npm run run:scalesim` | SCALE-Sim만 단독 실행/검증합니다. |
 | `npm run run:iree` | IREE compile만 단독 실행합니다. |
-| `npm run benchmark:iree -- --artifact <job-dir>` | baseline VMFB와 transform-hint VMFB를 같은 입력으로 runtime 비교합니다. |
-| `npm run validation:execute -- --artifact <job-dir>` | validation runbook을 dry-run/실행하고 `validation_execution_report.md`를 남깁니다. |
 | `npm run jobs:stats` | job 저장소 통계를 출력합니다. |
 | `npm run jobs:clean` | 오래된 job artifact를 정리합니다. |
 | `npm run clean:generated` | `.tileforge`, build cache, VMFB/COMPUTE_REPORT 같은 로컬 생성물을 정리합니다. |
@@ -115,8 +109,6 @@ npm run validate:external:required
 | `generated.mlir` | IREE compile 입력 MLIR |
 | `transform.mlir` | IREE transform dialect 스케치 |
 | `iree-output/model.vmfb` | IREE compile 결과 |
-| `iree-runtime/iree_runtime_benchmark_report.md/json` | IREE compile/runtime 측정 로그 요약 |
-| `iree-runtime/iree_runtime_decision.md/json` | baseline 대비 hinted runtime 승격/보류/회귀 판단 |
 | `scalesim-output/.../COMPUTE_REPORT.csv` | SCALE-Sim compute report |
 
 ## 문제 해결
@@ -138,17 +130,6 @@ $env:TILEFORGE_PYTHON="C:\\Users\\사용자\\AppData\\Local\\Programs\\Python\\P
 npm run setup:env
 ```
 
-
-### IREE compile 성공 후 실제 runtime을 비교할 때
-
-`compiler_hints.md`와 `iree_benchmark_plan.md`는 최적화 확정값이 아니라 후보입니다. job artifact 디렉터리를 지정해서 baseline과 transform-hint variant를 같은 조건으로 비교하세요.
-
-```bash
-TILEFORGE_IREE_BENCH_CMD="iree-benchmark-module" npm run benchmark:iree -- --artifact .tileforge_jobs/<job-id> --repetitions=5 --min-time-sec=0.05
-```
-
-IREE runtime 도구가 없으면 report는 skipped로 기록됩니다. 실행 후에는 `iree-runtime/iree_runtime_decision.md`를 먼저 보고, `promote-candidate`가 아니면 옵션을 기본값으로 승격하면 안 됩니다. correctness가 `not-checked`이면 speedup이 좋아 보여도 추가 검증이 필요합니다.
-
 ### IREE compile이 0 byte VMFB를 만들 때
 
 `TILEFORGE_IREE_COMPILE_CMD`가 `iree.compiler.tools.core`를 가리키지 않는지 확인하세요. 권장값은 다음입니다.
@@ -162,7 +143,7 @@ TILEFORGE_IREE_COMPILE_CMD="py -3 -m iree.compiler.tools.scripts.iree_compile"
 ```text
 src/app       Next.js UI와 API route
 src/lib       estimator, report, SCALE-Sim/IREE artifact 생성
-src/server    job store, worker, 외부 명령 실행, SCALE-Sim report parser, external report writer
+src/server    job store, worker, 외부 명령 실행
 scripts       개발/검증/설치/정리 스크립트
 tests         Vitest 기반 테스트
 schemas       artifact JSON schema
@@ -258,57 +239,3 @@ SCALE-Sim/IREE 측정값이 모이면 **Estimator Suite**로 analytical estimato
 `topology.csv`는 모델의 layer shape를 정의합니다. 즉, 어떤 layer가 있고 M/N/K 또는 Conv shape가 무엇인지는 topology가 결정합니다. 반면 `layout.csv`는 같은 layer를 SCALE-Sim 내부에서 어떤 operand layout, bank layout, interline/intraline order로 배치할지 알려주는 실행/메모리 배치 힌트입니다.
 
 따라서 layout은 모델 topology에서 자동으로 유도되는 값이라기보다, **사용자가 하드웨어 메모리 배치 정책을 실험하기 위해 지정하는 값**에 가깝습니다. 한 파일에 여러 layer 행이 있는 이유는 topology의 여러 layer에 대해 각 layer별 layout 정책을 따로 줄 수 있기 때문입니다. 기본값은 안전한 identity-like order를 사용하고, custom layout을 켜면 이 값을 의도적으로 바꾸어 SRAM bank/layout 효과를 실험합니다.
-
-
-## Purpose-aligned prediction flow
-
-TileForge는 단순 cycle 계산기가 아니라 **빠른 estimate → 하드웨어 설계 판단 → 타일링 전략 → IREE benchmark 후보 생성**을 연결하는 워크벤치입니다.
-
-핵심 지표는 의도적으로 분리되어 있습니다.
-
-- `fullLayerCycles` / `summary.totalCycles`: array, SRAM, bandwidth, dataflow를 비교하는 하드웨어 설계 지표
-- `tilePolicyCycles` / `score`: op별 tile 후보를 고르는 타일링 전략 지표
-- `compiler_hints.*` / `iree_benchmark_plan.*`: IREE lowering 옵션을 바로 확정하는 값이 아니라 runtime A-B test 후보
-- `iree-runtime/iree_runtime_decision.*`: benchmark 결과를 승격/보류/회귀로 해석하는 runtime evidence
-- `tileScratchBytes`: SRAM fit 판단용 tile-local footprint
-- `fullLayerSramBytes`: full-layer refill/spill 민감도와 DRAM traffic 판단용 working set
-
-자세한 contract는 `docs/purpose-aligned-pipeline.md`와 산출물 `prediction_contract.json`을 확인하세요.
-
-### Risk and environment artifacts
-
-Recent full-pipeline jobs also emit:
-
-- `prediction_risk_register.md/json` — op-level triage for underfill, padding, SRAM pressure, full-layer working-set spill, bandwidth sensitivity, long-reduction, and out-of-domain Estimator Suite risk. Use this before deciding which ops to validate with SCALE-Sim first.
-- `external_environment.md/json` — records platform, configured SCALE-Sim/IREE commands, resolved fallback candidates, and observed tool versions to make external validation more reproducible.
-
-For hardware-design decisions, do not rely on `summary.totalCycles` alone. Check `purpose_gate.md`, `prediction_risk_register.md`, `full_layer_model_card.md`, and SCALE-Sim validation evidence together.
-
-
-### Validation runbook
-
-After a full job, convert `validation_plan.json` into concrete commands:
-
-```bash
-npm run validation:plan -- --artifact .tileforge/jobs/<job-id>
-```
-
-The generated `validation_runbook.md` contains artifact-safe commands. SCALE-Sim/IREE runners preserve existing job artifacts and only create demo inputs when required files are missing or `--demo` is explicitly passed. Use `--no-demo` when validating a real job artifact.
-
-Dry-run the runbook and record what would happen:
-
-```bash
-npm run validation:execute -- --artifact .tileforge/jobs/<job-id>
-```
-
-Execute a selected external validation step only when you are ready to run local SCALE-Sim/IREE binaries:
-
-```bash
-npm run validation:execute -- \
-  --artifact .tileforge/jobs/<job-id> \
-  --execute \
-  --allow-external \
-  --kind scalesim-full-layer
-```
-
-The output `validation_execution_report.md` separates planned, skipped, blocked, passed, and failed commands so a generated plan is not mistaken for completed evidence.

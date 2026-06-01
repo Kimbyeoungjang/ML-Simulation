@@ -8,10 +8,62 @@ import { applyEstimatorSuiteToSearchResponse } from "./estimatorSuiteApply";
 import type { EstimatorSuiteModel } from "./estimatorSuite";
 import { hashObject } from "./hash";
 
-import type { DesignMetric, DesignSweepRow, ValidationPlanRow } from "./designSpaceTypes";
-export type { DesignMetric, DesignSweepRow, ValidationPlanRow } from "./designSpaceTypes";
-import { attachRecommendationScores, compareDesignRows, estimateDesignUncertaintyPct, validationDesignRows, validationPlanRows as selectValidationPlanRows } from "./designSpaceScoring";
-export { exportValidationPlanCsv, exportValidationPlanJson, paretoDesignRows, validationDesignRows, validationPlanRows } from "./designSpaceScoring";
+export type DesignMetric = "speedup" | "throughput" | "score";
+
+export interface DesignSweepRow {
+  axis: string;
+  label: string;
+  x: number;
+  value: number;
+  /** Total cycles for the evaluated point. For workload scaling axes this is not directly comparable with baseline. */
+  totalCycles: number;
+  /** Work-normalized speedup: (ops/cycle at this point) / (baseline ops/cycle). */
+  speedup: number;
+  /** Raw total-cycle speedup, useful only when workload ops are unchanged. */
+  cycleSpeedup: number;
+  /** Workload size relative to the baseline request. */
+  workScale: number;
+  /** Estimated throughput in TOPS. */
+  throughput: number;
+  meanUtilization: number;
+  maxSramKiB: number;
+  /** Hardware cost proxy. Workload-only sweeps keep this at 1. */
+  cost: number;
+  /** Cost-aware sweet-spot score. */
+  score: number;
+  /** Cross-metric consensus score: high only when speedup, throughput, and score overlap on the same point. */
+  agreementScore: number;
+  /** Return-on-investment score that penalizes expensive hardware/workload expansion after consensus is computed. */
+  roiScore: number;
+  /** Final recommendation score used for sweet-spot ranking. Blends consensus quality with ROI. */
+  recommendationScore: number;
+  /** Estimated one-sigma-ish relative error used for risk-aware ranking. */
+  uncertaintyPct: number;
+  /** Conservative speedup lower bound. Useful when two candidates overlap within uncertainty. */
+  riskAdjustedSpeedup: number;
+  /** Recommendation score penalized by uncertainty. */
+  riskAdjustedRecommendationScore: number;
+  /** Active-learning priority: high means this point is valuable to validate with SCALE-Sim next. */
+  validationPriority: number;
+  /** SRAM overflow ratio relative to configured SRAM capacity. */
+  sramOverflowRatio: number;
+  /** Minimum estimator-suite domain confidence for this sweep point. Analytical-only runs use 1. */
+  predictionConfidence: number;
+  /** True when learned predictions were damped because the sweep point is outside the training domain. */
+  outOfDomain: boolean;
+  /** Marginal normalized-speedup gained per extra cost/work unit from the previous sweep point on the same axis. */
+  marginalEfficiency: number;
+  /** True when this point is the first point on the axis where marginal returns clearly flatten. */
+  isKnee: boolean;
+  isBase?: boolean;
+}
+
+export interface ValidationPlanRow {
+  rank: number;
+  row: DesignSweepRow;
+  selectionScore: number;
+  rationale: string;
+}
 
 const HARDWARE_FACTORS = Object.freeze([0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4]);
 const MEMORY_FACTORS = Object.freeze([0.125, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4]);
@@ -192,6 +244,174 @@ function effectiveShapeFactor(
   return weightedNext / Math.max(1, weightedBase);
 }
 
+function metricMax(
+  rows: DesignSweepRow[],
+  axis: string,
+  getter: (row: DesignSweepRow) => number,
+) {
+  return Math.max(
+    1e-9,
+    ...rows
+      .filter((row) => row.axis === axis)
+      .map(getter)
+      .filter(Number.isFinite),
+  );
+}
+
+function estimateDesignUncertaintyPct(
+  row: Pick<
+    DesignSweepRow,
+    | "predictionConfidence"
+    | "meanUtilization"
+    | "sramOverflowRatio"
+    | "cost"
+    | "workScale"
+    | "outOfDomain"
+  >,
+) {
+  const confidence = Number.isFinite(row.predictionConfidence)
+    ? clamp(row.predictionConfidence, 0.25, 1)
+    : 1;
+  const lowUtilPenalty =
+    Math.max(0, 0.55 - clamp(row.meanUtilization, 0, 1)) * 22;
+  const sramPenalty = Math.min(18, Math.max(0, row.sramOverflowRatio) * 14);
+  const extrapolationPenalty = row.outOfDomain ? 8 : 0;
+  const expansionPenalty = Math.min(
+    10,
+    Math.max(0, row.cost - 1) * 2 + Math.max(0, row.workScale - 1) * 3,
+  );
+  return clamp(
+    5 +
+      (1 - confidence) * 38 +
+      lowUtilPenalty +
+      sramPenalty +
+      extrapolationPenalty +
+      expansionPenalty,
+    5,
+    65,
+  );
+}
+
+function attachRecommendationScores(rows: DesignSweepRow[]): DesignSweepRow[] {
+  const firstPass = rows.map((row) => {
+    const speed = row.speedup / metricMax(rows, row.axis, (r) => r.speedup);
+    const tops =
+      row.throughput / metricMax(rows, row.axis, (r) => r.throughput);
+    const score = row.score / metricMax(rows, row.axis, (r) => r.score);
+    const agreementScore = Math.min(speed, tops, score);
+    const expansionPenalty =
+      1 +
+      0.35 * Math.max(0, row.cost - 1) +
+      0.15 * Math.max(0, row.workScale - 1);
+    const confidence = Number.isFinite(row.predictionConfidence)
+      ? Math.max(0.25, Math.min(1, row.predictionConfidence))
+      : 1;
+    const confidencePenalty = 0.55 + 0.45 * confidence;
+    const roiScore = (agreementScore / expansionPenalty) * confidencePenalty;
+    // Consensus prevents single-metric winners; ROI prevents over-recommending
+    // very expensive hardware points whose extra gain is already flattening.
+    // When an active learned model reports low domain confidence, keep the
+    // point visible but damp the final recommendation so extrapolated hardware
+    // sweeps do not dominate trusted in-domain candidates.
+    const recommendationScore =
+      (0.68 * agreementScore + 0.32 * roiScore) * confidencePenalty;
+    const uncertaintyPct = estimateDesignUncertaintyPct(row);
+    const riskAdjustedSpeedup = row.speedup / (1 + uncertaintyPct / 100);
+    const riskAdjustedRecommendationScore =
+      recommendationScore * (1 - clamp(uncertaintyPct / 140, 0.04, 0.48));
+    return {
+      ...row,
+      agreementScore,
+      roiScore,
+      recommendationScore,
+      uncertaintyPct,
+      riskAdjustedSpeedup,
+      riskAdjustedRecommendationScore,
+      validationPriority: 0,
+      marginalEfficiency: 0,
+      isKnee: false,
+    };
+  });
+
+  const byAxis = new Map<string, DesignSweepRow[]>();
+  for (const row of firstPass) {
+    byAxis.set(row.axis, [...(byAxis.get(row.axis) || []), row]);
+  }
+
+  const enriched: DesignSweepRow[] = [];
+  for (const [, axisRows] of byAxis) {
+    const sorted = axisRows.slice().sort((a, b) => a.x - b.x);
+    const margins = sorted.map((row, i) => {
+      if (i === 0) return Number.POSITIVE_INFINITY;
+      const prev = sorted[i - 1];
+      const denom =
+        row.cost !== prev.cost
+          ? row.cost - prev.cost
+          : row.workScale - prev.workScale;
+      return denom > 1e-9 ? Math.max(0, row.speedup - prev.speedup) / denom : 0;
+    });
+    const finiteMargins = margins.filter(Number.isFinite).filter((v) => v > 0);
+    const firstMargin = finiteMargins[0] || 0;
+    let kneeIndex =
+      firstMargin > 0
+        ? margins.findIndex(
+            (m, i) => i > 0 && Number.isFinite(m) && m <= firstMargin * 0.35,
+          )
+        : -1;
+    if (kneeIndex < 0 && sorted.length >= 4) {
+      // Fallback elbow detector: choose the interior point farthest above the
+      // straight line from first to last in normalized cost/work vs speedup
+      // space. This keeps the graph informative even when the marginal drop is
+      // gradual rather than crossing a hard threshold.
+      const effortOf = (row: DesignSweepRow) =>
+        row.cost !== 1 ? row.cost : row.workScale;
+      const effort = sorted.map(effortOf);
+      const minEffort = Math.min(...effort);
+      const maxEffort = Math.max(...effort);
+      const minSpeed = Math.min(...sorted.map((r) => r.speedup));
+      const maxSpeed = Math.max(...sorted.map((r) => r.speedup));
+      let bestDistance = 0;
+      for (let i = 1; i < sorted.length - 1; i++) {
+        const x =
+          (effort[i] - minEffort) / Math.max(1e-9, maxEffort - minEffort);
+        const y =
+          (sorted[i].speedup - minSpeed) / Math.max(1e-9, maxSpeed - minSpeed);
+        const distance = y - x;
+        if (distance > bestDistance) {
+          bestDistance = distance;
+          kneeIndex = i;
+        }
+      }
+    }
+    const bestRec = Math.max(1e-9, ...sorted.map((r) => r.recommendationScore));
+    for (let i = 0; i < sorted.length; i++) {
+      const row = sorted[i];
+      const isKnee = i === kneeIndex;
+      const uncertainty = clamp(row.uncertaintyPct / 65, 0, 1);
+      const normalizedPotential = clamp(
+        row.recommendationScore / bestRec,
+        0,
+        1,
+      );
+      const validationPriority = clamp(
+        0.38 * uncertainty +
+          0.28 * normalizedPotential +
+          0.18 * Math.max(0, 1 - row.predictionConfidence) +
+          0.1 * Math.min(1, row.sramOverflowRatio) +
+          0.06 * (isKnee ? 1 : 0),
+        0,
+        1,
+      );
+      enriched.push({
+        ...row,
+        marginalEfficiency: margins[i],
+        isKnee,
+        validationPriority,
+      });
+    }
+  }
+  return enriched;
+}
 
 export function buildDesignSpaceRows(
   source: unknown,
@@ -425,6 +645,122 @@ export function bestRiskAdjustedDesignRow(rows: DesignSweepRow[]) {
     )[0];
 }
 
+function validationSelectionScores(rows: DesignSweepRow[]) {
+  const paretoSet = new Set(paretoDesignRows(rows));
+  const nonBaseRows = rows.filter((row) => !row.isBase);
+  const maxRiskRecommendation = Math.max(
+    1e-9,
+    ...nonBaseRows.map((row) => row.riskAdjustedRecommendationScore),
+  );
+  const maxRiskSpeedup = Math.max(
+    1e-9,
+    ...nonBaseRows.map((row) => row.riskAdjustedSpeedup),
+  );
+
+  const scores = new Map<DesignSweepRow, number>();
+  for (const row of nonBaseRows) {
+    // Active validation is most useful when a point is both uncertain and
+    // plausibly valuable. Normalize all value-like terms to keep the selector
+    // stable if future scoring changes make recommendationScore larger than 1.
+    const normalizedRiskRecommendation = clamp(
+      row.riskAdjustedRecommendationScore / maxRiskRecommendation,
+      0,
+      1,
+    );
+    const normalizedRiskSpeedup = clamp(
+      row.riskAdjustedSpeedup / maxRiskSpeedup,
+      0,
+      1,
+    );
+    const score =
+      0.54 * clamp(row.validationPriority, 0, 1) +
+      0.2 * normalizedRiskRecommendation +
+      0.08 * normalizedRiskSpeedup +
+      0.08 * (paretoSet.has(row) ? 1 : 0) +
+      0.06 * (row.isKnee ? 1 : 0) +
+      0.04 * (row.outOfDomain ? 1 : 0);
+    scores.set(row, clamp(score, 0, 1));
+  }
+  return scores;
+}
+
+function validationSelectionScore(
+  row: DesignSweepRow,
+  scores: ReadonlyMap<DesignSweepRow, number>,
+) {
+  return scores.get(row) || 0;
+}
+
+function isNearDuplicateValidationPoint(
+  row: DesignSweepRow,
+  selected: DesignSweepRow[],
+) {
+  return selected.some((prev) => {
+    if (prev.axis !== row.axis) return false;
+    const logDistance = Math.abs(
+      Math.log(Math.max(1e-9, row.x) / Math.max(1e-9, prev.x)),
+    );
+    return logDistance < 0.08;
+  });
+}
+
+export function validationDesignRows(rows: DesignSweepRow[], limit = 5) {
+  const maxRows = Math.max(0, limit);
+  if (maxRows === 0) return [];
+
+  const scores = validationSelectionScores(rows);
+  const candidates = rows
+    .filter((row) => !row.isBase)
+    .slice()
+    .sort(
+      (a, b) =>
+        validationSelectionScore(b, scores) -
+          validationSelectionScore(a, scores) || compareDesignRows(a, b),
+    );
+
+  const selected: DesignSweepRow[] = [];
+  const selectedAxes = new Set<string>();
+
+  // First pass: diversify across axes so the validation batch can identify
+  // whether the dominant error source is array, memory, clock, or workload
+  // scaling. This avoids spending the whole SCALE-Sim budget on near-duplicate
+  // points from one axis.
+  for (const row of candidates) {
+    if (selected.length >= maxRows) break;
+    if (selectedAxes.has(row.axis)) continue;
+    selected.push(row);
+    selectedAxes.add(row.axis);
+  }
+
+  // Second pass: fill remaining slots while avoiding rounded/geometrically
+  // adjacent duplicates on the same axis when alternatives exist.
+  for (const row of candidates) {
+    if (selected.length >= maxRows) break;
+    if (selected.includes(row)) continue;
+    if (isNearDuplicateValidationPoint(row, selected)) continue;
+    selected.push(row);
+  }
+
+  // Last resort: if the request has fewer unique axes than the limit, fill with
+  // the best remaining rows even if they are close to an already selected point.
+  for (const row of candidates) {
+    if (selected.length >= maxRows) break;
+    if (!selected.includes(row)) selected.push(row);
+  }
+
+  return selected;
+}
+
+function compareDesignRows(a: DesignSweepRow, b: DesignSweepRow) {
+  return (
+    b.recommendationScore - a.recommendationScore ||
+    b.riskAdjustedRecommendationScore - a.riskAdjustedRecommendationScore ||
+    b.agreementScore - a.agreementScore ||
+    b.score - a.score ||
+    b.speedup - a.speedup
+  );
+}
+
 export function designAxisSummary(rows: DesignSweepRow[]) {
   return bestDesignRowsByAxis(rows).map((row) => ({
     axis: row.axis,
@@ -443,282 +779,98 @@ export function designAxisSummary(rows: DesignSweepRow[]) {
   }));
 }
 
-
-
-
-function safeRunNamePart(value: unknown) {
-  return String(value ?? "candidate")
-    .trim()
-    .replace(/[^A-Za-z0-9_.-]+/g, "_")
-    .replace(/^_+|_+$/g, "")
-    .slice(0, 64) || "candidate";
+export function paretoDesignRows(rows: DesignSweepRow[]) {
+  return rows.filter(
+    (row) =>
+      !rows.some(
+        (other) =>
+          other !== row &&
+          other.speedup >= row.speedup &&
+          other.throughput >= row.throughput &&
+          other.score >= row.score &&
+          other.cost <= row.cost &&
+          (other.speedup > row.speedup ||
+            other.throughput > row.throughput ||
+            other.score > row.score ||
+            other.cost < row.cost),
+      ),
+  );
 }
 
-export function requestForDesignSweepRow(
-  baseRequest: SearchRequest,
-  row: Pick<DesignSweepRow, "axis" | "x" | "label">,
-  options: { rank?: number; runNamePrefix?: string } = {},
-): SearchRequest {
-  const factor = Number.isFinite(Number(row.x)) && Number(row.x) > 0 ? Number(row.x) : 1;
-  let next: SearchRequest;
-  const hw = { ...baseRequest.hardware };
-
-  if (row.axis === "array") {
-    next = {
-      ...baseRequest,
-      hardware: {
-        ...hw,
-        arrayRows: Math.max(1, Math.round(hw.arrayRows * factor)),
-        arrayCols: Math.max(1, Math.round(hw.arrayCols * factor)),
-      },
-    };
-  } else if (row.axis === "frequency") {
-    next = {
-      ...baseRequest,
-      hardware: {
-        ...hw,
-        frequencyMHz: Math.max(1, Math.round(hw.frequencyMHz * factor)),
-      },
-    };
-  } else if (row.axis === "sram") {
-    next = {
-      ...baseRequest,
-      hardware: { ...hw, sramKB: Math.max(1, Math.round(hw.sramKB * factor)) },
-    };
-  } else if (row.axis === "dram") {
-    next = scaleDramBandwidth(baseRequest, factor);
-  } else if (row.axis === "shape-m" || row.axis === "shape-n" || row.axis === "shape-k") {
-    const axis = row.axis.slice("shape-".length) as "m" | "n" | "k";
-    next = {
-      ...baseRequest,
-      shapes: baseRequest.shapes.map((shape) => scaledShape(shape, axis, factor)),
-    };
-  } else {
-    next = { ...baseRequest, hardware: hw, shapes: [...baseRequest.shapes] };
-  }
-
-  const rank = options.rank !== undefined ? String(options.rank).padStart(2, "0") : "xx";
-  const prefix = safeRunNamePart(options.runNamePrefix ?? "active_learning");
-  const axisPart = safeRunNamePart(row.axis);
-  const labelPart = safeRunNamePart(row.label);
-  const runName = `${prefix}_${rank}_${axisPart}_${labelPart}`;
-  return {
-    ...next,
-    hardware: {
-      ...next.hardware,
-      name: `${baseRequest.hardware.name || "hardware"}_${axisPart}_${labelPart}`.slice(0, 120),
-    },
-    scaleSim: { ...(next.scaleSim ?? {}), runName },
-  };
-}
-
-export function requestForValidationPlanRow(
-  baseRequest: SearchRequest,
-  item: ValidationPlanRow,
-  options: { runNamePrefix?: string } = {},
-): SearchRequest {
-  return requestForDesignSweepRow(baseRequest, item.row, {
-    rank: item.rank,
-    runNamePrefix: options.runNamePrefix,
-  });
-}
-
-
-
-
-export interface ExpandedValidationPlanOptions {
-  /** Number of top recommendation seeds to expand. */
-  seedLimit?: number;
-  /** Minimum valid measured samples the later training step needs. */
-  minSamples?: number;
-  /** Expected valid full-layer samples produced by one queued request. */
-  samplesPerRequest?: number;
-  /** Queue extra requests because some external SCALE-Sim runs may fail or be skipped. */
-  oversampleFactor?: number;
-  /** How many sweep points before/after each seed to include on the same axis. */
-  neighborhoodRadius?: number;
-  /** Hard cap to avoid accidentally queuing an extremely large active-learning batch. */
-  maxRequests?: number;
-}
-
-export interface ExpandedValidationPlanItem {
-  rank: number;
-  sourceRank: number;
-  row: DesignSweepRow;
-  selectionScore: number;
-  rationale: string;
-  variant: "seed" | "neighbor" | "fill";
-  offset: number;
-  plannedSamples: number;
-}
-
-function designCsvCell(value: unknown) {
+function csvCell(value: unknown) {
   const text = String(value ?? "");
   return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
-function designRowKey(row: Pick<DesignSweepRow, "axis" | "x">) {
-  return `${row.axis}:${roundFactor(Number(row.x) || 1)}`;
+function validationRationale(row: DesignSweepRow, selectionScore: number) {
+  const reasons: string[] = [];
+  if (selectionScore >= 0.7) reasons.push("high selection score");
+  if (row.uncertaintyPct >= 20) reasons.push("high uncertainty");
+  if (row.outOfDomain || row.predictionConfidence < 0.8)
+    reasons.push("low domain confidence");
+  if (row.isKnee) reasons.push("near marginal knee");
+  if (row.sramOverflowRatio > 0) reasons.push("SRAM pressure");
+  if (
+    row.riskAdjustedRecommendationScore >
+    0.75 * Math.max(1e-9, row.recommendationScore)
+  )
+    reasons.push("stable risk-adjusted value");
+  if (row.meanUtilization < 0.55) reasons.push("low utilization regime");
+  return reasons.length ? reasons.join("; ") : "diversity coverage";
 }
 
-function nearestRowIndex(rows: DesignSweepRow[], target: DesignSweepRow) {
-  const key = designRowKey(target);
-  const exact = rows.findIndex((row) => designRowKey(row) === key);
-  if (exact >= 0) return exact;
-  let best = 0;
-  let bestDistance = Number.POSITIVE_INFINITY;
-  rows.forEach((row, index) => {
-    const d = Math.abs(Math.log(Math.max(1e-12, row.x)) - Math.log(Math.max(1e-12, target.x)));
-    if (d < bestDistance) {
-      best = index;
-      bestDistance = d;
-    }
-  });
-  return best;
-}
-
-function offsetOrder(radius: number) {
-  const out = [0];
-  for (let i = 1; i <= radius; i++) {
-    out.push(-i, i);
-  }
-  return out;
-}
-
-/**
- * Expands the top active-learning recommendation points into an executable
- * neighborhood plan.  The first pass keeps the user's mental model simple:
- * each recommended point is tested together with the nearest points immediately
- * before/after it on the same sweep axis.  If that neighborhood is not enough
- * to satisfy the estimator's 40-sample training floor, the remaining slots are
- * filled with the globally most useful validation rows.
- */
-export function expandedValidationPlanRows(
+export function validationPlanRows(
   rows: DesignSweepRow[],
-  options: ExpandedValidationPlanOptions = {},
-): ExpandedValidationPlanItem[] {
-  const cleanRows = rows.filter((row) => Number.isFinite(row.x) && row.x > 0);
-  if (!cleanRows.length) return [];
-
-  const seedLimit = Math.max(1, Math.min(Math.floor(options.seedLimit ?? 5), 25));
-  const minSamples = Math.max(1, Math.floor(options.minSamples ?? 40));
-  const samplesPerRequest = Math.max(1, Math.floor(options.samplesPerRequest ?? 1));
-  const oversampleFactor = Math.max(1, Number(options.oversampleFactor ?? 1.2));
-  const neighborhoodRadius = Math.max(1, Math.min(Math.floor(options.neighborhoodRadius ?? 4), 20));
-  const maxRequests = Math.max(1, Math.floor(options.maxRequests ?? 128));
-  const targetRequests = Math.min(
-    maxRequests,
-    Math.max(seedLimit, Math.ceil((minSamples / samplesPerRequest) * oversampleFactor)),
-  );
-
-  const seeds = selectValidationPlanRows(cleanRows, seedLimit);
-  const seedMeta = new Map(
-    seeds.map((item) => [designRowKey(item.row), item] as const),
-  );
-  const byAxis = new Map<string, DesignSweepRow[]>();
-  for (const row of cleanRows) {
-    const current = byAxis.get(row.axis) ?? [];
-    current.push(row);
-    byAxis.set(row.axis, current);
-  }
-  for (const axisRows of byAxis.values()) axisRows.sort((a, b) => a.x - b.x);
-
-  const selected = new Map<string, ExpandedValidationPlanItem>();
-  const add = (
-    row: DesignSweepRow | undefined,
-    sourceRank: number,
-    variant: ExpandedValidationPlanItem["variant"],
-    offset: number,
-    selectionScore?: number,
-    rationale?: string,
-  ) => {
-    if (!row || selected.size >= targetRequests) return;
-    const key = designRowKey(row);
-    if (selected.has(key)) return;
-    const seed = seedMeta.get(key);
-    selected.set(key, {
-      rank: selected.size + 1,
-      sourceRank,
+  limit = 5,
+): ValidationPlanRow[] {
+  const selected = validationDesignRows(rows, limit);
+  const scoreMap = validationSelectionScores(rows);
+  return selected.map((row, index) => {
+    const selectionScore = validationSelectionScore(row, scoreMap);
+    return {
+      rank: index + 1,
       row,
-      selectionScore: selectionScore ?? seed?.selectionScore ?? row.validationPriority ?? row.recommendationScore ?? 0,
-      rationale: rationale ?? seed?.rationale ?? (variant === "neighbor" ? "neighbor around recommended candidate" : "priority fill to reach training minimum"),
-      variant,
-      offset,
-      plannedSamples: samplesPerRequest,
-    });
-  };
-
-  const offsets = offsetOrder(neighborhoodRadius);
-  for (const seed of seeds) {
-    const axisRows = byAxis.get(seed.row.axis) ?? [];
-    const center = nearestRowIndex(axisRows, seed.row);
-    for (const offset of offsets) {
-      const row = axisRows[center + offset];
-      add(
-        row,
-        seed.rank,
-        offset === 0 ? "seed" : "neighbor",
-        offset,
-        offset === 0 ? seed.selectionScore : seed.selectionScore * Math.max(0.35, 1 - Math.abs(offset) * 0.08),
-        offset === 0
-          ? seed.rationale
-          : `neighbor ${offset > 0 ? "+" : ""}${offset} around rank ${seed.rank}: ${seed.rationale}`,
-      );
-    }
-  }
-
-  // If multiple top recommendations are on the same axis, their neighborhoods can
-  // overlap. Fill the remaining slots with the next highest-priority validation
-  // rows so a one-click run still reaches the training sample floor.
-  const rankedFill = validationDesignRows(cleanRows, cleanRows.length);
-  for (const row of rankedFill) {
-    add(row, seeds.length + 1, "fill", 0);
-  }
-
-  if (selected.size < targetRequests) {
-    const fallback = [...cleanRows].sort(compareDesignRows);
-    for (const row of fallback) add(row, seeds.length + 1, "fill", 0);
-  }
-
-  return [...selected.values()].map((item, index) => ({ ...item, rank: index + 1 }));
+      selectionScore,
+      rationale: validationRationale(row, selectionScore),
+    };
+  });
 }
 
-export function exportExpandedValidationPlanJson(items: ExpandedValidationPlanItem[]) {
-  return `${JSON.stringify({
-    generatedBy: "tileforge-design-space-expanded-active-learning",
-    queuedCandidates: items.map((item) => ({
-      rank: item.rank,
-      sourceRank: item.sourceRank,
-      variant: item.variant,
-      offset: item.offset,
-      axis: item.row.axis,
-      label: item.row.label,
-      factor: roundFactor(item.row.x),
-      plannedSamples: item.plannedSamples,
-      selectionScore: Number(item.selectionScore.toFixed(6)),
-      rationale: item.rationale,
-      validationPriority: Number(item.row.validationPriority.toFixed(6)),
-      uncertaintyPct: Number(item.row.uncertaintyPct.toFixed(4)),
-      predictionConfidence: Number(item.row.predictionConfidence.toFixed(6)),
-      outOfDomain: item.row.outOfDomain,
-      isKnee: item.row.isKnee,
-      speedup: Number(item.row.speedup.toFixed(6)),
-      throughput: Number(item.row.throughput.toFixed(6)),
-      totalCycles: Math.round(item.row.totalCycles),
-    })),
-  }, null, 2)}\n`;
+export function exportValidationPlanJson(rows: DesignSweepRow[], limit = 5) {
+  const plan = validationPlanRows(rows, limit).map((item) => ({
+    rank: item.rank,
+    axis: item.row.axis,
+    label: item.row.label,
+    factor: roundFactor(item.row.x),
+    selectionScore: Number(item.selectionScore.toFixed(6)),
+    rationale: item.rationale,
+    validationPriority: Number(item.row.validationPriority.toFixed(6)),
+    uncertaintyPct: Number(item.row.uncertaintyPct.toFixed(4)),
+    predictionConfidence: Number(item.row.predictionConfidence.toFixed(6)),
+    outOfDomain: item.row.outOfDomain,
+    isKnee: item.row.isKnee,
+    riskAdjustedSpeedup: Number(item.row.riskAdjustedSpeedup.toFixed(6)),
+    riskAdjustedRecommendationScore: Number(
+      item.row.riskAdjustedRecommendationScore.toFixed(6),
+    ),
+    speedup: Number(item.row.speedup.toFixed(6)),
+    throughput: Number(item.row.throughput.toFixed(6)),
+    totalCycles: Math.round(item.row.totalCycles),
+    workScale: Number(item.row.workScale.toFixed(6)),
+    cost: Number(item.row.cost.toFixed(6)),
+    sramOverflowRatio: Number(item.row.sramOverflowRatio.toFixed(6)),
+    meanUtilization: Number(item.row.meanUtilization.toFixed(6)),
+  }));
+  return `${JSON.stringify({ generatedBy: "tileforge-design-space", candidates: plan }, null, 2)}\n`;
 }
 
-export function exportExpandedValidationPlanCsv(items: ExpandedValidationPlanItem[]) {
+export function exportValidationPlanCsv(rows: DesignSweepRow[], limit = 5) {
+  const plan = validationPlanRows(rows, limit);
   const header = [
     "rank",
-    "sourceRank",
-    "variant",
-    "offset",
     "axis",
     "label",
     "factor",
-    "plannedSamples",
     "selectionScore",
     "rationale",
     "validationPriority",
@@ -726,37 +878,48 @@ export function exportExpandedValidationPlanCsv(items: ExpandedValidationPlanIte
     "predictionConfidence",
     "outOfDomain",
     "isKnee",
+    "riskAdjustedSpeedup",
+    "riskAdjustedRecommendationScore",
     "speedup",
     "throughput",
     "totalCycles",
+    "workScale",
+    "cost",
+    "sramOverflowRatio",
+    "meanUtilization",
   ];
   const lines = [header.join(",")];
-  for (const item of items) {
+  plan.forEach((item) => {
     const row = item.row;
-    lines.push([
-      item.rank,
-      item.sourceRank,
-      item.variant,
-      item.offset,
-      row.axis,
-      row.label,
-      roundFactor(row.x),
-      item.plannedSamples,
-      item.selectionScore.toFixed(6),
-      item.rationale,
-      row.validationPriority.toFixed(6),
-      row.uncertaintyPct.toFixed(4),
-      row.predictionConfidence.toFixed(6),
-      row.outOfDomain ? "true" : "false",
-      row.isKnee ? "true" : "false",
-      row.speedup.toFixed(6),
-      row.throughput.toFixed(6),
-      Math.round(row.totalCycles),
-    ].map(designCsvCell).join(","));
-  }
+    lines.push(
+      [
+        item.rank,
+        row.axis,
+        row.label,
+        roundFactor(row.x),
+        item.selectionScore.toFixed(6),
+        item.rationale,
+        row.validationPriority.toFixed(6),
+        row.uncertaintyPct.toFixed(4),
+        row.predictionConfidence.toFixed(6),
+        row.outOfDomain ? "true" : "false",
+        row.isKnee ? "true" : "false",
+        row.riskAdjustedSpeedup.toFixed(6),
+        row.riskAdjustedRecommendationScore.toFixed(6),
+        row.speedup.toFixed(6),
+        row.throughput.toFixed(6),
+        Math.round(row.totalCycles),
+        row.workScale.toFixed(6),
+        row.cost.toFixed(6),
+        row.sramOverflowRatio.toFixed(6),
+        row.meanUtilization.toFixed(6),
+      ]
+        .map(csvCell)
+        .join(","),
+    );
+  });
   return `${lines.join("\n")}\n`;
 }
-
 
 export function buildDesignSpaceSvg(
   rows: DesignSweepRow[],

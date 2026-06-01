@@ -5,8 +5,15 @@ import { workspacePaths } from "./workspace";
 import { toolAvailability } from "./doctor";
 import { quotaConfig } from "@/lib/quotas";
 import { maxParallelJobs } from "./jobStore";
+import { countJobsByStatusSqlite, countJobsSqlite, sqlitePrimary } from "./sqliteStore";
+
+type SizeCache = { at: number; value: number };
+const sizeCache = new Map<string, SizeCache>();
+const statusCacheMs = Math.max(1_000, Number(process.env.TILEFORGE_STATUS_SIZE_CACHE_MS ?? 30_000));
 
 function dirSizeBytes(dir: string): number {
+  const cached = sizeCache.get(dir);
+  if (cached && Date.now() - cached.at < statusCacheMs) return cached.value;
   if (!fs.existsSync(dir)) return 0;
   let total = 0;
   const stack = [dir];
@@ -20,11 +27,25 @@ function dirSizeBytes(dir: string): number {
       } catch { /* ignore transient files */ }
     }
   }
+  sizeCache.set(dir, { at: Date.now(), value: total });
   return total;
 }
 
 function countJobs(root: string) {
   const out = { total: 0, queued: 0, running: 0, failed: 0, succeeded: 0, cancelled: 0 };
+  if (sqlitePrimary()) {
+    const counts = countJobsByStatusSqlite();
+    const total = countJobsSqlite();
+    if (counts && total !== undefined) {
+      out.total = total;
+      out.queued = counts.queued ?? 0;
+      out.running = counts.running ?? 0;
+      out.failed = counts.failed ?? 0;
+      out.cancelled = counts.cancelled ?? 0;
+      out.succeeded = (counts.succeeded ?? 0) + (counts.succeeded_with_warnings ?? 0);
+      return out;
+    }
+  }
   if (!fs.existsSync(root)) return out;
   for (const name of fs.readdirSync(root)) {
     const jobPath = path.join(root, name, "job.json");

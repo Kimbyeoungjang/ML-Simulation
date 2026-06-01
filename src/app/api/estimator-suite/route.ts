@@ -5,7 +5,6 @@ import { stableId } from "@/lib/determinism";
 import { buildEstimatorSuiteArtifacts, designEstimatorSuiteCsv, normalizeSuiteSplitKinds, parseEstimatorSamplesCsv } from "@/lib/estimatorSuiteArtifacts";
 import { buildEstimatorDataset, estimatorDatasetSummaryMarkdown } from "@/lib/estimatorSuiteDataset";
 import { buildEstimatorSamplingPlan, requestFromPlanRow } from "@/lib/estimatorSamplingPlan";
-import { buildDesignSpaceRows, expandedValidationPlanRows, exportExpandedValidationPlanCsv, exportExpandedValidationPlanJson, exportValidationPlanCsv, exportValidationPlanJson, requestForDesignSweepRow, validationPlanRows } from "@/lib/designSpace";
 import { collectEstimatorSamplesFromJobs, mergeCollectedSamplesIntoCsv } from "@/lib/estimatorSuiteJobSamples";
 import { createJob, createJobsBulk, listJobs, saveJob } from "@/server/jobStore";
 import { trainEstimatorSuite } from "@/lib/estimatorSuite";
@@ -25,19 +24,10 @@ async function writeRunArtifacts(runId: string, files: Record<string, string>) {
   const artifacts = [] as Array<{ name: string; path: string }>;
   for (const [name, content] of Object.entries(files)) {
     const file = path.join(dir, name);
-    await mkdir(path.dirname(file), { recursive: true });
     await writeFile(file, content, "utf8");
     artifacts.push({ name, path: file });
   }
   return { dir, artifacts };
-}
-
-function bool(body: any, name: string, fallback: boolean) {
-  const v = body?.options?.[name] ?? body?.[name];
-  if (v === undefined || v === null) return fallback;
-  if (typeof v === "boolean") return v;
-  if (typeof v === "number") return v !== 0;
-  return !["0", "false", "no", "off"].includes(String(v).trim().toLowerCase());
 }
 
 export async function GET() {
@@ -78,150 +68,6 @@ export async function POST(req: Request) {
     }
 
 
-
-    if (action === "design-active-learning") {
-      const request = parseSearchRequest(body.request);
-      const limit = Math.max(1, Math.min(num(body, "limit", 5), 25));
-      const minSamples = Math.max(40, Math.floor(num(body, "minSamples", num(body, "min-samples", 40))));
-      const samplesPerRequest = Math.max(1, Math.floor(num(body, "samplesPerRequest", num(body, "samples-per-request", Math.max(1, request.shapes.length)))));
-      const activeModel = await readActiveEstimatorSuiteModel();
-      const designRows = buildDesignSpaceRows({ request }, activeModel ? { model: activeModel } : undefined);
-      const seedPlan = validationPlanRows(designRows, limit);
-      const expandedPlan = expandedValidationPlanRows(designRows, {
-        seedLimit: limit,
-        minSamples,
-        samplesPerRequest,
-        oversampleFactor: Math.max(1, num(body, "oversampleFactor", num(body, "oversample-factor", 1.2))),
-        neighborhoodRadius: Math.max(1, Math.floor(num(body, "neighborhoodRadius", num(body, "neighborhood-radius", 4)))),
-        maxRequests: Math.max(1, Math.floor(num(body, "maxRequests", num(body, "max-requests", 128)))),
-      });
-      if (!expandedPlan.length) {
-        return NextResponse.json({ ok: false, error: "No design-space validation candidates were available." }, { status: 400 });
-      }
-
-      const runNamePrefix = String(body.runNamePrefix ?? "active_learning");
-      const validationRequests = expandedPlan.map((item) =>
-        requestForDesignSweepRow(request, item.row, {
-          rank: item.rank,
-          runNamePrefix,
-        }),
-      );
-      const validationJobs = await createJobsBulk(
-        validationRequests.map((candidateRequest, index) => ({
-          kind: "scalesim" as const,
-          request: candidateRequest,
-          name: `${runNamePrefix}_${String(index + 1).padStart(2, "0")}_${expandedPlan[index].row.axis}_${expandedPlan[index].row.label}`
-        })),
-      );
-
-      const trainJob = await createJob(
-        "estimator-suite-train",
-        request,
-        String(body.name ?? `${runNamePrefix}_train_after_expanded_validation`),
-      );
-      const trainDir = jobDir(trainJob.id);
-      const planCsv = exportValidationPlanCsv(designRows, limit);
-      const planJson = exportValidationPlanJson(designRows, limit);
-      const expandedPlanCsv = exportExpandedValidationPlanCsv(expandedPlan);
-      const expandedPlanJson = exportExpandedValidationPlanJson(expandedPlan);
-      const plannedSamples = expandedPlan.reduce((sum, item) => sum + item.plannedSamples, 0);
-      const jobMap = JSON.stringify({
-        generatedAt: new Date().toISOString(),
-        minSamples,
-        samplesPerRequest,
-        plannedSamples,
-        seedCandidates: seedPlan.map((item) => ({
-          rank: item.rank,
-          axis: item.row.axis,
-          label: item.row.label,
-          factor: item.row.x,
-          rationale: item.rationale,
-        })),
-        validationJobs: validationJobs.map((job, index) => ({
-          rank: expandedPlan[index].rank,
-          sourceRank: expandedPlan[index].sourceRank,
-          variant: expandedPlan[index].variant,
-          offset: expandedPlan[index].offset,
-          jobId: job.id,
-          name: job.name,
-          axis: expandedPlan[index].row.axis,
-          label: expandedPlan[index].row.label,
-          factor: expandedPlan[index].row.x,
-          request: validationRequests[index],
-        })),
-        trainingJob: { id: trainJob.id, name: trainJob.name },
-      }, null, 2);
-      await writeFile(path.join(trainDir, "active-learning-validation-plan.csv"), planCsv, "utf8");
-      await writeFile(path.join(trainDir, "active-learning-validation-plan.json"), planJson, "utf8");
-      await writeFile(path.join(trainDir, "active-learning-expanded-validation-plan.csv"), expandedPlanCsv, "utf8");
-      await writeFile(path.join(trainDir, "active-learning-expanded-validation-plan.json"), expandedPlanJson, "utf8");
-      await writeFile(path.join(trainDir, "active-learning-job-map.json"), jobMap, "utf8");
-      trainJob.estimatorSuite = {
-        mode: "dataset",
-        options: {
-          ...(body.options ?? {}),
-          targetScope: body.options?.targetScope ?? body.targetScope ?? "full-layer",
-          minSamplesPerScope: body.options?.minSamplesPerScope ?? body.minSamplesPerScope ?? minSamples,
-        },
-        dedupe: body.dedupe !== false,
-        activate: body.activate !== false,
-        autoCollect: {
-          jobIds: validationJobs.map((job) => job.id),
-          includeExistingCompletedJobs: bool(body, "includeExistingCompletedJobs", true),
-          maxWaitMs: Math.max(60_000, num(body, "maxWaitMs", num(body, "max-wait-ms", 60 * 60 * 1000))),
-        },
-      };
-      trainJob.artifacts = [
-        ...new Set([
-          ...(trainJob.artifacts ?? []),
-          "active-learning-validation-plan.csv",
-          "active-learning-validation-plan.json",
-          "active-learning-expanded-validation-plan.csv",
-          "active-learning-expanded-validation-plan.json",
-          "active-learning-job-map.json",
-        ]),
-      ];
-      await saveJob(trainJob);
-
-      const { dir, artifacts } = await writeRunArtifacts(runId, {
-        "active-learning-validation-plan.csv": planCsv,
-        "active-learning-validation-plan.json": planJson,
-        "active-learning-expanded-validation-plan.csv": expandedPlanCsv,
-        "active-learning-expanded-validation-plan.json": expandedPlanJson,
-        "active-learning-job-map.json": jobMap,
-      });
-      return NextResponse.json({
-        ok: true,
-        action,
-        runId,
-        dir,
-        artifacts,
-        minSamples,
-        plannedSamples,
-        seedCandidates: seedPlan.map((item) => ({
-          rank: item.rank,
-          axis: item.row.axis,
-          label: item.row.label,
-          factor: item.row.x,
-          selectionScore: item.selectionScore,
-          rationale: item.rationale,
-        })),
-        candidates: expandedPlan.map((item) => ({
-          rank: item.rank,
-          sourceRank: item.sourceRank,
-          variant: item.variant,
-          offset: item.offset,
-          axis: item.row.axis,
-          label: item.row.label,
-          factor: item.row.x,
-          selectionScore: item.selectionScore,
-          rationale: item.rationale,
-        })),
-        validationJobs: validationJobs.map((job) => ({ id: job.id, name: job.name, status: job.status })),
-        trainingJob: { id: trainJob.id, name: trainJob.name, status: trainJob.status },
-        message: `추천 후보 주변 범위까지 확장해 SCALE-Sim job ${validationJobs.length}개(예상 sample ${plannedSamples}개)를 등록했고, 최소 ${minSamples}개 유효 sample을 목표로 자동 수집/학습합니다.`,
-      });
-    }
 
     if (action === "suite-job" || action === "dataset-job" || action === "dataset-and-train") {
       const request = parseSearchRequest(body.request);

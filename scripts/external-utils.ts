@@ -40,39 +40,6 @@ export function hasFlag(opts: CliOptions, key: string): boolean {
   return opts[key] === true || opts[key] === "true" || opts[key] === "1";
 }
 
-
-export async function missingArtifactInputs(root: string, requiredFiles: string[]): Promise<string[]> {
-  const missing: string[] = [];
-  for (const name of requiredFiles) {
-    try {
-      const info = await stat(path.join(root, name));
-      if (!info.isFile()) missing.push(name);
-    } catch {
-      missing.push(name);
-    }
-  }
-  return missing;
-}
-
-export async function ensureArtifactInputs(
-  artifactDir: string,
-  requiredFiles: string[],
-  options: { demoMode?: "smoke" | "default"; forceDemo?: boolean; allowDemoIfMissing?: boolean } = {},
-): Promise<{ createdDemo: boolean; missingBefore: string[] }> {
-  const missingBefore = await missingArtifactInputs(artifactDir, requiredFiles);
-  if (options.forceDemo || (missingBefore.length > 0 && options.allowDemoIfMissing !== false)) {
-    // Only synthesize demo inputs when required files are missing, or when the
-    // caller explicitly forces demo generation. Existing job artifacts must not
-    // be overwritten just because a validation command was run against them.
-    await makeDemoArtifacts(artifactDir, options.demoMode ?? "default");
-    return { createdDemo: true, missingBefore };
-  }
-  if (missingBefore.length > 0) {
-    throw new Error(`artifact input files are missing under ${artifactDir}: ${missingBefore.join(", ")}`);
-  }
-  return { createdDemo: false, missingBefore };
-}
-
 export async function makeDemoArtifacts(outDir: string, mode: "smoke" | "default" = "default"): Promise<SearchResponse> {
   await mkdir(outDir, { recursive: true });
   const smokeHardware: HardwareConfig = { ...defaultHardware, name: "SCALE-Sim smoke 8x8", arrayRows: 8, arrayCols: 8, sramKB: 768 };

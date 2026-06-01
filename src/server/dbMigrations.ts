@@ -50,6 +50,8 @@ CREATE TABLE IF NOT EXISTS cache_entries (
   size_bytes INTEGER DEFAULT 0,
   hit_count INTEGER DEFAULT 0
 );
+CREATE INDEX IF NOT EXISTS idx_jobs_status_created ON jobs(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_jobs_status_updated ON jobs(status, updated_at);
 `
   },
   {
@@ -74,6 +76,14 @@ CREATE TABLE IF NOT EXISTS validation_runs (
   metrics_json TEXT NOT NULL,
   passed INTEGER NOT NULL
 );
+`
+  },
+  {
+    version: 3,
+    name: "job-status-indexes",
+    sql: `
+CREATE INDEX IF NOT EXISTS idx_jobs_status_created ON jobs(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_jobs_status_updated ON jobs(status, updated_at);
 `
   }
 ];

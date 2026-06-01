@@ -17,11 +17,6 @@ import {
   type EstimatorSuiteModel,
   type TrainEstimatorSuiteOptions,
 } from "./estimatorSuite";
-import {
-  assessEstimatorSuiteReadiness,
-  estimatorSuiteReadinessMarkdown,
-  type EstimatorSuiteReadinessReport,
-} from "./estimatorSuiteReadiness";
 
 export type EstimatorTargetScope = "full-layer" | "tile-policy";
 
@@ -36,8 +31,6 @@ export interface ScopedEstimatorDataset {
   rows: Record<string, string>[];
   samples: LearnedEstimatorSample[];
   summary: EstimatorDatasetSummary;
-  readiness: EstimatorSuiteReadinessReport;
-  readinessMarkdown: string;
   reportMarkdown: string;
 }
 
@@ -46,8 +39,6 @@ export interface ScopedEstimatorDatasetsResult {
   mergedRows: Record<string, string>[];
   mergedSamples: LearnedEstimatorSample[];
   mergedSummary: EstimatorDatasetSummary;
-  mergedReadiness: EstimatorSuiteReadinessReport;
-  mergedReadinessMarkdown: string;
   mergedReportMarkdown: string;
   scopes: Record<EstimatorTargetScope, ScopedEstimatorDataset>;
   warnings: string[];
@@ -60,8 +51,6 @@ export interface ScopedEstimatorTrainingResult {
   reason?: string;
   model?: EstimatorSuiteModel;
   artifacts?: EstimatorSuiteArtifactBundle;
-  readiness?: EstimatorSuiteReadinessReport;
-  readinessMarkdown?: string;
   reportMarkdown: string;
 }
 
@@ -106,42 +95,22 @@ function datasetForScope(scope: EstimatorTargetScope, rows: Record<string, strin
   const scopedRows = rows.filter((row) => sampleScope(row) === scope);
   if (!scopedRows.length) {
     const summary = emptySummary(scope);
-    const readiness = assessEstimatorSuiteReadiness([], {
-      scope,
-      minSamples: 40,
-      recommendedSamples: 160,
-      requireExplicitScope: true,
-      requireMultipleArrays: scope === "full-layer",
-      requireMultipleDataflows: false,
-    });
     return {
       scope,
       csv: "",
       rows: [],
       samples: [],
       summary,
-      readiness,
-      readinessMarkdown: estimatorSuiteReadinessMarkdown(readiness),
       reportMarkdown: estimatorDatasetSummaryMarkdown(summary),
     };
   }
   const dataset = buildEstimatorDataset(buildScopedInput(scope, scopedRows), { dedupe: false });
-  const readiness = assessEstimatorSuiteReadiness(dataset.samples, {
-    scope,
-    minSamples: 40,
-    recommendedSamples: scope === "full-layer" ? 180 : 140,
-    requireExplicitScope: true,
-    requireMultipleArrays: scope === "full-layer",
-    requireMultipleDataflows: false,
-  });
   return {
     scope,
     csv: dataset.csv,
     rows: dataset.rows,
     samples: dataset.samples,
     summary: dataset.summary,
-    readiness,
-    readinessMarkdown: estimatorSuiteReadinessMarkdown(readiness),
     reportMarkdown: estimatorDatasetSummaryMarkdown(dataset.summary),
   };
 }
@@ -158,24 +127,14 @@ export function buildScopedEstimatorDatasets(
     ...merged.summary.warnings,
     ...ESTIMATOR_TARGET_SCOPES.flatMap((scope) => scopes[scope].summary.warnings.map((w) => `${scope}: ${w}`)),
   ];
-  const mergedReadiness = assessEstimatorSuiteReadiness(merged.samples, {
-    scope: "merged",
-    minSamples: 40,
-    recommendedSamples: 220,
-    requireExplicitScope: true,
-    requireMultipleArrays: true,
-    requireMultipleDataflows: true,
-  });
   return {
     mergedCsv: merged.csv,
     mergedRows: merged.rows,
     mergedSamples: merged.samples,
     mergedSummary: merged.summary,
-    mergedReadiness,
-    mergedReadinessMarkdown: estimatorSuiteReadinessMarkdown(mergedReadiness),
     mergedReportMarkdown: estimatorDatasetSummaryMarkdown(merged.summary),
     scopes,
-    warnings: [...warnings, ...mergedReadiness.warnings],
+    warnings,
   };
 }
 
@@ -202,31 +161,18 @@ function trainOneScope(
       samples: dataset.samples.length,
       status: "skipped",
       reason: `Need at least ${minSamples} ${dataset.scope} samples; got ${dataset.samples.length}`,
-      readiness: dataset.readiness,
-      readinessMarkdown: dataset.readinessMarkdown,
       reportMarkdown,
     };
   }
 
   const model = trainEstimatorSuite(dataset.samples, options);
   const artifacts = buildEstimatorSuiteArtifacts(model, dataset.samples);
-  const readiness = assessEstimatorSuiteReadiness(dataset.samples, {
-    scope: dataset.scope,
-    minSamples,
-    recommendedSamples: dataset.scope === "full-layer" ? 180 : 140,
-    requireExplicitScope: true,
-    requireMultipleArrays: dataset.scope === "full-layer",
-    requireMultipleDataflows: false,
-    model,
-  });
   return {
     scope: dataset.scope,
     samples: dataset.samples.length,
     status: "trained",
     model,
     artifacts,
-    readiness,
-    readinessMarkdown: estimatorSuiteReadinessMarkdown(readiness),
     reportMarkdown: artifacts.reportMarkdown,
   };
 }
@@ -243,7 +189,7 @@ function combinedReport(
     const ds = datasets.scopes[scope];
     const tr = training[scope];
     const mape = firstMape(tr);
-    return `| ${scope} | ${ds.summary.validSamples.toLocaleString()} | ${ds.readiness.level} | ${tr.status} | ${mape === undefined ? "-" : `${mape.toFixed(2)}%`} | ${tr.reason ?? ""} |`;
+    return `| ${scope} | ${ds.summary.validSamples.toLocaleString()} | ${tr.status} | ${mape === undefined ? "-" : `${mape.toFixed(2)}%`} | ${tr.reason ?? ""} |`;
   });
   return [
     "# Scoped Estimator Suite Pipeline Report",
@@ -259,14 +205,13 @@ function combinedReport(
     "",
     "## 결과 요약",
     "",
-    "| Scope | Samples | Readiness | Status | First split ensemble MAPE | Note |",
-    "|---|---:|---|---|---:|---|",
+    "| Scope | Samples | Status | First split ensemble MAPE | Note |",
+    "|---|---:|---|---:|---|",
     ...rows,
     "",
     "## 전체 병합 데이터셋",
     "",
     `- Merged samples: ${datasets.mergedSummary.validSamples.toLocaleString()}`,
-    `- Merged readiness: ${datasets.mergedReadiness.level} (${(datasets.mergedReadiness.score * 100).toFixed(1)}%)`,
     `- Target scopes: ${Object.entries(datasets.mergedSummary.targetScopes).map(([k, v]) => `${k}=${v}`).join(", ") || "none"}`,
     "",
     datasets.warnings.length ? ["## 경고", "", ...datasets.warnings.map((w) => `- ${w}`)].join("\n") : "## 경고\n\n없음",
@@ -285,22 +230,14 @@ export function buildScopedEstimatorPipeline(
   const filesOut: Record<string, string> = {
     "datasets/merged/samples.csv": datasets.mergedCsv,
     "datasets/merged/report.md": datasets.mergedReportMarkdown,
-    "datasets/merged/readiness.md": datasets.mergedReadinessMarkdown,
-    "datasets/merged/readiness.json": JSON.stringify(datasets.mergedReadiness, null, 2),
   };
   for (const scope of ESTIMATOR_TARGET_SCOPES) {
     const slug = scopeSlug(scope);
     const dataset = datasets.scopes[scope];
     filesOut[`datasets/${slug}/samples.csv`] = dataset.csv;
     filesOut[`datasets/${slug}/report.md`] = dataset.reportMarkdown;
-    filesOut[`datasets/${slug}/readiness.md`] = dataset.readinessMarkdown;
-    filesOut[`datasets/${slug}/readiness.json`] = JSON.stringify(dataset.readiness, null, 2);
     const trained = training[scope];
     filesOut[`estimator-suite/${slug}/report.md`] = trained.reportMarkdown;
-    if (trained.readiness) {
-      filesOut[`estimator-suite/${slug}/readiness.md`] = trained.readinessMarkdown ?? estimatorSuiteReadinessMarkdown(trained.readiness);
-      filesOut[`estimator-suite/${slug}/readiness.json`] = JSON.stringify(trained.readiness, null, 2);
-    }
     if (trained.artifacts) {
       filesOut[`estimator-suite/${slug}/model.json`] = trained.artifacts.modelJson;
       filesOut[`estimator-suite/${slug}/tree-residual-model.json`] = trained.artifacts.treeModelJson;

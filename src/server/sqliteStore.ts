@@ -60,6 +60,18 @@ export function listJobsSqlite(): JobRecord[] | undefined {
   return rows.map((r: any) => JSON.parse(r.json));
 }
 
+export function listJobsByStatusSqlite(status: string, limit = 1000): JobRecord[] | undefined {
+  const d = getSqliteDb();
+  if (!d) return undefined;
+  const safeLimit = Math.max(1, Math.min(Math.floor(limit), 10000));
+  const rows = d.prepare(`SELECT json FROM jobs WHERE status=? ORDER BY updated_at ASC LIMIT ?`).all(status, safeLimit);
+  return rows.map((r: any) => JSON.parse(r.json));
+}
+
+export function updateJobStatusSqliteFromJson(job: JobRecord) {
+  saveJobSqlite(job);
+}
+
 export function countJobsSqlite(status?: string): number | undefined {
   const d = getSqliteDb();
   if (!d) return undefined;

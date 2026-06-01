@@ -231,7 +231,7 @@ export async function collectEstimatorSamplesFromJobs(jobs: JobRecord[], jobRoot
   const rows: CollectedEstimatorSampleRow[] = [];
   const skipped: CollectEstimatorJobSamplesResult["skipped"] = [];
   for (const job of jobs) {
-    if (job.kind !== "full-pipeline" && job.kind !== "scalesim") continue;
+    if (job.kind !== "full-pipeline") continue;
     if (job.status !== "succeeded" && job.status !== "succeeded_with_warnings") {
       skipped.push({ jobId: job.id, name: job.name, reason: `status=${job.status}` });
       continue;
