@@ -3,7 +3,7 @@ import { readProjectDotEnv } from "./env";
 import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type { JobKind, JobListItem, JobRecord, JobStatus, JobStage } from "@/types/job";
+import type { JobKind, JobRecord, JobStatus, JobStage } from "@/types/job";
 import type { SearchRequest } from "@/types/domain";
 import { hashObject } from "@/lib/hash";
 import { ensureJobRoot, getJobRoot, jobDir } from "./workspace";
@@ -385,14 +385,6 @@ function sanitizeJobForDisplay(job: JobRecord): JobRecord {
   };
 }
 
-function sanitizeJobListItemForDisplay(job: JobListItem): JobListItem {
-  return {
-    ...job,
-    error: job.error ? sanitizeErrorForDisplay(job.error) : job.error,
-    artifacts: Array.isArray(job.artifacts) ? job.artifacts.slice(0, 30) : [],
-  };
-}
-
 export interface ListJobsOptions { limit?: number; cursor?: string; status?: JobStatus; since?: string; dashboard?: boolean; page?: number; }
 
 function jobCounts(jobs: JobRecord[]): Record<string, number> {
@@ -424,16 +416,16 @@ export function dashboardJobs(all: JobRecord[], limit: number): JobRecord[] {
   return [...picked.values()];
 }
 
-export async function listJobsPaged(options: ListJobsOptions = {}): Promise<{ jobs: Array<JobRecord | JobListItem>; nextCursor?: string; total: number; counts: Record<string, number>; view?: string; page?: number; pageSize?: number; totalPages?: number; summary?: boolean }> {
-  const limit = Math.max(1, Math.min(options.limit ?? 50, 500));
+export async function listJobsPaged(options: ListJobsOptions = {}): Promise<{ jobs: JobRecord[]; nextCursor?: string; total: number; counts: Record<string, number>; view?: string; page?: number; pageSize?: number; totalPages?: number }> {
+  const limit = Math.max(1, Math.min(options.limit ?? 50, 1000));
   const page = Math.max(1, Math.floor(options.page ?? 1));
   if (options.dashboard && !options.cursor && !options.status && !options.since && sqlitePrimary()) {
     const dash = listDashboardJobsSqlite(limit);
-    if (dash) return { jobs: dash.jobs.map(sanitizeJobListItemForDisplay), total: dash.total, counts: dash.counts, view: "dashboard", page: 1, pageSize: limit, totalPages: Math.max(1, Math.ceil(dash.total / limit)), summary: true };
+    if (dash) return { jobs: dash.jobs.map(sanitizeJobForDisplay), total: dash.total, counts: dash.counts, view: "dashboard", page: 1, pageSize: limit, totalPages: Math.max(1, Math.ceil(dash.total / limit)) };
   }
   if (!options.dashboard && !options.cursor && !options.since && sqlitePrimary()) {
     const paged = listJobsPageSqlite(limit, page, options.status);
-    if (paged) return { jobs: paged.jobs.map(sanitizeJobListItemForDisplay), total: paged.total, counts: paged.counts, page, pageSize: limit, totalPages: Math.max(1, Math.ceil(paged.total / limit)), summary: true };
+    if (paged) return { jobs: paged.jobs.map(sanitizeJobForDisplay), total: paged.total, counts: paged.counts, page, pageSize: limit, totalPages: Math.max(1, Math.ceil(paged.total / limit)) };
   }
   const all = (await listJobs()).filter(job => {
     if (options.status && job.status !== options.status) return false;

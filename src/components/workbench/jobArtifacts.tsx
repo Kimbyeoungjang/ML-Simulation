@@ -35,7 +35,7 @@ export function ResultContextBar({
   onSelect: (id: string) => void;
 }) {
   const jobs = Array.isArray(jobsPayload?.jobs) ? jobsPayload.jobs : [];
-  const artifactJobs = jobs.filter((j: any) => j.hasArtifacts || Number(j.artifactCount ?? 0) > 0 || (Array.isArray(j.artifacts) && j.artifacts.length > 0));
+  const artifactJobs = jobs.filter((j: any) => Array.isArray(j.artifacts) && j.artifacts.length > 0);
   const selected = jobById(jobsPayload, selectedJobId);
   return (
     <section className="result-context" title="오른쪽 결과 탭이 현재 입력값 미리보기인지, 특정 작업의 산출물인지 표시합니다.">
@@ -133,44 +133,9 @@ export function JobArtifactText({ jobId, path, title }: { jobId: string; path: s
 
 export function JobArtifactList({ jobId, jobsPayload }: { jobId: string; jobsPayload: any | null }) {
   const job = jobById(jobsPayload, jobId);
-  const [artifacts, setArtifacts] = useState<string[]>([]);
-  const [loadingArtifacts, setLoadingArtifacts] = useState(false);
-  const [artifactError, setArtifactError] = useState("");
+  const artifacts: string[] = Array.isArray(job?.artifacts) ? job.artifacts : [];
   const storageKey = `tileforge:selected-artifacts:${jobId}`;
   const [selected, setSelected] = useState<string[]>([]);
-
-  useEffect(() => {
-    let cancelled = false;
-    async function loadArtifacts() {
-      if (!jobId) {
-        setArtifacts([]);
-        return;
-      }
-      setLoadingArtifacts(true);
-      try {
-        const r = await fetch(`/api/jobs/${jobId}/artifacts`, { cache: "no-store" });
-        if (!r.ok) throw new Error(`artifact 목록 API ${r.status}`);
-        const payload = await r.json();
-        const names = Array.isArray(payload?.artifacts)
-          ? payload.artifacts.map((a: any) => String(a.path || a.name || "")).filter(Boolean)
-          : [];
-        if (!cancelled) {
-          setArtifacts(names);
-          setArtifactError("");
-        }
-      } catch (e: any) {
-        if (!cancelled) {
-          const fallback = Array.isArray(job?.artifacts) ? job.artifacts : [];
-          setArtifacts(fallback);
-          setArtifactError(e?.message ?? String(e));
-        }
-      } finally {
-        if (!cancelled) setLoadingArtifacts(false);
-      }
-    }
-    void loadArtifacts();
-    return () => { cancelled = true; };
-  }, [jobId]);
 
   useEffect(() => {
     if (!jobId) return;
@@ -194,8 +159,7 @@ export function JobArtifactList({ jobId, jobsPayload }: { jobId: string; jobsPay
   }, [jobId, selected.join("|")]);
 
   if (!jobId) return null;
-  if (loadingArtifacts && !artifacts.length) return <p className="small">선택한 작업의 artifact 목록을 불러오는 중입니다.</p>;
-  if (!artifacts.length) return <p className="small warn">선택한 작업의 artifact 목록이 아직 없습니다.{artifactError ? ` (${artifactError})` : ""}</p>;
+  if (!artifacts.length) return <p className="small warn">선택한 작업의 artifact 목록이 아직 없습니다.</p>;
 
   const allSelected = selected.length === artifacts.length && artifacts.length > 0;
   const toggleOne = (artifactPath: string) => {
@@ -230,7 +194,7 @@ export function JobArtifactList({ jobId, jobsPayload }: { jobId: string; jobsPay
       <div className="artifact-list-header">
         <div>
           <h3>선택 작업 산출물</h3>
-          <p className="small">체크한 산출물만 ZIP으로 내려받을 수 있습니다. 목록은 선택한 작업에서만 지연 로드합니다.{artifactError ? ` fallback: ${artifactError}` : ""}</p>
+          <p className="small">체크한 산출물만 ZIP으로 내려받을 수 있습니다. 선택 상태는 작업별로 유지됩니다.</p>
         </div>
         <div className="artifact-actions">
           <button className="secondary" onClick={selectAll} disabled={allSelected}>모두 선택</button>

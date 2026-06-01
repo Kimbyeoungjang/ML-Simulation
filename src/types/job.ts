@@ -35,31 +35,3 @@ export interface JobRecord {
   };
   stageHistory?: Array<{ stage: JobStage; status: "pending" | "running" | "done" | "failed" | "skipped"; at: string; detail?: string }>;
 }
-
-export interface JobListItem {
-  id: string;
-  kind: JobKind;
-  name?: string;
-  requestHash?: string;
-  status: JobStatus;
-  stage?: JobStage;
-  progress?: number;
-  cancelRequested?: boolean;
-  createdAt: string;
-  updatedAt: string;
-  startedAt?: string;
-  finishedAt?: string;
-  attempts?: number;
-  maxAttempts?: number;
-  artifactCount?: number;
-  hasArtifacts?: boolean;
-  hasReport?: boolean;
-  /**
-   * Small preview only. Large artifact lists are fetched lazily from
-   * /api/jobs/:id/artifacts when the user selects a job.
-   */
-  artifacts?: string[];
-  warningsCount?: number;
-  logsCount?: number;
-  error?: string;
-}

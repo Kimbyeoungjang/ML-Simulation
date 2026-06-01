@@ -1,7 +1,7 @@
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
-import type { JobListItem, JobRecord } from "@/types/job";
+import type { JobRecord } from "@/types/job";
 import { getWorkspaceRoot } from "./workspace";
 import { runSqliteMigrations } from "./dbMigrations";
 import type { ArtifactIntegrity } from "./artifactIntegrity";
@@ -36,11 +36,10 @@ export function getSqliteDb() {
 export function saveJobSqlite(job: JobRecord) {
   const d = getSqliteDb();
   if (!d) return;
-  d.prepare(`INSERT INTO jobs(id,status,kind,name,request_hash,stage,progress,created_at,updated_at,started_at,finished_at,json)
-    VALUES(@id,@status,@kind,@name,@requestHash,@stage,@progress,@createdAt,@updatedAt,@startedAt,@finishedAt,@json)
-    ON CONFLICT(id) DO UPDATE SET status=excluded.status, kind=excluded.kind, name=excluded.name, request_hash=excluded.request_hash, stage=excluded.stage, progress=excluded.progress, updated_at=excluded.updated_at, started_at=excluded.started_at, finished_at=excluded.finished_at, json=excluded.json`).run({
+  d.prepare(`INSERT INTO jobs(id,status,kind,stage,progress,created_at,updated_at,started_at,finished_at,json)
+    VALUES(@id,@status,@kind,@stage,@progress,@createdAt,@updatedAt,@startedAt,@finishedAt,@json)
+    ON CONFLICT(id) DO UPDATE SET status=excluded.status, kind=excluded.kind, stage=excluded.stage, progress=excluded.progress, updated_at=excluded.updated_at, started_at=excluded.started_at, finished_at=excluded.finished_at, json=excluded.json`).run({
       id: job.id, status: job.status, kind: job.kind, stage: job.stage ?? null, progress: job.progress ?? 0,
-      name: job.name ?? null, requestHash: job.requestHash ?? null,
       createdAt: job.createdAt, updatedAt: job.updatedAt, startedAt: job.startedAt ?? null, finishedAt: job.finishedAt ?? null, json: JSON.stringify(job)
     });
   const insertArtifact = d.prepare(`INSERT OR IGNORE INTO artifacts(job_id,name,created_at,path) VALUES(?,?,?,?)`);
@@ -93,74 +92,30 @@ export function countJobsByStatusSqlite(): Record<string, number> | undefined {
   return out;
 }
 
-function parseArtifactPreview(value: unknown): string[] {
-  if (!value) return [];
-  return String(value).split("\n").map((x) => x.trim()).filter(Boolean);
-}
-
-function mapJobListRow(row: any): JobListItem {
-  const artifactCount = Number(row.artifactCount ?? row.artifact_count ?? 0);
-  const artifacts = parseArtifactPreview(row.artifactPreview ?? row.artifact_preview);
-  return {
-    id: String(row.id),
-    kind: row.kind,
-    name: row.name ?? undefined,
-    requestHash: row.requestHash ?? row.request_hash ?? undefined,
-    status: row.status,
-    stage: row.stage ?? undefined,
-    progress: Number(row.progress ?? 0),
-    createdAt: row.createdAt ?? row.created_at,
-    updatedAt: row.updatedAt ?? row.updated_at,
-    startedAt: row.startedAt ?? row.started_at ?? undefined,
-    finishedAt: row.finishedAt ?? row.finished_at ?? undefined,
-    artifactCount,
-    hasArtifacts: artifactCount > 0,
-    hasReport: Boolean(row.hasReport ?? row.has_report),
-    artifacts,
-  };
-}
-
-const JOB_LIST_COLUMNS = `
-  j.id,
-  j.status,
-  j.kind,
-  COALESCE(j.name, json_extract(j.json, '$.name'), j.id) AS name,
-  COALESCE(j.request_hash, json_extract(j.json, '$.requestHash')) AS requestHash,
-  j.stage,
-  j.progress,
-  j.created_at AS createdAt,
-  j.updated_at AS updatedAt,
-  j.started_at AS startedAt,
-  j.finished_at AS finishedAt,
-  COALESCE((SELECT COUNT(*) FROM artifacts a WHERE a.job_id = j.id), 0) AS artifactCount,
-  EXISTS(SELECT 1 FROM artifacts a WHERE a.job_id = j.id AND a.name = 'report.md') AS hasReport,
-  (SELECT GROUP_CONCAT(name, char(10)) FROM (SELECT a.name AS name FROM artifacts a WHERE a.job_id = j.id ORDER BY a.name LIMIT 30)) AS artifactPreview
-`;
-
-export function listDashboardJobsSqlite(limit = 80): { jobs: JobListItem[]; total: number; counts: Record<string, number> } | undefined {
+export function listDashboardJobsSqlite(limit = 80): { jobs: JobRecord[]; total: number; counts: Record<string, number> } | undefined {
   const d = getSqliteDb();
   if (!d) return undefined;
   const safeLimit = Math.max(1, Math.min(Math.floor(limit), 500));
   const counts = countJobsByStatusSqlite() ?? {};
   const total = Number(d.prepare(`SELECT COUNT(*) AS n FROM jobs`).get().n ?? 0);
-  const picked = new Map<string, JobListItem>();
+  const picked = new Map<string, JobRecord>();
   const addRows = (rows: any[]) => {
     for (const r of rows) {
       if (picked.size >= safeLimit) break;
-      const job = mapJobListRow(r);
+      const job = JSON.parse(r.json);
       if (!picked.has(job.id)) picked.set(job.id, job);
     }
   };
-  addRows(d.prepare(`SELECT ${JOB_LIST_COLUMNS} FROM jobs j WHERE j.status='running' ORDER BY j.updated_at DESC LIMIT ?`).all(safeLimit));
-  addRows(d.prepare(`SELECT ${JOB_LIST_COLUMNS} FROM jobs j WHERE j.status='queued' ORDER BY j.created_at ASC LIMIT ?`).all(Math.max(10, safeLimit)));
-  addRows(d.prepare(`SELECT ${JOB_LIST_COLUMNS} FROM jobs j WHERE j.status IN ('succeeded','succeeded_with_warnings','failed','cancelled') ORDER BY j.updated_at DESC LIMIT ?`).all(safeLimit));
+  addRows(d.prepare(`SELECT json FROM jobs WHERE status='running' ORDER BY updated_at DESC LIMIT ?`).all(safeLimit));
+  addRows(d.prepare(`SELECT json FROM jobs WHERE status='queued' ORDER BY created_at ASC LIMIT ?`).all(Math.max(10, safeLimit)));
+  addRows(d.prepare(`SELECT json FROM jobs WHERE status IN ('succeeded','succeeded_with_warnings','failed','cancelled') ORDER BY updated_at DESC LIMIT ?`).all(safeLimit));
   return { jobs: [...picked.values()], total, counts };
 }
 
-export function listJobsPageSqlite(limit = 80, page = 1, status?: string): { jobs: JobListItem[]; total: number; counts: Record<string, number> } | undefined {
+export function listJobsPageSqlite(limit = 80, page = 1, status?: string): { jobs: JobRecord[]; total: number; counts: Record<string, number> } | undefined {
   const d = getSqliteDb();
   if (!d) return undefined;
-  const safeLimit = Math.max(1, Math.min(Math.floor(limit), 500));
+  const safeLimit = Math.max(1, Math.min(Math.floor(limit), 1000));
   const safePage = Math.max(1, Math.floor(page));
   const counts = countJobsByStatusSqlite() ?? {};
   const params: any[] = [];
@@ -171,15 +126,8 @@ export function listJobsPageSqlite(limit = 80, page = 1, status?: string): { job
   }
   const total = Number(d.prepare(`SELECT COUNT(*) AS n FROM jobs${where}`).get(...params).n ?? 0);
   const offset = (safePage - 1) * safeLimit;
-  const rows = d.prepare(`SELECT ${JOB_LIST_COLUMNS} FROM jobs j${where.replace("status", "j.status")} ORDER BY j.created_at DESC LIMIT ? OFFSET ?`).all(...params, safeLimit, offset);
-  return { jobs: rows.map(mapJobListRow), total, counts };
-}
-
-export function listJobArtifactsSqlite(jobId: string): Array<{ name: string; path?: string; size?: number; url?: string }> | undefined {
-  const d = getSqliteDb();
-  if (!d) return undefined;
-  const rows = d.prepare(`SELECT name, path, size_bytes AS size FROM artifacts WHERE job_id=? ORDER BY name`).all(jobId);
-  return rows.map((r: any) => ({ name: String(r.name), path: r.path ?? String(r.name), size: r.size == null ? undefined : Number(r.size) }));
+  const rows = d.prepare(`SELECT json FROM jobs${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`).all(...params, safeLimit, offset);
+  return { jobs: rows.map((r: any) => JSON.parse(r.json)), total, counts };
 }
 
 export function mirrorJob(job: JobRecord) { saveJobSqlite(job); }

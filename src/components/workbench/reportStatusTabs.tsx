@@ -29,7 +29,8 @@ export function ReportTab({
   const reportJobs = jobs.filter(
     (j: any) =>
       ["succeeded", "succeeded_with_warnings", "failed"].includes(j.status) &&
-      (j.hasReport || (Array.isArray(j.artifacts) && j.artifacts.includes("report.md"))),
+      Array.isArray(j.artifacts) &&
+      j.artifacts.includes("report.md"),
   );
   return (
     <>
