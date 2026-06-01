@@ -89,4 +89,13 @@ export function runSqliteMigrations(db: any) {
     }
   });
   tx();
+  // Idempotent indexes used by large queue/job list queries. They are kept
+  // outside versioned migrations so existing databases benefit immediately.
+  db.exec(`
+CREATE INDEX IF NOT EXISTS idx_jobs_status_created_at ON jobs(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at);
+CREATE INDEX IF NOT EXISTS idx_jobs_updated_at ON jobs(updated_at);
+CREATE INDEX IF NOT EXISTS idx_artifacts_job_name ON artifacts(job_id, name);
+CREATE INDEX IF NOT EXISTS idx_artifacts_job_created ON artifacts(job_id, created_at);
+`);
 }

@@ -31,12 +31,20 @@ export default function EstimatorSuitePage() {
     directWeight: 0.35,
   });
   const [planOptions, setPlanOptions] = useState({
+    mRange: "128,160,197,224,256,384,512,1024",
+    nRange: "64,128,197,384,768,1024,1536,2304,3072,4096",
+    kRange: "64,128,384,768,1024,1536,3072,4096",
+    tileMRange: defaultCandidates.tileM.join(","),
+    tileNRange: defaultCandidates.tileN.join(","),
+    tileKRange: defaultCandidates.tileK.join(","),
+    arrayRange: "64x64,128x128,128x256,256x128,256x256",
+    sramKbRange: "2048,4096,8192,16384",
+    dataflows: "WS,OS,IS",
     maxSamples: 512,
-    queueLimit: 24,
-    includeDataflows: true,
-    includeArraySweep: true,
-    includeMemorySweep: true,
-    includeWorkloadSweep: true,
+    queueLimit: 512,
+    topKPerShape: 1,
+    includeCurrentShapes: true,
+    shapeBank: "transformer",
   });
   const [result, setResult] = useState<any | null>(null);
   const [busy, setBusy] = useState(false);

@@ -171,9 +171,9 @@ export default function Home() {
   const [envMessage, setEnvMessage] = useState("");
   const [jobsJson, setJobsJson] = useState("");
   const [jobsPayload, setJobsPayload] = useState<any | null>(null);
-  const [jobsViewMode, setJobsViewMode] = useState<"dashboard" | "paged">("paged");
+  const [jobsViewMode, setJobsViewMode] = useState<"dashboard" | "paged">("dashboard");
   const [jobsPage, setJobsPage] = useState(1);
-  const [jobsPageSize, setJobsPageSize] = useState(100);
+  const [jobsPageSize, setJobsPageSize] = useState(50);
   const [statusJson, setStatusJson] = useState("");
   const [statusPayload, setStatusPayload] = useState<any | null>(null);
   const [serverReportMarkdown, setServerReportMarkdown] = useState("");
@@ -199,6 +199,8 @@ export default function Home() {
   const [analysisJobId, setAnalysisJobId] = useState("");
   const [selectedJobIds, setSelectedJobIds] = useState<string[]>([]);
   const liveEventSource = useRef<EventSource | null>(null);
+  const jobsRefreshInFlight = useRef(false);
+  const statusRefreshInFlight = useRef(false);
   const [estimatorSuiteCsv, setEstimatorSuiteCsv] = useState(
     "id,model,opName,arrayRows,arrayCols,sramKB,frequencyMHz,dataflow,dtypeBytes,m,n,k,tileM,tileN,tileK,estimatorCycles,measuredCycles\n" +
       "s0,demo,qkv,128,128,4096,700,WS,2,384,768,768,128,128,64,1000000,1120000",
@@ -389,9 +391,9 @@ export default function Home() {
     void refreshStatus(false);
     const timer = window.setInterval(() => {
       if (!autoRefreshEnabled) return;
-      void refreshJobs({ switchTab: false, updateReport: false });
-      void refreshStatus(false);
-    }, 3000);
+      void refreshJobs({ switchTab: false, updateReport: false, skipIfBusy: true });
+      void refreshStatus(false, { skipIfBusy: true });
+    }, 10000);
     return () => {
       window.clearInterval(timer);
       liveEventSource.current?.close();
@@ -808,9 +810,11 @@ export default function Home() {
   }
 
   async function refreshJobs(
-    options: { switchTab?: boolean; updateReport?: boolean } = {},
+    options: { switchTab?: boolean; updateReport?: boolean; skipIfBusy?: boolean } = {},
   ) {
-    const { switchTab = true, updateReport = false } = options;
+    const { switchTab = true, updateReport = false, skipIfBusy = false } = options;
+    if (skipIfBusy && jobsRefreshInFlight.current) return;
+    jobsRefreshInFlight.current = true;
     const params = jobsViewMode === "dashboard"
       ? `limit=${jobsPageSize}&dashboard=1&external=0&t=${Date.now()}`
       : `limit=${jobsPageSize}&page=${jobsPage}&external=0&t=${Date.now()}`;
@@ -822,9 +826,12 @@ export default function Home() {
     } catch (error: any) {
       setJobsJson(JSON.stringify({ ok: false, error: error?.message ?? String(error), previous: jobsPayload?.counts ?? null }, null, 2));
       return;
+    } finally {
+      jobsRefreshInFlight.current = false;
     }
     setJobsPayload(payload);
-    setJobsJson(JSON.stringify(payload, null, 2));
+    const preview = { ...payload, jobs: Array.isArray(payload?.jobs) ? payload.jobs.slice(0, 20) : [] };
+    setJobsJson(JSON.stringify({ ...preview, note: "jobs 원본 JSON 미리보기는 렌더링 비용을 줄이기 위해 최대 20개만 표시합니다. 전체 목록은 위 표와 페이지 이동을 사용하세요." }, null, 2));
     if (updateReport && reportAutoFollow) {
       const activeCount = Number(payload?.counts?.running ?? 0) + Number(payload?.counts?.queued ?? 0);
       const id = latestCompletedJobId(payload);
@@ -922,7 +929,9 @@ export default function Home() {
       `진단 ${j.ok ? "정상" : "확인 필요"}: ${j.checks.map((c: any) => `${c.name}=${c.ok ? "정상" : "경고"}`).join(", ")}`,
     );
   }
-  async function refreshStatus(switchTab = true) {
+  async function refreshStatus(switchTab = true, options: { skipIfBusy?: boolean } = {}) {
+    if (options.skipIfBusy && statusRefreshInFlight.current) return;
+    statusRefreshInFlight.current = true;
     try {
       const r = await fetch("/api/system/status", { cache: "no-store" });
       if (!r.ok) throw new Error(`status api ${r.status}`);
@@ -932,6 +941,8 @@ export default function Home() {
       if (switchTab) setTab("status");
     } catch (error: any) {
       setStatusJson(JSON.stringify({ ok: false, error: error?.message ?? String(error), previous: statusPayload?.summary ?? null }, null, 2));
+    } finally {
+      statusRefreshInFlight.current = false;
     }
   }
 

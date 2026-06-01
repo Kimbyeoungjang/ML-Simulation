@@ -133,9 +133,38 @@ export function JobArtifactText({ jobId, path, title }: { jobId: string; path: s
 
 export function JobArtifactList({ jobId, jobsPayload }: { jobId: string; jobsPayload: any | null }) {
   const job = jobById(jobsPayload, jobId);
-  const artifacts: string[] = Array.isArray(job?.artifacts) ? job.artifacts : [];
+  const summaryArtifacts: string[] = Array.isArray(job?.artifacts) ? job.artifacts : [];
+  const [loadedArtifacts, setLoadedArtifacts] = useState<string[]>([]);
+  const [artifactListError, setArtifactListError] = useState("");
+  const artifacts = loadedArtifacts.length ? loadedArtifacts : summaryArtifacts;
   const storageKey = `tileforge:selected-artifacts:${jobId}`;
   const [selected, setSelected] = useState<string[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadArtifacts() {
+      if (!jobId) {
+        setLoadedArtifacts([]);
+        return;
+      }
+      try {
+        const r = await fetch(`/api/jobs/${jobId}/artifacts`, { cache: "no-store" });
+        if (!r.ok) throw new Error(`artifact list api ${r.status}`);
+        const payload = await r.json();
+        const names = Array.isArray(payload?.artifacts)
+          ? payload.artifacts.map((a: any) => typeof a === "string" ? a : a?.name).filter(Boolean)
+          : [];
+        if (!cancelled) {
+          setLoadedArtifacts(names);
+          setArtifactListError("");
+        }
+      } catch (error: any) {
+        if (!cancelled) setArtifactListError(error?.message ?? String(error));
+      }
+    }
+    void loadArtifacts();
+    return () => { cancelled = true; };
+  }, [jobId]);
 
   useEffect(() => {
     if (!jobId) return;
@@ -159,6 +188,7 @@ export function JobArtifactList({ jobId, jobsPayload }: { jobId: string; jobsPay
   }, [jobId, selected.join("|")]);
 
   if (!jobId) return null;
+  if (artifactListError && !artifacts.length) return <p className="small warn">artifact 목록을 불러오지 못했습니다: {artifactListError}</p>;
   if (!artifacts.length) return <p className="small warn">선택한 작업의 artifact 목록이 아직 없습니다.</p>;
 
   const allSelected = selected.length === artifacts.length && artifacts.length > 0;

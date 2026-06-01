@@ -85,7 +85,7 @@ export function Jobs({
             checked={autoRefreshEnabled}
             onChange={(e) => setAutoRefreshEnabled(e.target.checked)}
           />{" "}
-          3초마다 jobs/status 갱신
+10초마다 jobs/status 갱신
         </label>
         <label className="terminal-check" title="켜면 새 작업을 만들 때 실시간 콘솔이 그 작업으로 자동 전환됩니다. 끄면 현재 콘솔은 유지되고 큐 목록에만 추가됩니다.">
           <input
@@ -189,7 +189,7 @@ export function QueueSummary({
             <option value="paged">작업 목록</option>
           </select>
           <select value={jobsPageSize} onChange={(e) => setJobsPageSize(Number(e.target.value))} title="한 페이지에 표시할 작업 수">
-            {[50, 100, 200, 500, 1000].map((n) => <option key={n} value={n}>{n}개</option>)}
+            {[20, 50, 100, 200, 500].map((n) => <option key={n} value={n}>{n}개</option>)}
           </select>
 
         </div>

@@ -161,6 +161,7 @@ export async function createJobsBulk(inputs: BulkJobInput[]): Promise<JobRecord[
 const jobSaveQueues = new Map<string, Promise<void>>();
 
 export async function saveJob(job: JobRecord) {
+  pagedFallbackCache = undefined;
   job.updatedAt = nowIso();
   const id = job.id;
   const previous = jobSaveQueues.get(id) ?? Promise.resolve();
@@ -234,7 +235,8 @@ export async function claimQueuedJob(
   const includeKinds = options.includeKinds ? new Set(options.includeKinds) : undefined;
   const excludeKinds = options.excludeKinds ? new Set(options.excludeKinds) : undefined;
   const matchesKind = (j: JobRecord) => (!includeKinds || includeKinds.has(j.kind)) && !excludeKinds?.has(j.kind);
-  const sqliteCandidates = sqlitePrimary() ? selectQueuedJobsSqlite(128, excludeIds).filter(matchesKind) : undefined;
+  const rawSqliteCandidates = sqlitePrimary() ? selectQueuedJobsSqlite(128, excludeIds) : undefined;
+  const sqliteCandidates = Array.isArray(rawSqliteCandidates) ? rawSqliteCandidates.filter(matchesKind) : undefined;
   const fallbackCandidates = async () => {
     const jobs = await listJobs();
     const excluded = new Set(excludeIds);
@@ -435,6 +437,15 @@ function jobCounts(jobs: JobRecord[]): Record<string, number> {
   return counts;
 }
 
+type PagedJobsResult = { jobs: JobRecord[]; nextCursor?: string; total: number; counts: Record<string, number>; view?: string; page?: number; pageSize?: number; totalPages?: number };
+
+let pagedFallbackCache: { key: string; expiresAt: number; result: PagedJobsResult } | undefined;
+let pagedFallbackInflight: Map<string, Promise<PagedJobsResult>> = new Map();
+
+function fallbackJobsCacheMs(): number {
+  return Math.max(1_000, Math.min(envNumber("TILEFORGE_JOBS_FALLBACK_CACHE_MS", 10_000), 60_000));
+}
+
 function updatedDesc(a: JobRecord, b: JobRecord): number {
   return (b.updatedAt || b.createdAt).localeCompare(a.updatedAt || a.createdAt);
 }
@@ -458,7 +469,7 @@ export function dashboardJobs(all: JobRecord[], limit: number): JobRecord[] {
   return [...picked.values()];
 }
 
-export async function listJobsPaged(options: ListJobsOptions = {}): Promise<{ jobs: JobRecord[]; nextCursor?: string; total: number; counts: Record<string, number>; view?: string; page?: number; pageSize?: number; totalPages?: number }> {
+export async function listJobsPaged(options: ListJobsOptions = {}): Promise<PagedJobsResult> {
   const limit = Math.max(1, Math.min(options.limit ?? 50, 1000));
   const page = Math.max(1, Math.floor(options.page ?? 1));
   if (options.dashboard && !options.cursor && !options.status && !options.since && sqlitePrimary()) {
@@ -469,22 +480,45 @@ export async function listJobsPaged(options: ListJobsOptions = {}): Promise<{ jo
     const paged = listJobsPageSqlite(limit, page, options.status);
     if (paged) return { jobs: paged.jobs.map(sanitizeJobForDisplay), total: paged.total, counts: paged.counts, page, pageSize: limit, totalPages: Math.max(1, Math.ceil(paged.total / limit)) };
   }
-  const all = (await listJobs()).filter(job => {
-    if (options.status && job.status !== options.status) return false;
-    if (options.since && job.createdAt < options.since) return false;
-    return true;
-  });
-  const counts = jobCounts(all);
-  if (options.dashboard && !options.cursor && !options.status) {
-    return { jobs: dashboardJobs(all, limit).map(sanitizeJobForDisplay), total: all.length, counts, view: "dashboard", page: 1, pageSize: limit, totalPages: Math.max(1, Math.ceil(all.length / limit)) };
+
+  // Fallback path for environments where better-sqlite3 is unavailable or the
+  // native module failed to load. It still has to read job.json files, so avoid
+  // stampeding the filesystem when the UI polls repeatedly.
+  const cacheKey = JSON.stringify({ limit, page, cursor: options.cursor ?? "", status: options.status ?? "", since: options.since ?? "", dashboard: !!options.dashboard });
+  const now = Date.now();
+  if (pagedFallbackCache?.key === cacheKey && pagedFallbackCache.expiresAt > now) return pagedFallbackCache.result;
+  const existing = pagedFallbackInflight.get(cacheKey);
+  if (existing) return existing;
+
+  const inflight = (async (): Promise<PagedJobsResult> => {
+    const all = (await listJobs()).filter(job => {
+      if (options.status && job.status !== options.status) return false;
+      if (options.since && job.createdAt < options.since) return false;
+      return true;
+    });
+    const counts = jobCounts(all);
+    let result: PagedJobsResult;
+    if (options.dashboard && !options.cursor && !options.status) {
+      result = { jobs: dashboardJobs(all, limit).map(sanitizeJobForDisplay), total: all.length, counts, view: "dashboard", page: 1, pageSize: limit, totalPages: Math.max(1, Math.ceil(all.length / limit)) };
+    } else {
+      const start = options.cursor ? Math.max(0, all.findIndex(j => j.id === options.cursor) + 1) : (page - 1) * limit;
+      const jobs = all.slice(start, start + limit).map(sanitizeJobForDisplay);
+      const nextCursor = start + limit < all.length ? jobs.at(-1)?.id : undefined;
+      result = { jobs, nextCursor, total: all.length, counts, page, pageSize: limit, totalPages: Math.max(1, Math.ceil(all.length / limit)) };
+    }
+    pagedFallbackCache = { key: cacheKey, expiresAt: Date.now() + fallbackJobsCacheMs(), result };
+    return result;
+  })();
+  pagedFallbackInflight.set(cacheKey, inflight);
+  try {
+    return await inflight;
+  } finally {
+    pagedFallbackInflight.delete(cacheKey);
   }
-  const start = options.cursor ? Math.max(0, all.findIndex(j => j.id === options.cursor) + 1) : (page - 1) * limit;
-  const jobs = all.slice(start, start + limit).map(sanitizeJobForDisplay);
-  const nextCursor = start + limit < all.length ? jobs.at(-1)?.id : undefined;
-  return { jobs, nextCursor, total: all.length, counts, page, pageSize: limit, totalPages: Math.max(1, Math.ceil(all.length / limit)) };
 }
 
 export async function deleteJob(id: string): Promise<void> {
+  pagedFallbackCache = undefined;
   await rm(jobDir(id), { recursive: true, force: true });
   deleteJobSqlite(id);
 }
