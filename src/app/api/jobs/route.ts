@@ -13,7 +13,10 @@ export async function GET(req: Request) {
   const page = url.searchParams.get("page") ? Number(url.searchParams.get("page")) : undefined;
   const includeExternal = url.searchParams.get("external") === "1";
   const payload = await listJobsPaged({ limit, cursor, status, since, dashboard, page });
-  return NextResponse.json({ ...payload, externalTools: includeExternal ? await getExternalToolsStatus() : undefined });
+  return NextResponse.json(
+    { ...payload, externalTools: includeExternal ? await getExternalToolsStatus() : undefined },
+    { headers: { "cache-control": "no-store" } },
+  );
 }
 
 export async function POST(req: Request) {

@@ -65,10 +65,10 @@ export function Jobs({
   return (
     <>
       <ActionButton
-        tip="현재 화면에 표시된 job JSON을 파일로 저장합니다."
+        tip="현재 화면에 표시된 job summary JSON 미리보기를 파일로 저장합니다. 전체 job JSON은 특정 작업을 선택했을 때만 별도로 읽습니다."
         onClick={() => download("jobs.json", text, "application/json")}
       >
-        작업 JSON 다운로드
+        Summary JSON 다운로드
       </ActionButton>
       <div
         className="report-status-strip"
@@ -85,7 +85,7 @@ export function Jobs({
             checked={autoRefreshEnabled}
             onChange={(e) => setAutoRefreshEnabled(e.target.checked)}
           />{" "}
-          3초마다 jobs/status 갱신
+          10초마다 jobs/status 갱신
         </label>
         <label className="terminal-check" title="켜면 새 작업을 만들 때 실시간 콘솔이 그 작업으로 자동 전환됩니다. 끄면 현재 콘솔은 유지되고 큐 목록에만 추가됩니다.">
           <input
@@ -189,7 +189,7 @@ export function QueueSummary({
             <option value="paged">작업 목록</option>
           </select>
           <select value={jobsPageSize} onChange={(e) => setJobsPageSize(Number(e.target.value))} title="한 페이지에 표시할 작업 수">
-            {[50, 100, 200, 500, 1000].map((n) => <option key={n} value={n}>{n}개</option>)}
+            {[20, 50, 100, 200].map((n) => <option key={n} value={n}>{n}개</option>)}
           </select>
 
         </div>
@@ -221,6 +221,7 @@ export function QueueSummary({
                 <th>이름</th>
                 <th>단계</th>
                 <th>진행률</th>
+                <th>산출물</th>
                 <th>생성 시각</th>
                 <th>보기</th>
                 <th>중지</th>
@@ -235,6 +236,7 @@ export function QueueSummary({
                   <td title={jobTooltip(job)}>{jobDisplayName(job)}</td>
                   <td>{job.stage ?? "-"}</td>
                   <td>{Number(job.progress ?? 0)}%</td>
+                  <td>{Number(job.artifactCount ?? job.artifacts?.length ?? 0)}</td>
                   <td>{job.createdAt ? new Date(job.createdAt).toLocaleTimeString() : "-"}</td>
                   <td><button className="secondary" onClick={() => onWatchJob(job.id)}>{job.id === activeJobId ? "보는 중" : "콘솔 보기"}</button></td>
                   <td><button className="secondary" onClick={() => onCancelJob(job.id)} disabled={["succeeded", "failed", "cancelled", "succeeded_with_warnings"].includes(job.status)}>중지</button></td>
@@ -245,7 +247,7 @@ export function QueueSummary({
           </table>
         </div>
       )}
-      <p className="small">작업은 자동으로 갱신됩니다. 로그가 필요할 때만 “콘솔 보기”를 누르세요.</p>
+      <p className="small">목록은 가벼운 summary만 자동 갱신합니다. 전체 로그와 artifact 목록은 “콘솔 보기” 또는 작업 선택 시에만 별도로 읽습니다.</p>
     </section>
   );
 }

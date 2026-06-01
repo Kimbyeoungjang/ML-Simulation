@@ -50,8 +50,6 @@ CREATE TABLE IF NOT EXISTS cache_entries (
   size_bytes INTEGER DEFAULT 0,
   hit_count INTEGER DEFAULT 0
 );
-CREATE INDEX IF NOT EXISTS idx_jobs_status_created ON jobs(status, created_at);
-CREATE INDEX IF NOT EXISTS idx_jobs_status_updated ON jobs(status, updated_at);
 `
   },
   {
@@ -80,10 +78,19 @@ CREATE TABLE IF NOT EXISTS validation_runs (
   },
   {
     version: 3,
-    name: "job-status-indexes",
+    name: "job-list-summary-indexes",
     sql: `
-CREATE INDEX IF NOT EXISTS idx_jobs_status_created ON jobs(status, created_at);
-CREATE INDEX IF NOT EXISTS idx_jobs_status_updated ON jobs(status, updated_at);
+ALTER TABLE jobs ADD COLUMN name TEXT;
+ALTER TABLE jobs ADD COLUMN request_hash TEXT;
+UPDATE jobs
+SET
+  name = COALESCE(name, json_extract(json, '$.name')),
+  request_hash = COALESCE(request_hash, json_extract(json, '$.requestHash'));
+CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_jobs_status_created_at ON jobs(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_jobs_updated_at ON jobs(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_artifacts_job_name ON artifacts(job_id, name);
+CREATE INDEX IF NOT EXISTS idx_artifacts_job_created ON artifacts(job_id, created_at DESC);
 `
   }
 ];

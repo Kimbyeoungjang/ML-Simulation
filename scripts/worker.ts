@@ -4,34 +4,10 @@ import { runJob } from "../src/server/workerRunner";
 
 const once = process.argv.includes("--once");
 const active = new Set<string>();
-let scheduling: Promise<number> | undefined;
-let lastRecoverAt = 0;
-
-const recoverIntervalMs = Math.max(
-  5_000,
-  Number(process.env.TILEFORGE_RUNNING_RECOVERY_INTERVAL_MS ?? 30_000),
-);
-
-async function recoverStaleRunningJobsThrottled() {
-  const now = Date.now();
-  if (now - lastRecoverAt < recoverIntervalMs) return 0;
-  lastRecoverAt = now;
-  const recovered = await recoverStaleRunningJobs();
-  if (recovered > 0) console.log(`[tileforge-worker] recovered ${recovered} stale running job(s)`);
-  return recovered;
-}
 
 async function startAvailableJobs() {
-  // Keep scheduling single-flight. With thousands of jobs, overlapping scans from
-  // the interval and each job's finally() can accumulate large temporary arrays
-  // and push V8 into OOM.
-  if (scheduling) return scheduling;
-  scheduling = startAvailableJobsInner().finally(() => { scheduling = undefined; });
-  return scheduling;
-}
-
-async function startAvailableJobsInner() {
-  await recoverStaleRunningJobsThrottled();
+  const recovered = await recoverStaleRunningJobs();
+  if (recovered > 0) console.log(`[tileforge-worker] recovered ${recovered} stale running job(s)`);
   const limit = maxParallelJobs();
   let started = 0;
   while (active.size < limit) {

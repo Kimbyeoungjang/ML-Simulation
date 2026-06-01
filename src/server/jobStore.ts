@@ -3,12 +3,12 @@ import { readProjectDotEnv } from "./env";
 import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type { JobKind, JobRecord, JobStatus, JobStage } from "@/types/job";
+import type { JobKind, JobListItem, JobRecord, JobStatus, JobStage } from "@/types/job";
 import type { SearchRequest } from "@/types/domain";
 import { hashObject } from "@/lib/hash";
 import { ensureJobRoot, getJobRoot, jobDir } from "./workspace";
 import { nowIso, stableId } from "@/lib/determinism";
-import { countJobsSqlite, deleteJobSqlite, listDashboardJobsSqlite, listJobsByStatusSqlite, listJobsPageSqlite, listJobsSqlite, markStageSqlite, mirrorLog, readJobSqlite, saveJobSqlite, selectQueuedJobsSqlite, sqlitePrimary } from "./sqliteStore";
+import { countJobsSqlite, deleteJobSqlite, listDashboardJobsSqlite, listJobsPageSqlite, listJobsSqlite, markStageSqlite, mirrorLog, readJobSqlite, saveJobSqlite, selectQueuedJobsSqlite, sqlitePrimary } from "./sqliteStore";
 import { atomicWriteFile } from "./atomic";
 import { appendJobEvent } from "./eventsLog";
 import { assertTransition, isTerminalStatus } from "@/lib/stateMachine";
@@ -220,45 +220,15 @@ export async function claimQueuedJob(excludeIds: string[] = []): Promise<JobReco
 }
 
 
-function isProcessAlive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error: any) {
-    if (error?.code === "EPERM") return true;
-    return false;
-  }
-}
-
-async function runningJobAbandoned(job: JobRecord, ageMs: number, staleMs: number): Promise<boolean> {
-  const crashGraceMs = Math.max(5_000, Number(process.env.TILEFORGE_STALE_RUNNING_GRACE_MS ?? 30_000));
-  const lockPath = path.join(jobDir(job.id), "job.lock");
-  try {
-    const raw = await readFile(lockPath, "utf8");
-    const lock = JSON.parse(raw);
-    const pid = Number(lock?.pid);
-    if (Number.isInteger(pid) && pid > 0) {
-      if (pid === process.pid) return false;
-      if (!isProcessAlive(pid)) return ageMs >= crashGraceMs;
-    }
-  } catch {
-    // A running job with no lock usually means the worker was killed between
-    // state updates. Do not wait for the external tool timeout in that case.
-    return ageMs >= crashGraceMs;
-  }
-  return ageMs >= staleMs;
-}
-
 export async function recoverStaleRunningJobs(): Promise<number> {
-  const sqliteRunning = sqlitePrimary() ? listJobsByStatusSqlite("running", 10000) : undefined;
-  const jobs = sqliteRunning ?? (await listJobs()).filter((job) => job.status === "running");
+  const jobs = await listJobs();
   const now = Date.now();
   let recovered = 0;
   for (const job of jobs) {
+    if (job.status !== "running") continue;
     const ageMs = now - Date.parse(job.updatedAt || job.createdAt || new Date(0).toISOString());
     const staleMs = Math.max(Number(job.timeoutMs ?? DEFAULT_TIMEOUT_MS) + 30_000, 90_000);
-    if (!Number.isFinite(ageMs) || !(await runningJobAbandoned(job, ageMs, staleMs))) continue;
+    if (!Number.isFinite(ageMs) || ageMs < staleMs) continue;
     job.status = "failed";
     job.stage = "failed" as any;
     job.progress = Math.max(job.progress ?? 0, 95);
@@ -269,7 +239,6 @@ export async function recoverStaleRunningJobs(): Promise<number> {
     }, null, 2);
     appendLogSync(job, "오래 갱신되지 않은 running job을 실패 처리하고 큐를 계속 진행합니다.");
     await saveJob(job);
-    await releaseJobLock(job);
     recovered++;
   }
   return recovered;
@@ -416,6 +385,14 @@ function sanitizeJobForDisplay(job: JobRecord): JobRecord {
   };
 }
 
+function sanitizeJobListItemForDisplay(job: JobListItem): JobListItem {
+  return {
+    ...job,
+    error: job.error ? sanitizeErrorForDisplay(job.error) : job.error,
+    artifacts: Array.isArray(job.artifacts) ? job.artifacts.slice(0, 30) : [],
+  };
+}
+
 export interface ListJobsOptions { limit?: number; cursor?: string; status?: JobStatus; since?: string; dashboard?: boolean; page?: number; }
 
 function jobCounts(jobs: JobRecord[]): Record<string, number> {
@@ -447,16 +424,16 @@ export function dashboardJobs(all: JobRecord[], limit: number): JobRecord[] {
   return [...picked.values()];
 }
 
-export async function listJobsPaged(options: ListJobsOptions = {}): Promise<{ jobs: JobRecord[]; nextCursor?: string; total: number; counts: Record<string, number>; view?: string; page?: number; pageSize?: number; totalPages?: number }> {
-  const limit = Math.max(1, Math.min(options.limit ?? 50, 1000));
+export async function listJobsPaged(options: ListJobsOptions = {}): Promise<{ jobs: Array<JobRecord | JobListItem>; nextCursor?: string; total: number; counts: Record<string, number>; view?: string; page?: number; pageSize?: number; totalPages?: number; summary?: boolean }> {
+  const limit = Math.max(1, Math.min(options.limit ?? 50, 500));
   const page = Math.max(1, Math.floor(options.page ?? 1));
   if (options.dashboard && !options.cursor && !options.status && !options.since && sqlitePrimary()) {
     const dash = listDashboardJobsSqlite(limit);
-    if (dash) return { jobs: dash.jobs.map(sanitizeJobForDisplay), total: dash.total, counts: dash.counts, view: "dashboard", page: 1, pageSize: limit, totalPages: Math.max(1, Math.ceil(dash.total / limit)) };
+    if (dash) return { jobs: dash.jobs.map(sanitizeJobListItemForDisplay), total: dash.total, counts: dash.counts, view: "dashboard", page: 1, pageSize: limit, totalPages: Math.max(1, Math.ceil(dash.total / limit)), summary: true };
   }
   if (!options.dashboard && !options.cursor && !options.since && sqlitePrimary()) {
     const paged = listJobsPageSqlite(limit, page, options.status);
-    if (paged) return { jobs: paged.jobs.map(sanitizeJobForDisplay), total: paged.total, counts: paged.counts, page, pageSize: limit, totalPages: Math.max(1, Math.ceil(paged.total / limit)) };
+    if (paged) return { jobs: paged.jobs.map(sanitizeJobListItemForDisplay), total: paged.total, counts: paged.counts, page, pageSize: limit, totalPages: Math.max(1, Math.ceil(paged.total / limit)), summary: true };
   }
   const all = (await listJobs()).filter(job => {
     if (options.status && job.status !== options.status) return false;

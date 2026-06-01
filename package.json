@@ -11,14 +11,14 @@
     "setup:iree": "tsx -r tsconfig-paths/register scripts/install-iree.ts",
     "setup:scalesim": "tsx -r tsconfig-paths/register scripts/install-scalesim-fork.ts",
     "section:dev": "node -e \"console.log('development scripts')\"",
-    "dev": "npm run setup:env && concurrently -n web,worker -c blue,green \"next dev\" \"cross-env NODE_OPTIONS=--max-old-space-size=8192 tsx -r tsconfig-paths/register scripts/worker.ts\"",
+    "dev": "npm run setup:env && concurrently -n web,worker -c blue,green \"next dev\" \"tsx -r tsconfig-paths/register scripts/worker.ts\"",
     "dev:web": "next dev",
-    "dev:worker": "cross-env NODE_OPTIONS=--max-old-space-size=8192 tsx -r tsconfig-paths/register scripts/worker.ts",
+    "dev:worker": "tsx -r tsconfig-paths/register scripts/worker.ts",
     "build": "next build",
     "start": "next start",
     "section:jobs": "node -e \"console.log('worker / queue scripts')\"",
-    "worker": "cross-env NODE_OPTIONS=--max-old-space-size=8192 tsx -r tsconfig-paths/register scripts/worker.ts",
-    "worker:once": "cross-env NODE_OPTIONS=--max-old-space-size=8192 tsx -r tsconfig-paths/register scripts/worker.ts --once",
+    "worker": "tsx -r tsconfig-paths/register scripts/worker.ts",
+    "worker:once": "tsx -r tsconfig-paths/register scripts/worker.ts --once",
     "jobs:stats": "tsx -r tsconfig-paths/register scripts/jobs-stats.ts",
     "jobs:clean": "tsx -r tsconfig-paths/register scripts/clean-jobs.ts",
     "section:external": "node -e \"console.log('external tool scripts')\"",
@@ -67,8 +67,7 @@
     "estimator:compare": "tsx -r tsconfig-paths/register scripts/estimator-lab.ts compare",
     "estimator:suite": "tsx -r tsconfig-paths/register scripts/estimator-lab.ts suite",
     "clean:generated": "tsx -r tsconfig-paths/register scripts/clean-generated.ts",
-    "check:clean": "tsx -r tsconfig-paths/register scripts/check-clean-tree.ts",
-    "jobs:recover": "tsx -r tsconfig-paths/register scripts/recover-running-jobs.ts"
+    "check:clean": "tsx -r tsconfig-paths/register scripts/check-clean-tree.ts"
   },
   "dependencies": {
     "@next/env": "^15.1.0",

@@ -7,13 +7,7 @@ import { quotaConfig } from "@/lib/quotas";
 import { maxParallelJobs } from "./jobStore";
 import { countJobsByStatusSqlite, countJobsSqlite, sqlitePrimary } from "./sqliteStore";
 
-type SizeCache = { at: number; value: number };
-const sizeCache = new Map<string, SizeCache>();
-const statusCacheMs = Math.max(1_000, Number(process.env.TILEFORGE_STATUS_SIZE_CACHE_MS ?? 30_000));
-
 function dirSizeBytes(dir: string): number {
-  const cached = sizeCache.get(dir);
-  if (cached && Date.now() - cached.at < statusCacheMs) return cached.value;
   if (!fs.existsSync(dir)) return 0;
   let total = 0;
   const stack = [dir];
@@ -27,25 +21,25 @@ function dirSizeBytes(dir: string): number {
       } catch { /* ignore transient files */ }
     }
   }
-  sizeCache.set(dir, { at: Date.now(), value: total });
   return total;
 }
 
 function countJobs(root: string) {
-  const out = { total: 0, queued: 0, running: 0, failed: 0, succeeded: 0, cancelled: 0 };
   if (sqlitePrimary()) {
     const counts = countJobsByStatusSqlite();
     const total = countJobsSqlite();
     if (counts && total !== undefined) {
-      out.total = total;
-      out.queued = counts.queued ?? 0;
-      out.running = counts.running ?? 0;
-      out.failed = counts.failed ?? 0;
-      out.cancelled = counts.cancelled ?? 0;
-      out.succeeded = (counts.succeeded ?? 0) + (counts.succeeded_with_warnings ?? 0);
-      return out;
+      return {
+        total,
+        queued: Number(counts.queued ?? 0),
+        running: Number(counts.running ?? 0),
+        failed: Number(counts.failed ?? 0),
+        succeeded: Number(counts.succeeded ?? 0) + Number(counts.succeeded_with_warnings ?? 0),
+        cancelled: Number(counts.cancelled ?? 0),
+      };
     }
   }
+  const out = { total: 0, queued: 0, running: 0, failed: 0, succeeded: 0, cancelled: 0 };
   if (!fs.existsSync(root)) return out;
   for (const name of fs.readdirSync(root)) {
     const jobPath = path.join(root, name, "job.json");
@@ -58,6 +52,18 @@ function countJobs(root: string) {
     } catch { out.failed++; }
   }
   return out;
+}
+
+const STATUS_SIZE_CACHE_MS = Math.max(1000, Number(process.env.TILEFORGE_STATUS_SIZE_CACHE_MS ?? 30_000));
+const sizeCache = new Map<string, { at: number; bytes: number }>();
+
+function cachedDirSizeBytes(dir: string): number {
+  const now = Date.now();
+  const cached = sizeCache.get(dir);
+  if (cached && now - cached.at < STATUS_SIZE_CACHE_MS) return cached.bytes;
+  const bytes = dirSizeBytes(dir);
+  sizeCache.set(dir, { at: now, bytes });
+  return bytes;
 }
 
 type CpuTimes = { idle: number; total: number };
@@ -98,8 +104,8 @@ function sampleCpuUsage() {
 export function systemStatus() {
   const paths = workspacePaths();
   const jobs = countJobs(paths.jobRoot);
-  const cacheBytes = dirSizeBytes(paths.cacheRoot);
-  const jobBytes = dirSizeBytes(paths.jobRoot);
+  const cacheBytes = cachedDirSizeBytes(paths.cacheRoot);
+  const jobBytes = cachedDirSizeBytes(paths.jobRoot);
   const tools = toolAvailability();
   const quota = quotaConfig();
   const totalMem = os.totalmem();
