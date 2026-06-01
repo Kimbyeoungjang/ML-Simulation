@@ -138,24 +138,36 @@ function jobSummaryFromRow(row: any): JobRecord {
   } as JobRecord & { artifactCount: number; hasReport: boolean };
 }
 
-const ARTIFACT_SUMMARY_JOIN = `
-  LEFT JOIN (
-    SELECT job_id, COUNT(*) AS artifact_count, MAX(CASE WHEN name='report.md' THEN 1 ELSE 0 END) AS has_report
-    FROM artifacts
-    GROUP BY job_id
-  ) a ON a.job_id = j.id
+const PICKED_JOB_SUMMARY_COLUMNS = `
+  id, status, kind, stage, progress, created_at, updated_at, started_at, finished_at,
+  json_extract(json, '$.name') AS name,
+  json_extract(json, '$.requestHash') AS request_hash
 `;
 
-const JOB_SUMMARY_COLUMNS = `
-  j.id, j.status, j.kind, j.stage, j.progress, j.created_at, j.updated_at, j.started_at, j.finished_at,
-  json_extract(j.json, '$.name') AS name,
-  json_extract(j.json, '$.requestHash') AS request_hash,
-  COALESCE(a.artifact_count, 0) AS artifact_count,
-  COALESCE(a.has_report, 0) AS has_report
+const JOB_SUMMARY_COLUMNS_FROM_PICKED = `
+  p.id, p.status, p.kind, p.stage, p.progress, p.created_at, p.updated_at, p.started_at, p.finished_at,
+  p.name, p.request_hash,
+  COALESCE((SELECT COUNT(*) FROM artifacts a WHERE a.job_id = p.id), 0) AS artifact_count,
+  COALESCE((SELECT 1 FROM artifacts a WHERE a.job_id = p.id AND a.name = 'report.md' LIMIT 1), 0) AS has_report
 `;
 
 function summaryRowsToJobs(rows: any[]): JobRecord[] {
   return rows.map(jobSummaryFromRow);
+}
+
+function limitedSummarySql(where: string, orderBy: string, withOffset = false): string {
+  return `
+    WITH picked AS (
+      SELECT ${PICKED_JOB_SUMMARY_COLUMNS}
+      FROM jobs
+      ${where}
+      ORDER BY ${orderBy}
+      LIMIT ?${withOffset ? " OFFSET ?" : ""}
+    )
+    SELECT ${JOB_SUMMARY_COLUMNS_FROM_PICKED}
+    FROM picked p
+    ORDER BY ${orderBy.replace(/\bj\./g, "p.")}
+  `;
 }
 
 export function listDashboardJobsSqlite(limit = 80): { jobs: JobRecord[]; total: number; counts: Record<string, number> } | undefined {
@@ -172,9 +184,9 @@ export function listDashboardJobsSqlite(limit = 80): { jobs: JobRecord[]; total:
         if (!picked.has(job.id)) picked.set(job.id, job);
       }
     };
-    addRows(d.prepare(`SELECT ${JOB_SUMMARY_COLUMNS} FROM jobs j ${ARTIFACT_SUMMARY_JOIN} WHERE j.status='running' ORDER BY j.updated_at DESC LIMIT ?`).all(safeLimit));
-    addRows(d.prepare(`SELECT ${JOB_SUMMARY_COLUMNS} FROM jobs j ${ARTIFACT_SUMMARY_JOIN} WHERE j.status='queued' ORDER BY j.created_at ASC LIMIT ?`).all(Math.max(10, safeLimit)));
-    addRows(d.prepare(`SELECT ${JOB_SUMMARY_COLUMNS} FROM jobs j ${ARTIFACT_SUMMARY_JOIN} WHERE j.status IN ('succeeded','succeeded_with_warnings','failed','cancelled') ORDER BY j.updated_at DESC LIMIT ?`).all(safeLimit));
+    addRows(d.prepare(limitedSummarySql("WHERE status='running'", "updated_at DESC")).all(safeLimit));
+    addRows(d.prepare(limitedSummarySql("WHERE status='queued'", "created_at ASC")).all(Math.max(10, safeLimit)));
+    addRows(d.prepare(limitedSummarySql("WHERE status IN ('succeeded','succeeded_with_warnings','failed','cancelled')", "updated_at DESC")).all(safeLimit));
     return { jobs: [...picked.values()], total, counts };
   } catch {
     return undefined;
@@ -197,7 +209,7 @@ export function listJobsPageSqlite(limit = 80, page = 1, status?: string): { job
     const countWhere = status ? " WHERE status=?" : "";
     const total = Number(d.prepare(`SELECT COUNT(*) AS n FROM jobs${countWhere}`).get(...params).n ?? 0);
     const offset = (safePage - 1) * safeLimit;
-    const rows = d.prepare(`SELECT ${JOB_SUMMARY_COLUMNS} FROM jobs j ${ARTIFACT_SUMMARY_JOIN}${where} ORDER BY j.created_at DESC LIMIT ? OFFSET ?`).all(...params, safeLimit, offset);
+    const rows = d.prepare(limitedSummarySql(where.replace(/j\./g, ""), "created_at DESC", true)).all(...params, safeLimit, offset);
     return { jobs: summaryRowsToJobs(rows), total, counts };
   } catch {
     return undefined;

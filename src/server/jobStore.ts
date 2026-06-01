@@ -56,18 +56,37 @@ function trimJobForStorage(job: JobRecord) {
   }
 }
 
-export function maxParallelJobs(): number {
-  // Read .env on every check so the UI can change TILEFORGE_MAX_PARALLEL_JOBS
-  // without restarting the long-running worker process. the .env value wins so changes saved from the UI are picked up
-  // by both the web server and the separate worker process without restart.
+let maxParallelEnvCache: { expiresAt: number; envFile: Record<string, string> } | undefined;
+
+function readProjectDotEnvCached(): Record<string, string> {
+  const ttl = Math.max(250, Math.min(Number(process.env.TILEFORGE_ENV_CACHE_MS ?? 1000), 10_000));
+  const now = Date.now();
+  if (maxParallelEnvCache && maxParallelEnvCache.expiresAt > now) return maxParallelEnvCache.envFile;
   const envFile = readProjectDotEnv();
+  maxParallelEnvCache = { envFile, expiresAt: now + ttl };
+  return envFile;
+}
+
+export function maxParallelJobs(): number {
+  // Read .env periodically so the UI can change TILEFORGE_MAX_PARALLEL_JOBS
+  // without restarting the long-running worker process. The cached read avoids
+  // synchronous .env disk I/O on every worker scheduling loop and every status poll.
+  const envFile = readProjectDotEnvCached();
   const value = envFile.TILEFORGE_MAX_PARALLEL_JOBS
     ?? process.env.TILEFORGE_MAX_PARALLEL_JOBS
     ?? envFile.TILEFORGE_JOB_PARALLELISM
     ?? process.env.TILEFORGE_JOB_PARALLELISM
     ?? 2;
-  const parsed = Number(value);
-  return Math.max(1, Math.min(Number.isFinite(parsed) ? Math.floor(parsed) : 2, 32));
+  const requested = Number(value);
+  const rawLimit = Number.isFinite(requested) ? Math.floor(requested) : 2;
+  const capValue = process.env.TILEFORGE_MAX_PARALLEL_JOBS_CAP
+    ?? envFile.TILEFORGE_MAX_PARALLEL_JOBS_CAP
+    ?? process.env.TILEFORGE_WEB_SAFE_PARALLEL_CAP
+    ?? envFile.TILEFORGE_WEB_SAFE_PARALLEL_CAP
+    ?? 8;
+  const parsedCap = Number(capValue);
+  const cap = Math.max(1, Math.min(Number.isFinite(parsedCap) ? Math.floor(parsedCap) : 8, 32));
+  return Math.max(1, Math.min(rawLimit, cap, 32));
 }
 export function requestCacheKey(kind: JobKind, request: SearchRequest): string {
   return hashObject({ jobKind: kind, request });

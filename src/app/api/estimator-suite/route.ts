@@ -13,6 +13,18 @@ import { activateEstimatorSuiteModel, clearActiveEstimatorSuiteModel, listEstima
 import { formatZodError, parseSearchRequest } from "@/lib/validation";
 import { getJobRoot, getWorkspaceRoot, jobDir } from "@/server/workspace";
 
+
+let estimatorSuiteGetCache: { expiresAt: number; payload: any } | undefined;
+
+function estimatorSuiteGetCacheMs() {
+  const parsed = Number(process.env.TILEFORGE_ESTIMATOR_SUITE_API_CACHE_MS ?? 10000);
+  return Math.max(1000, Math.min(Number.isFinite(parsed) ? parsed : 10000, 60_000));
+}
+
+function invalidateEstimatorSuiteGetCache() {
+  estimatorSuiteGetCache = undefined;
+}
+
 function num(body: any, name: string, fallback: number) {
   const v = Number(body?.options?.[name] ?? body?.[name]);
   return Number.isFinite(v) ? v : fallback;
@@ -32,9 +44,13 @@ async function writeRunArtifacts(runId: string, files: Record<string, string>) {
 
 export async function GET() {
   try {
+    const now = Date.now();
+    if (estimatorSuiteGetCache && estimatorSuiteGetCache.expiresAt > now) return NextResponse.json({ ...estimatorSuiteGetCache.payload, cached: true });
     const payload = await listEstimatorSuiteModels();
     const activeModel = await readActiveEstimatorSuiteModel();
-    return NextResponse.json({ ok: true, ...payload, activeModel });
+    const response = { ok: true, ...payload, activeModel };
+    estimatorSuiteGetCache = { payload: response, expiresAt: now + estimatorSuiteGetCacheMs() };
+    return NextResponse.json(response);
   } catch (error) {
     return NextResponse.json({ ok: false, error: formatZodError(error) }, { status: 400 });
   }
@@ -42,6 +58,7 @@ export async function GET() {
 
 export async function POST(req: Request) {
   try {
+    invalidateEstimatorSuiteGetCache();
     const body = await req.json();
     const action = String(body.action ?? "suite");
     const runId = stableId("est_suite");

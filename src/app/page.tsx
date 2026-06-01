@@ -318,8 +318,14 @@ export default function Home() {
   );
 
   useEffect(() => {
-    void refreshPresets();
-    void refreshEstimatorSuiteModels();
+    // Stagger cold-start API calls so Next dev does not compile several routes
+    // while the worker is also launching many external jobs.
+    const t1 = window.setTimeout(() => void refreshPresets(), 100);
+    const t2 = window.setTimeout(() => void refreshEstimatorSuiteModels(), 350);
+    return () => {
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+    };
   }, []);
 
   async function refreshEnvSettings() {
@@ -393,7 +399,7 @@ export default function Home() {
       if (!autoRefreshEnabled) return;
       void refreshJobs({ switchTab: false, updateReport: false, skipIfBusy: true });
       void refreshStatus(false, { skipIfBusy: true });
-    }, 10000);
+    }, 15000);
     return () => {
       window.clearInterval(timer);
       liveEventSource.current?.close();

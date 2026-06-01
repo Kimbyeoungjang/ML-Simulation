@@ -22,6 +22,17 @@ async function presetNameExists(dir: string, name: string): Promise<boolean> {
   return entries.some((entry) => entry.isFile() && entry.name.replace(/\.json$/, "") === safe);
 }
 
+let presetsCache: { expiresAt: number; payload: any } | undefined;
+
+function presetsCacheMs() {
+  const parsed = Number(process.env.TILEFORGE_PRESETS_API_CACHE_MS ?? 30000);
+  return Math.max(1000, Math.min(Number.isFinite(parsed) ? parsed : 30000, 5 * 60_000));
+}
+
+function invalidatePresetsCache() {
+  presetsCache = undefined;
+}
+
 async function readPresetDir(dir: string, source: string) {
   await mkdir(dir, { recursive: true });
   const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
@@ -37,6 +48,8 @@ async function readPresetDir(dir: string, source: string) {
 }
 
 export async function GET() {
+  const now = Date.now();
+  if (presetsCache && presetsCache.expiresAt > now) return NextResponse.json({ ...presetsCache.payload, cached: true });
   const presets = [
     ...(await readPresetDir(DEFAULT_DIR, "default")),
     ...(await readPresetDir(USER_DIR, "user")),
@@ -44,7 +57,9 @@ export async function GET() {
   const hardwarePresets = (await readPresetDir(HARDWARE_DIR, "hardware")).sort((a, b) => String(a.name).localeCompare(String(b.name)));
   const workloadPresets = (await readPresetDir(WORKLOAD_DIR, "workload")).sort((a, b) => String(a.name).localeCompare(String(b.name)));
   const estimatorPresets = (await readPresetDir(ESTIMATOR_DIR, "estimator")).sort((a, b) => String(a.name).localeCompare(String(b.name)));
-  return NextResponse.json({ presets, hardwarePresets, workloadPresets, estimatorPresets });
+  const payload = { presets, hardwarePresets, workloadPresets, estimatorPresets };
+  presetsCache = { payload, expiresAt: now + presetsCacheMs() };
+  return NextResponse.json(payload);
 }
 
 export async function POST(req: Request) {
@@ -62,6 +77,7 @@ export async function POST(req: Request) {
     await mkdir(HARDWARE_DIR, { recursive: true });
     const preset = { kind, name, hardware: { ...body.hardware, name: body.hardware.name ?? name }, savedAt, source: "hardware" };
     await atomicWriteFile(path.join(HARDWARE_DIR, `${name}.json`), JSON.stringify(preset, null, 2));
+    invalidatePresetsCache();
     return NextResponse.json({ ok: true, preset });
   }
 
@@ -70,6 +86,7 @@ export async function POST(req: Request) {
     await mkdir(WORKLOAD_DIR, { recursive: true });
     const preset = { kind, name, shapes: body.shapes, savedAt, source: "workload" };
     await atomicWriteFile(path.join(WORKLOAD_DIR, `${name}.json`), JSON.stringify(preset, null, 2));
+    invalidatePresetsCache();
     return NextResponse.json({ ok: true, preset });
   }
 
@@ -89,12 +106,14 @@ export async function POST(req: Request) {
       source: "estimator",
     };
     await atomicWriteFile(path.join(ESTIMATOR_DIR, `${name}.json`), JSON.stringify(preset, null, 2));
+    invalidatePresetsCache();
     return NextResponse.json({ ok: true, preset });
   }
 
   const preset = { ...body, name, source: "user", savedAt };
   await mkdir(USER_DIR, { recursive: true });
   await atomicWriteFile(path.join(USER_DIR, `${name}.json`), JSON.stringify(preset, null, 2));
+  invalidatePresetsCache();
   return NextResponse.json({ ok: true, preset });
 }
 
@@ -105,5 +124,6 @@ export async function DELETE(req: Request) {
   if (!name) return NextResponse.json({ error: "name is required" }, { status: 400 });
   const dir = kind === "hardware" ? HARDWARE_DIR : kind === "workload" ? WORKLOAD_DIR : kind === "estimator" ? ESTIMATOR_DIR : USER_DIR;
   await rm(path.join(dir, `${name}.json`), { force: true });
+  invalidatePresetsCache();
   return NextResponse.json({ ok: true, kind, name });
 }

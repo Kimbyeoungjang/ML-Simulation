@@ -1,0 +1,17 @@
+TileForge final rebuild
+
+This archive was rebuilt by overlaying the latest status/throttle/web stability changes onto the uploaded ML-Simulation.zip.
+
+Expected checks from project root:
+  Select-String -Path .env.example -Pattern "TILEFORGE_STATUS_SCAN_STORAGE"
+  Select-String -Path .env -Pattern "TILEFORGE_STATUS_SCAN_STORAGE"
+  Select-String -Path src\server\systemStatus.ts -Pattern "TILEFORGE_STATUS_SCAN_STORAGE"
+  Select-String -Path src\server\jobStore.ts -Pattern "TILEFORGE_MAX_PARALLEL_JOBS_CAP"
+
+Expected strings:
+  TILEFORGE_MAX_PARALLEL_JOBS_CAP
+  TILEFORGE_STATUS_COUNTS_CACHE_MS
+  TILEFORGE_STATUS_SIZE_CACHE_MS
+  TILEFORGE_STATUS_SCAN_STORAGE
+  TILEFORGE_MAX_PREDICTION_ARTIFACT_ROWS
+  Real ML Comprehensive 32k
