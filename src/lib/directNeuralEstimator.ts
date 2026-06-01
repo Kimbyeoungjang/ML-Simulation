@@ -41,6 +41,15 @@ function clamp(x: number, lo: number, hi: number) { return Math.max(lo, Math.min
 function target(s: LearnedEstimatorSample) { return clamp(Math.log(Math.max(1, s.measuredCycles)), Math.log(1), Math.log(1e15)); }
 function rng(seed: number) { let s = seed >>> 0; return () => { s = (1664525 * s + 1013904223) >>> 0; return s / 0x100000000; }; }
 function shuffle<T>(items: T[], seed: number): T[] { const rand = rng(seed); const out = items.slice(); for (let i = out.length - 1; i > 0; i--) { const j = Math.floor(rand() * (i + 1)); [out[i], out[j]] = [out[j], out[i]]; } return out; }
+
+function resetShuffledIndices(order: number[], rand: () => number) {
+  for (let i = 0; i < order.length; i++) order[i] = i;
+  for (let i = order.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [order[i], order[j]] = [order[j], order[i]];
+  }
+  return order;
+}
 function normalizeStats(xs: number[][]) { const cols = xs[0]?.length ?? 0; const featureMean = Array.from({ length: cols }, (_, j) => mean(xs.map(r => r[j] ?? 0))); const featureStd = Array.from({ length: cols }, (_, j) => std(xs.map(r => r[j] ?? 0), featureMean[j])); return { featureMean, featureStd }; }
 function applyNorm(x: number[], mu: number[], sigma: number[]) { return mu.map((m, i) => ((x[i] ?? 0) - m) / (sigma[i] || 1)); }
 function tanh(x: number) { return Math.tanh(clamp(x, -20, 20)); }
@@ -73,8 +82,9 @@ export function trainDirectNeuralEstimator(samples: LearnedEstimatorSample[], op
   const l2 = opts.l2 ?? 1e-4;
   opts.progress?.({ stage: "training-neural", message: `Direct Neural cycle 학습 시작: hidden=${hiddenUnits}, epochs=${epochs}, train=${train.length}, validation=${validation.length}`, progress: 0 });
   let lastEpochPct = -1;
+  const order = Array.from({ length: trainX.length }, (_, i) => i);
   for (let epoch = 0; epoch < epochs; epoch++) {
-    const order = shuffle(trainX.map((_, i) => i), seed + epoch + 7100);
+    resetShuffledIndices(order, rng(seed + epoch + 7100));
     const lr = lr0 / Math.sqrt(1 + epoch / 80);
     for (const ix of order) {
       const x = trainX[ix];

@@ -385,27 +385,6 @@ export function EstimatorSuitePanel({
             />
           </MiniField>
         </div>
-        <div className="row2">
-          <MiniField
-            label="shape bank"
-            tip="등록된 workload preset shape를 함께 포함합니다. 예: all, transformer, llm, cnn, ViT-S encoder block"
-          >
-            <input
-              value={planOptions.shapeBank ?? ""}
-              onChange={(e) =>
-                updatePlanOptions({ shapeBank: e.target.value })
-              }
-              placeholder="예: all 또는 transformer,llm,cnn"
-            />
-          </MiniField>
-          <div className="info-box compact">
-            <b>shape bank alias</b>
-            <p className="small">
-              <code>all</code>은 등록된 ViT/BERT/GPT/Llama/ResNet shape를 모두 포함합니다.
-              <code>transformer</code>, <code>llm</code>, <code>cnn</code> 또는 정확한 workload preset 이름도 사용할 수 있습니다.
-            </p>
-          </div>
-        </div>
         <label
           className="check"
           title="켜면 현재 입력 패널의 workload shape도 표본 계획에 포함합니다."

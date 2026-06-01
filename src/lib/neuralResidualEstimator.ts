@@ -69,6 +69,15 @@ function shuffle<T>(items: T[], seed: number): T[] {
   return out;
 }
 
+
+function resetShuffledIndices(order: number[], rand: () => number) {
+  for (let i = 0; i < order.length; i++) order[i] = i;
+  for (let i = order.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [order[i], order[j]] = [order[j], order[i]];
+  }
+  return order;
+}
 function normalizeStats(xs: number[][]) {
   const cols = xs[0]?.length ?? 0;
   const featureMean = Array.from({ length: cols }, (_, j) => mean(xs.map(r => r[j] ?? 0)));
@@ -115,8 +124,9 @@ export function trainNeuralResidualEstimator(samples: LearnedEstimatorSample[], 
 
   opts.progress?.({ stage: "training-neural", message: `Neural residual 학습 시작: hidden=${hiddenUnits}, epochs=${epochs}, train=${train.length}, validation=${validation.length}`, progress: 0 });
   let lastEpochPct = -1;
+  const order = Array.from({ length: trainX.length }, (_, i) => i);
   for (let epoch = 0; epoch < epochs; epoch++) {
-    const order = shuffle(trainX.map((_, i) => i), seed + epoch + 1000);
+    resetShuffledIndices(order, rng(seed + epoch + 1000));
     const lr = lr0 / Math.sqrt(1 + epoch / 80);
     for (const ix of order) {
       const x = trainX[ix];

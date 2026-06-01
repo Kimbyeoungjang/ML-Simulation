@@ -1,40 +1,37 @@
 import "../src/server/env";
-import { listJobs, releaseJobLock, saveJob } from "../src/server/jobStore";
-import { nowIso } from "../src/lib/determinism";
+import { listJobs, readJob, releaseJobLock, saveJob } from "../src/server/jobStore";
 
 const force = process.argv.includes("--force");
-const requeue = process.argv.includes("--requeue") || process.argv.includes("--queued");
-const olderThanMsArg = process.argv.find((a) => a.startsWith("--older-than-ms="));
-const olderThanMs = Number(olderThanMsArg?.split("=")[1] ?? 30_000);
-const now = Date.now();
-let touched = 0;
+const requeue = process.argv.includes("--requeue");
 
-for (const job of await listJobs()) {
-  if (job.status !== "running") continue;
-  const ageMs = now - Date.parse(job.updatedAt || job.createdAt || new Date(0).toISOString());
-  if (!force && Number.isFinite(ageMs) && ageMs < olderThanMs) continue;
-  if (requeue) {
-    job.status = "queued";
-    job.stage = "queued";
-    job.progress = 0;
-    job.startedAt = undefined;
-    job.finishedAt = undefined;
-    job.error = undefined;
-  } else {
-    job.status = "failed";
-    job.stage = "failed" as any;
-    job.progress = Math.max(job.progress ?? 0, 95);
-    job.finishedAt = nowIso();
-    job.error = JSON.stringify({
-      code: "MANUAL_RUNNING_JOB_RECOVERY",
-      message: "worker crash/OOM 이후 running 상태로 남은 job을 수동 복구했습니다.",
-    }, null, 2);
+async function main() {
+  const jobs = (await listJobs()).filter((j) => j.status === "running");
+  let changed = 0;
+  for (const job of jobs) {
+    const latest = await readJob(job.id).catch(() => job);
+    if (latest.status !== "running") continue;
+    if (!force) {
+      console.log(`${latest.id}\t${latest.name ?? ""}\t${latest.stage}\t${latest.updatedAt}`);
+      continue;
+    }
+    latest.status = requeue ? "queued" : "failed";
+    latest.stage = requeue ? "queued" : ("failed" as any);
+    latest.progress = requeue ? 0 : Math.max(latest.progress ?? 0, 95);
+    latest.error = requeue ? undefined : JSON.stringify({ code: "MANUAL_RUNNING_RECOVERY", message: "Manually recovered a running job after worker crash/OOM." }, null, 2);
+    latest.finishedAt = requeue ? undefined : new Date().toISOString();
+    await releaseJobLock(latest);
+    await saveJob(latest);
+    changed++;
   }
-  job.updatedAt = nowIso();
-  job.logs = [...(job.logs ?? []), `[${job.updatedAt}] ${requeue ? "running job을 queued로 되돌렸습니다." : "running job을 failed로 정리했습니다."}`].slice(-300);
-  await saveJob(job);
-  await releaseJobLock(job).catch(() => undefined);
-  touched++;
+  if (!force) {
+    console.log(`running jobs: ${jobs.length}`);
+    console.log("Use --force to mark them failed, or --force --requeue to put them back in queue.");
+  } else {
+    console.log(`${changed} running job(s) ${requeue ? "requeued" : "marked failed"}.`);
+  }
 }
 
-console.log(JSON.stringify({ ok: true, touched, mode: requeue ? "requeue" : "fail", force, olderThanMs }, null, 2));
+main().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});

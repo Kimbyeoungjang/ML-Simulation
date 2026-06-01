@@ -360,7 +360,9 @@ async function runEstimatorSuiteTrainingJob(job: JobRecord) {
   });
 
   updateProgressImmediate(job, "writing-artifacts", 97, "학습 산출물 생성 중");
-  const bundle = buildEstimatorSuiteArtifacts(model, samples);
+  const bundle = buildEstimatorSuiteArtifacts(model, samples, {
+    maxPredictionRows: suiteNum(payload, "maxPredictionRows", suiteNum(payload, "max-prediction-rows", Number(process.env.TILEFORGE_MAX_PREDICTION_ARTIFACT_ROWS ?? 20000))),
+  });
   const files: Record<string, string> = {
     "estimator-suite-model.json": bundle.modelJson,
     "suite-tree-residual-model.json": bundle.treeModelJson,

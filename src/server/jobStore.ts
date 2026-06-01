@@ -16,6 +16,37 @@ import { assertTransition, isTerminalStatus } from "@/lib/stateMachine";
 const DEFAULT_TIMEOUT_MS = Number(process.env.TILEFORGE_JOB_TIMEOUT_MS ?? 10 * 60 * 1000);
 const DEFAULT_MAX_ATTEMPTS = Number(process.env.TILEFORGE_JOB_MAX_ATTEMPTS ?? 1);
 const MAX_JOB_LOG_LINES = Math.max(50, Math.min(Number(process.env.TILEFORGE_MAX_JOB_LOG_LINES ?? 300), 2000));
+
+function envNumber(name: string, fallback: number): number {
+  const envFile = readProjectDotEnv();
+  const value = envFile[name] ?? process.env[name];
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function processIsAlive(pid: unknown): boolean | undefined {
+  const n = Number(pid);
+  if (!Number.isInteger(n) || n <= 0) return undefined;
+  try {
+    process.kill(n, 0);
+    return true;
+  } catch (error: any) {
+    if (error?.code === "ESRCH") return false;
+    if (error?.code === "EPERM") return true;
+    return undefined;
+  }
+}
+
+async function lockProcessIsDead(job: JobRecord): Promise<boolean> {
+  const lock = path.join(jobDir(job.id), "job.lock");
+  try {
+    const raw = await readFile(lock, "utf8");
+    const parsed = JSON.parse(raw);
+    return processIsAlive(parsed?.pid) === false;
+  } catch {
+    return false;
+  }
+}
 function trimJobForStorage(job: JobRecord) {
   if (Array.isArray(job.logs) && job.logs.length > MAX_JOB_LOG_LINES) {
     job.logs = job.logs.slice(-MAX_JOB_LOG_LINES);
@@ -194,17 +225,20 @@ export async function findQueued(excludeIds: string[] = []): Promise<JobRecord |
   return jobs.reverse().find(j => j.status === "queued" && !excluded.has(j.id));
 }
 
-export async function claimQueuedJob(excludeIds: string[] = []): Promise<JobRecord | undefined> {
+export async function claimQueuedJob(
+  excludeIds: string[] = [],
+  options: { includeKinds?: JobKind[]; excludeKinds?: JobKind[] } = {},
+): Promise<JobRecord | undefined> {
   const running = await runningJobCount();
   if (running >= maxParallelJobs()) return undefined;
-  const sqliteCandidates = sqlitePrimary() ? selectQueuedJobsSqlite(64, excludeIds) : undefined;
-  const candidates = sqliteCandidates ?? (() => {
-    return [] as JobRecord[];
-  })();
+  const includeKinds = options.includeKinds ? new Set(options.includeKinds) : undefined;
+  const excludeKinds = options.excludeKinds ? new Set(options.excludeKinds) : undefined;
+  const matchesKind = (j: JobRecord) => (!includeKinds || includeKinds.has(j.kind)) && !excludeKinds?.has(j.kind);
+  const sqliteCandidates = sqlitePrimary() ? selectQueuedJobsSqlite(128, excludeIds).filter(matchesKind) : undefined;
   const fallbackCandidates = async () => {
     const jobs = await listJobs();
     const excluded = new Set(excludeIds);
-    return jobs.reverse().filter(j => j.status === "queued" && !excluded.has(j.id));
+    return jobs.reverse().filter(j => j.status === "queued" && !excluded.has(j.id) && matchesKind(j));
   };
   for (const job of (sqliteCandidates ?? await fallbackCandidates())) {
     const locked = await acquireJobLock(job);
@@ -223,21 +257,28 @@ export async function claimQueuedJob(excludeIds: string[] = []): Promise<JobReco
 export async function recoverStaleRunningJobs(): Promise<number> {
   const jobs = await listJobs();
   const now = Date.now();
+  const deadLockGraceMs = Math.max(5_000, envNumber("TILEFORGE_STALE_RUNNING_GRACE_MS", 30_000));
   let recovered = 0;
   for (const job of jobs) {
     if (job.status !== "running") continue;
     const ageMs = now - Date.parse(job.updatedAt || job.createdAt || new Date(0).toISOString());
-    const staleMs = Math.max(Number(job.timeoutMs ?? DEFAULT_TIMEOUT_MS) + 30_000, 90_000);
+    const lockDead = await lockProcessIsDead(job);
+    const staleMs = lockDead
+      ? deadLockGraceMs
+      : Math.max(Number(job.timeoutMs ?? DEFAULT_TIMEOUT_MS) + 30_000, 90_000);
     if (!Number.isFinite(ageMs) || ageMs < staleMs) continue;
     job.status = "failed";
     job.stage = "failed" as any;
     job.progress = Math.max(job.progress ?? 0, 95);
     job.finishedAt = nowIso();
     job.error = JSON.stringify({
-      code: "STALE_RUNNING_JOB",
-      message: `worker가 종료되었거나 응답하지 않아 ${Math.round(ageMs / 1000)}초 동안 갱신되지 않은 running job을 실패 처리했습니다.`,
+      code: lockDead ? "DEAD_LOCK_RUNNING_JOB" : "STALE_RUNNING_JOB",
+      message: lockDead
+        ? `job.lock의 worker PID가 살아있지 않아 ${Math.round(ageMs / 1000)}초 후 running job을 실패 처리했습니다.`
+        : `worker가 종료되었거나 응답하지 않아 ${Math.round(ageMs / 1000)}초 동안 갱신되지 않은 running job을 실패 처리했습니다.`,
     }, null, 2);
-    appendLogSync(job, "오래 갱신되지 않은 running job을 실패 처리하고 큐를 계속 진행합니다.");
+    appendLogSync(job, lockDead ? "죽은 worker lock을 감지해 running job을 실패 처리하고 큐를 계속 진행합니다." : "오래 갱신되지 않은 running job을 실패 처리하고 큐를 계속 진행합니다.");
+    await releaseJobLock(job);
     await saveJob(job);
     recovered++;
   }
@@ -332,10 +373,11 @@ export async function acquireJobLock(job: JobRecord): Promise<boolean> {
     try {
       const s = await stat(lock);
       const ageMs = Date.now() - s.mtimeMs;
-      if (ageMs > Math.max(job.timeoutMs ?? DEFAULT_TIMEOUT_MS, 60_000)) {
+      const dead = await lockProcessIsDead(job);
+      if (dead || ageMs > Math.max(job.timeoutMs ?? DEFAULT_TIMEOUT_MS, 60_000)) {
         await rm(lock, { force: true });
-        await writeFile(lock, JSON.stringify({ pid: process.pid, acquiredAt: nowIso(), recoveredStale: true }), { flag: "wx" });
-        await addLog(job, "Recovered stale job lock");
+        await writeFile(lock, JSON.stringify({ pid: process.pid, acquiredAt: nowIso(), recoveredStale: true, previousLockDead: dead }), { flag: "wx" });
+        await addLog(job, dead ? "Recovered dead-process job lock" : "Recovered stale job lock");
         return true;
       }
     } catch {}

@@ -221,7 +221,9 @@ export async function POST(req: Request) {
       maxFinalTrainSamples: num(body, "maxFinalTrainSamples", num(body, "max-final-train", 20000)),
       splitKinds: normalizeSuiteSplitKinds(body.options?.splits ?? body.splits),
     });
-    const bundle = buildEstimatorSuiteArtifacts(model, samples);
+    const bundle = buildEstimatorSuiteArtifacts(model, samples, {
+      maxPredictionRows: num(body, "maxPredictionRows", num(body, "max-prediction-rows", Number(process.env.TILEFORGE_MAX_PREDICTION_ARTIFACT_ROWS ?? 20000))),
+    });
     const { dir, artifacts } = await writeRunArtifacts(runId, {
       "estimator-suite-model.json": bundle.modelJson,
       "suite-tree-residual-model.json": bundle.treeModelJson,

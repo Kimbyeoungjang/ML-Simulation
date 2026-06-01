@@ -24,6 +24,11 @@ export interface EstimatorSuiteArtifactBundle {
   reportMarkdown: string;
 }
 
+export interface EstimatorSuiteArtifactOptions {
+  /** Limit prediction CSV rows to avoid multi-GB strings when datasets grow. 0 means no prediction CSV rows. */
+  maxPredictionRows?: number;
+}
+
 function csvEscape(v: unknown) {
   const s = String(v ?? "");
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
@@ -316,9 +321,18 @@ export function normalizeSuiteSplitKinds(
   return out.length ? out : ["random"];
 }
 
+function selectPredictionArtifactSamples(samples: LearnedEstimatorSample[], maxRows: number | undefined) {
+  const limit = Math.max(0, Math.floor(maxRows ?? Number(process.env.TILEFORGE_MAX_PREDICTION_ARTIFACT_ROWS ?? 20_000)));
+  if (limit <= 0) return [];
+  if (samples.length <= limit) return samples;
+  const stride = samples.length / limit;
+  return Array.from({ length: limit }, (_, i) => samples[Math.min(samples.length - 1, Math.floor(i * stride))]);
+}
+
 export function buildEstimatorSuiteArtifacts(
   model: EstimatorSuiteModel,
   samples: LearnedEstimatorSample[],
+  options: EstimatorSuiteArtifactOptions = {},
 ): EstimatorSuiteArtifactBundle {
   const rows = model.validationSuite;
   const metricRows = rows
@@ -388,7 +402,7 @@ export function buildEstimatorSuiteArtifacts(
       summarizeSuiteValidation(model) as unknown as Record<string, unknown>[],
     ),
     predictionsCsv: toEstimatorCsv(
-      estimatorSuitePredictionRows(samples, model) as unknown as Record<
+      estimatorSuitePredictionRows(selectPredictionArtifactSamples(samples, options.maxPredictionRows), model) as unknown as Record<
         string,
         unknown
       >[],
