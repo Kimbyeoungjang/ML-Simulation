@@ -173,7 +173,7 @@ export default function Home() {
   const [jobsPayload, setJobsPayload] = useState<any | null>(null);
   const [jobsViewMode, setJobsViewMode] = useState<"dashboard" | "paged">("dashboard");
   const [jobsPage, setJobsPage] = useState(1);
-  const [jobsPageSize, setJobsPageSize] = useState(50);
+  const [jobsPageSize, setJobsPageSize] = useState(20);
   const [statusJson, setStatusJson] = useState("");
   const [statusPayload, setStatusPayload] = useState<any | null>(null);
   const [serverReportMarkdown, setServerReportMarkdown] = useState("");

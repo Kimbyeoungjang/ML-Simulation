@@ -456,13 +456,23 @@ function jobCounts(jobs: JobRecord[]): Record<string, number> {
   return counts;
 }
 
-type PagedJobsResult = { jobs: JobRecord[]; nextCursor?: string; total: number; counts: Record<string, number>; view?: string; page?: number; pageSize?: number; totalPages?: number };
+type PagedJobsResult = { jobs: JobRecord[]; nextCursor?: string; total: number; counts: Record<string, number>; view?: string; page?: number; pageSize?: number; totalPages?: number; degraded?: boolean; stale?: boolean; note?: string };
 
+let lastSuccessfulJobsPage: PagedJobsResult | undefined;
 let pagedFallbackCache: { key: string; expiresAt: number; result: PagedJobsResult } | undefined;
 let pagedFallbackInflight: Map<string, Promise<PagedJobsResult>> = new Map();
 
 function fallbackJobsCacheMs(): number {
   return Math.max(1_000, Math.min(envNumber("TILEFORGE_JOBS_FALLBACK_CACHE_MS", 10_000), 60_000));
+}
+
+function jobsFastFallbackEnabled(): boolean {
+  return process.env.TILEFORGE_JOBS_FAST_FALLBACK !== "0" && process.env.TILEFORGE_JOBS_FAST_FALLBACK !== "false";
+}
+
+function rememberJobsPage<T extends PagedJobsResult>(result: T): T {
+  lastSuccessfulJobsPage = result;
+  return result;
 }
 
 function updatedDesc(a: JobRecord, b: JobRecord): number {
@@ -493,11 +503,15 @@ export async function listJobsPaged(options: ListJobsOptions = {}): Promise<Page
   const page = Math.max(1, Math.floor(options.page ?? 1));
   if (options.dashboard && !options.cursor && !options.status && !options.since && sqlitePrimary()) {
     const dash = listDashboardJobsSqlite(limit);
-    if (dash) return { jobs: dash.jobs.map(sanitizeJobForDisplay), total: dash.total, counts: dash.counts, view: "dashboard", page: 1, pageSize: limit, totalPages: Math.max(1, Math.ceil(dash.total / limit)) };
+    if (dash) return rememberJobsPage({ jobs: dash.jobs.map(sanitizeJobForDisplay), total: dash.total, counts: dash.counts, view: "dashboard", page: 1, pageSize: limit, totalPages: Math.max(1, Math.ceil(dash.total / limit)) });
   }
   if (!options.dashboard && !options.cursor && !options.since && sqlitePrimary()) {
     const paged = listJobsPageSqlite(limit, page, options.status);
-    if (paged) return { jobs: paged.jobs.map(sanitizeJobForDisplay), total: paged.total, counts: paged.counts, page, pageSize: limit, totalPages: Math.max(1, Math.ceil(paged.total / limit)) };
+    if (paged) return rememberJobsPage({ jobs: paged.jobs.map(sanitizeJobForDisplay), total: paged.total, counts: paged.counts, page, pageSize: limit, totalPages: Math.max(1, Math.ceil(paged.total / limit)) });
+  }
+  if (options.dashboard && jobsFastFallbackEnabled()) {
+    if (lastSuccessfulJobsPage) return { ...lastSuccessfulJobsPage, degraded: true, stale: true, note: "SQLite가 바쁜 동안 마지막 Jobs dashboard 응답을 재사용했습니다." };
+    return { jobs: [], total: 0, counts: {}, view: "dashboard", page: 1, pageSize: limit, totalPages: 1, degraded: true, note: "SQLite가 바빠서 느린 job.json 전체 스캔을 건너뛰었습니다." };
   }
 
   // Fallback path for environments where better-sqlite3 is unavailable or the
@@ -526,7 +540,7 @@ export async function listJobsPaged(options: ListJobsOptions = {}): Promise<Page
       result = { jobs, nextCursor, total: all.length, counts, page, pageSize: limit, totalPages: Math.max(1, Math.ceil(all.length / limit)) };
     }
     pagedFallbackCache = { key: cacheKey, expiresAt: Date.now() + fallbackJobsCacheMs(), result };
-    return result;
+    return rememberJobsPage(result);
   })();
   pagedFallbackInflight.set(cacheKey, inflight);
   try {

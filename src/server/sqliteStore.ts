@@ -24,6 +24,7 @@ export function getSqliteDb() {
     mkdirSync(root, { recursive: true });
     db = new Database(path.join(root, "tileforge.db"));
     db.pragma("journal_mode = WAL");
+    db.pragma(`busy_timeout = ${Math.max(25, Math.min(Number(process.env.TILEFORGE_SQLITE_BUSY_TIMEOUT_MS ?? 250), 5000))}`);
     runSqliteMigrations(db);
     enabled = true;
     return db;
@@ -33,15 +34,66 @@ export function getSqliteDb() {
   }
 }
 
+const lastFullJsonWriteByJob = new Map<string, number>();
+
+function sqliteJsonWriteIntervalMs(): number {
+  const parsed = Number(process.env.TILEFORGE_SQLITE_FULL_JSON_WRITE_INTERVAL_MS ?? 15000);
+  return Math.max(0, Math.min(Number.isFinite(parsed) ? parsed : 15000, 120000));
+}
+
+function isTerminalJobStatus(status: string): boolean {
+  return ["succeeded", "succeeded_with_warnings", "failed", "cancelled", "skipped_external_tool"].includes(status);
+}
+
 export function saveJobSqlite(job: JobRecord) {
   const d = getSqliteDb();
   if (!d) return;
-  d.prepare(`INSERT INTO jobs(id,status,kind,stage,progress,created_at,updated_at,started_at,finished_at,json)
-    VALUES(@id,@status,@kind,@stage,@progress,@createdAt,@updatedAt,@startedAt,@finishedAt,@json)
-    ON CONFLICT(id) DO UPDATE SET status=excluded.status, kind=excluded.kind, stage=excluded.stage, progress=excluded.progress, updated_at=excluded.updated_at, started_at=excluded.started_at, finished_at=excluded.finished_at, json=excluded.json`).run({
-      id: job.id, status: job.status, kind: job.kind, stage: job.stage ?? null, progress: job.progress ?? 0,
-      createdAt: job.createdAt, updatedAt: job.updatedAt, startedAt: job.startedAt ?? null, finishedAt: job.finishedAt ?? null, json: JSON.stringify(job)
-    });
+  const now = Date.now();
+  const lastFull = lastFullJsonWriteByJob.get(job.id) ?? 0;
+  const interval = sqliteJsonWriteIntervalMs();
+  const mustWriteFullJson = isTerminalJobStatus(job.status) || !lastFull || interval === 0 || now - lastFull >= interval;
+  const base = {
+    id: job.id,
+    status: job.status,
+    kind: job.kind,
+    stage: job.stage ?? null,
+    progress: job.progress ?? 0,
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+    startedAt: job.startedAt ?? null,
+    finishedAt: job.finishedAt ?? null,
+    name: job.name ?? null,
+    requestHash: job.requestHash ?? null,
+  };
+  if (mustWriteFullJson) {
+    d.prepare(`INSERT INTO jobs(id,status,kind,stage,progress,created_at,updated_at,started_at,finished_at,name,request_hash,json)
+      VALUES(@id,@status,@kind,@stage,@progress,@createdAt,@updatedAt,@startedAt,@finishedAt,@name,@requestHash,@json)
+      ON CONFLICT(id) DO UPDATE SET
+        status=excluded.status,
+        kind=excluded.kind,
+        stage=excluded.stage,
+        progress=excluded.progress,
+        updated_at=excluded.updated_at,
+        started_at=excluded.started_at,
+        finished_at=excluded.finished_at,
+        name=excluded.name,
+        request_hash=excluded.request_hash,
+        json=excluded.json`).run({ ...base, json: JSON.stringify(job) });
+    lastFullJsonWriteByJob.set(job.id, now);
+  } else {
+    d.prepare(`INSERT INTO jobs(id,status,kind,stage,progress,created_at,updated_at,started_at,finished_at,name,request_hash,json)
+      VALUES(@id,@status,@kind,@stage,@progress,@createdAt,@updatedAt,@startedAt,@finishedAt,@name,@requestHash,@json)
+      ON CONFLICT(id) DO UPDATE SET
+        status=excluded.status,
+        kind=excluded.kind,
+        stage=excluded.stage,
+        progress=excluded.progress,
+        updated_at=excluded.updated_at,
+        started_at=excluded.started_at,
+        finished_at=excluded.finished_at,
+        name=excluded.name,
+        request_hash=excluded.request_hash`).run({ ...base, json: JSON.stringify({ id: job.id, status: job.status, kind: job.kind, createdAt: job.createdAt, updatedAt: job.updatedAt }) });
+  }
   const insertArtifact = d.prepare(`INSERT OR IGNORE INTO artifacts(job_id,name,created_at,path) VALUES(?,?,?,?)`);
   for (const a of job.artifacts ?? []) insertArtifact.run(job.id, a, job.updatedAt, a);
 }
@@ -140,11 +192,18 @@ function jobSummaryFromRow(row: any): JobRecord {
 
 const PICKED_JOB_SUMMARY_COLUMNS = `
   id, status, kind, stage, progress, created_at, updated_at, started_at, finished_at,
-  json_extract(json, '$.name') AS name,
-  json_extract(json, '$.requestHash') AS request_hash
+  name,
+  request_hash
 `;
 
 const JOB_SUMMARY_COLUMNS_FROM_PICKED = `
+  p.id, p.status, p.kind, p.stage, p.progress, p.created_at, p.updated_at, p.started_at, p.finished_at,
+  p.name, p.request_hash,
+  0 AS artifact_count,
+  0 AS has_report
+`;
+
+const JOB_SUMMARY_COLUMNS_WITH_ARTIFACTS_FROM_PICKED = `
   p.id, p.status, p.kind, p.stage, p.progress, p.created_at, p.updated_at, p.started_at, p.finished_at,
   p.name, p.request_hash,
   COALESCE((SELECT COUNT(*) FROM artifacts a WHERE a.job_id = p.id), 0) AS artifact_count,
@@ -155,7 +214,12 @@ function summaryRowsToJobs(rows: any[]): JobRecord[] {
   return rows.map(jobSummaryFromRow);
 }
 
-function limitedSummarySql(where: string, orderBy: string, withOffset = false): string {
+function jobsDashboardIncludeArtifacts(): boolean {
+  return process.env.TILEFORGE_JOBS_DASHBOARD_ARTIFACTS === "1" || process.env.TILEFORGE_JOBS_DASHBOARD_ARTIFACTS === "true";
+}
+
+function limitedSummarySql(where: string, orderBy: string, withOffset = false, includeArtifacts = false): string {
+  const columns = includeArtifacts ? JOB_SUMMARY_COLUMNS_WITH_ARTIFACTS_FROM_PICKED : JOB_SUMMARY_COLUMNS_FROM_PICKED;
   return `
     WITH picked AS (
       SELECT ${PICKED_JOB_SUMMARY_COLUMNS}
@@ -164,7 +228,7 @@ function limitedSummarySql(where: string, orderBy: string, withOffset = false): 
       ORDER BY ${orderBy}
       LIMIT ?${withOffset ? " OFFSET ?" : ""}
     )
-    SELECT ${JOB_SUMMARY_COLUMNS_FROM_PICKED}
+    SELECT ${columns}
     FROM picked p
     ORDER BY ${orderBy.replace(/\bj\./g, "p.")}
   `;
@@ -184,9 +248,9 @@ export function listDashboardJobsSqlite(limit = 80): { jobs: JobRecord[]; total:
         if (!picked.has(job.id)) picked.set(job.id, job);
       }
     };
-    addRows(d.prepare(limitedSummarySql("WHERE status='running'", "updated_at DESC")).all(safeLimit));
-    addRows(d.prepare(limitedSummarySql("WHERE status='queued'", "created_at ASC")).all(Math.max(10, safeLimit)));
-    addRows(d.prepare(limitedSummarySql("WHERE status IN ('succeeded','succeeded_with_warnings','failed','cancelled')", "updated_at DESC")).all(safeLimit));
+    addRows(d.prepare(limitedSummarySql("WHERE status='running'", "updated_at DESC", false, jobsDashboardIncludeArtifacts())).all(safeLimit));
+    addRows(d.prepare(limitedSummarySql("WHERE status='queued'", "created_at ASC", false, jobsDashboardIncludeArtifacts())).all(Math.max(10, safeLimit)));
+    addRows(d.prepare(limitedSummarySql("WHERE status IN ('succeeded','succeeded_with_warnings','failed','cancelled')", "updated_at DESC", false, jobsDashboardIncludeArtifacts())).all(safeLimit));
     return { jobs: [...picked.values()], total, counts };
   } catch {
     return undefined;
@@ -209,7 +273,7 @@ export function listJobsPageSqlite(limit = 80, page = 1, status?: string): { job
     const countWhere = status ? " WHERE status=?" : "";
     const total = Number(d.prepare(`SELECT COUNT(*) AS n FROM jobs${countWhere}`).get(...params).n ?? 0);
     const offset = (safePage - 1) * safeLimit;
-    const rows = d.prepare(limitedSummarySql(where.replace(/j\./g, ""), "created_at DESC", true)).all(...params, safeLimit, offset);
+    const rows = d.prepare(limitedSummarySql(where.replace(/j\./g, ""), "created_at DESC", true, jobsDashboardIncludeArtifacts())).all(...params, safeLimit, offset);
     return { jobs: summaryRowsToJobs(rows), total, counts };
   } catch {
     return undefined;

@@ -91,10 +91,22 @@ export function runSqliteMigrations(db: any) {
   tx();
   // Idempotent indexes used by large queue/job list queries. They are kept
   // outside versioned migrations so existing databases benefit immediately.
+  // Idempotent lightweight summary columns. Older databases only had the
+  // full JSON blob; large queues make json_extract/json parsing expensive while
+  // the worker is writing. ALTER TABLE is intentionally best-effort so copied
+  // databases from older TileForge versions keep working.
+  for (const sql of [
+    `ALTER TABLE jobs ADD COLUMN name TEXT`,
+    `ALTER TABLE jobs ADD COLUMN request_hash TEXT`,
+  ]) {
+    try { db.exec(sql); } catch {}
+  }
   db.exec(`
 CREATE INDEX IF NOT EXISTS idx_jobs_status_created_at ON jobs(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_jobs_status_updated_at ON jobs(status, updated_at);
 CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at);
 CREATE INDEX IF NOT EXISTS idx_jobs_updated_at ON jobs(updated_at);
+CREATE INDEX IF NOT EXISTS idx_jobs_name ON jobs(name);
 CREATE INDEX IF NOT EXISTS idx_artifacts_job_name ON artifacts(job_id, name);
 CREATE INDEX IF NOT EXISTS idx_artifacts_job_created ON artifacts(job_id, created_at);
 `);

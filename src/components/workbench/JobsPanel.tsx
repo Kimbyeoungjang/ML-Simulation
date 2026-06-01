@@ -68,7 +68,7 @@ export function Jobs({
         tip="현재 화면에 표시된 job JSON을 파일로 저장합니다."
         onClick={() => download("jobs.json", text, "application/json")}
       >
-        작업 JSON 다운로드
+        표시 JSON 다운로드
       </ActionButton>
       <div
         className="report-status-strip"
@@ -112,7 +112,7 @@ export function Jobs({
       </details>
       <details className="json-details">
         <summary title="작업의 원본 JSON을 펼쳐서 확인합니다.">
-          작업 JSON 원본 보기
+          표시 JSON 미리보기
         </summary>
         <pre
           className="pre"
@@ -180,6 +180,7 @@ export function QueueSummary({
           <span className="badge">queued {queuedTotal}</span>
           <span className="badge">total {payload?.total ?? jobs.length}</span>
           {payload?.view === "dashboard" && <span className="badge ok-badge">상태 우선</span>}
+          {payload?.degraded && <span className="badge warn-badge" title={payload?.note ?? "SQLite가 바쁜 동안 느린 전체 스캔을 건너뛰었습니다."}>경량 fallback</span>}
           <span className="badge">selected {selectedJobIds.length}</span>
           <button className="secondary" onClick={toggleAll} disabled={visible.length === 0}>{allVisibleSelected ? "전체 해제" : "표시 작업 전체 선택"}</button>
           <button className="secondary" onClick={() => onCancelSelected(selectedJobIds)} disabled={selectedJobIds.length === 0}>선택 중지</button>
@@ -189,7 +190,7 @@ export function QueueSummary({
             <option value="paged">작업 목록</option>
           </select>
           <select value={jobsPageSize} onChange={(e) => setJobsPageSize(Number(e.target.value))} title="한 페이지에 표시할 작업 수">
-            {[20, 50, 100, 200, 500].map((n) => <option key={n} value={n}>{n}개</option>)}
+            {[10, 20, 50].map((n) => <option key={n} value={n}>{n}개</option>)}
           </select>
 
         </div>
@@ -245,7 +246,7 @@ export function QueueSummary({
           </table>
         </div>
       )}
-      <p className="small">작업은 자동으로 갱신됩니다. 로그가 필요할 때만 “콘솔 보기”를 누르세요.</p>
+      <p className="small">작업은 자동으로 갱신됩니다. 목록은 실행 상태 중심의 경량 정보만 표시하고, 로그·artifact는 “콘솔 보기” 또는 상세 패널을 열 때만 읽습니다.</p>
     </section>
   );
 }
