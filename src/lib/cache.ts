@@ -4,7 +4,7 @@ import type { SearchRequest, SearchResponse } from "@/types/domain";
 import { hashObject } from "./hash";
 import { getWorkspaceRoot } from "@/server/workspace";
 
-const ESTIMATOR_VERSION = "tileforge-estimator-v0.9";
+const ESTIMATOR_VERSION = "tileforge-estimator-v0.13";
 export function cacheKey(req: SearchRequest) { return hashObject({ estimatorVersion: ESTIMATOR_VERSION, req }); }
 function cacheDir(key: string) { return path.join(getWorkspaceRoot(), "cache", key); }
 export async function readEstimateCache(req: SearchRequest): Promise<SearchResponse | undefined> {

@@ -1,5 +1,5 @@
 {
-  "name": "tileforge-ts-workbench-v13",
+  "name": "tileforge-workbench",
   "version": "0.13.0",
   "private": true,
   "scripts": {

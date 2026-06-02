@@ -1,56 +1,87 @@
-# Purpose-aligned TileForge pipeline
+# Purpose-aligned Pipeline
 
-TileForge의 최종 목적은 세 가지를 한 흐름으로 연결하는 것이다.
+TileForge의 최종 목적은 “TPU-like systolic array에서 어떤 하드웨어 구조와 타일 정책이 특정 딥러닝 workload에 적합한지 설명하고 검증하는 것”입니다. 따라서 pipeline도 단일 cycle 계산기가 아니라 목적별 증거를 생산하도록 설계되어 있습니다.
 
-1. 빠른 full-layer estimate로 하드웨어 설계 후보를 좁힌다.
-2. tile-policy score로 op별 타일링 전략과 대안 후보를 만든다.
-3. IREE에는 확정 옵션이 아니라 runtime benchmark 후보를 제공한다.
+## 목적 1: 하드웨어 설계 탐색
 
-## Metric contract
+필요한 질문:
 
-| 단계 | 대표 지표 | 해석 |
-|---|---|---|
-| 하드웨어 설계 | `summary.totalCycles`, `best.fullLayerCycles` | array/SRAM/BW/dataflow 비교용 full-layer latency |
-| 타일링 전략 | `best.tilePolicyCycles`, `best.score`, Pareto set | MLIR/IREE lowering 후보 ranking |
-| SRAM fit | `best.sramBytes`, `best.tileScratchBytes` | 타일 하나의 local scratch footprint |
-| spill/refill 민감도 | `best.fullLayerSramBytes`, `best.fullLayerDramBytes` | full-layer working set과 traffic |
-| IREE 옵션 | `compiler_hints.*`, `iree_benchmark_plan.*` | 확정 flag가 아니라 A-B benchmark 후보 |
+- array를 키우면 실제로 빨라지는가?
+- SRAM을 늘리는 것이 cycle 감소에 도움이 되는가?
+- bandwidth가 병목인가?
+- WS/OS/IS 중 어떤 dataflow가 workload에 맞는가?
 
-`best.cycles`는 기존 UI 호환을 위해 full-layer hardware-design cycle을 담는다. 타일 후보 ranking 값을 보고 싶으면 반드시 `tilePolicyCycles`를 사용한다.
+TileForge 대응:
 
-## New artifacts
+- full-layer cycle baseline
+- array sweep
+- design-space sweet spot
+- roofline/memory traffic
+- SCALE-Sim full topology validation
+- hardware design plan artifact
 
-| artifact | 용도 |
-|---|---|
-| `prediction_contract.json` | 각 수치의 의미를 기계적으로 고정하는 contract |
-| `hardware_design_plan.md/json` | array/SRAM/BW/dataflow 설계 판단용 요약 |
-| `tiling_strategy.md/json` | op별 선택 tile, score 안정성, 대안 tile 후보 |
-| `compiler_hints.md/json` | IREE lowering hint bundle |
-| `iree_benchmark_plan.md/json` | baseline vs hinted compile/runtime A-B test matrix |
+## 목적 2: 타일링 정책 선택
 
-## Validation policy
+필요한 질문:
 
-- SCALE-Sim은 cycle calibration 기준으로 사용한다.
-- IREE compile 성공은 성능 검증이 아니다.
-- IREE hint는 baseline과 동일 backend/CPU 조건에서 runtime median/p90을 비교한 뒤에만 default option으로 승격한다.
-- Estimator Suite 학습 데이터는 `full-layer`와 `tile-policy` target을 섞지 않는다.
-- confidence가 낮은 op와 전체 cycle share가 큰 bottleneck op를 우선 검증한다.
+- 어떤 tileM/N/K가 utilization과 SRAM fit을 동시에 만족하는가?
+- padding 낭비가 큰 후보는 무엇인가?
+- top-k tile 후보가 왜 선택되었는가?
 
-## Why SRAM is split
+TileForge 대응:
 
-이전 구조에서는 `sramBytes`가 full-layer working set으로 덮일 수 있어, 타일이 실제로는 SRAM에 들어가는데도 SRAM 초과처럼 보이는 문제가 있었다. 현재는 다음처럼 분리한다.
+- tile-policy cycle
+- Top-K/Pareto candidate
+- tile scratch SRAM
+- padding/utilization score
+- tiling strategy artifact
+- tile schedule SVG
 
-- `sramBytes` / `tileScratchBytes`: tile-local scratch. SRAM fit 판단에 사용.
-- `fullLayerSramBytes`: full operand working set. refill/spill, DRAM traffic, validation priority 판단에 사용.
+## 목적 3: 외부 검증과 신뢰도 확보
 
-이 분리는 하드웨어 설계, 타일링 전략, compiler hint를 동시에 다루는 TileForge에서 가장 중요한 contract이다.
+필요한 질문:
 
+- estimator가 SCALE-Sim과 얼마나 다른가?
+- IREE compile은 가능한가?
+- 결과가 재현 가능한 artifact로 남는가?
 
-## 2026-05 구조 보강
+TileForge 대응:
 
-- `src/server/workerRunner.ts`에서 SCALE-Sim CSV parsing과 외부 검증 markdown 생성을 분리했다.
-- `src/server/scaleSimReport.ts`는 `COMPUTE_REPORT.csv`, `DETAILED_ACCESS_REPORT.csv`, `BANDWIDTH_REPORT.csv`를 한 곳에서 파싱한다.
-- `src/server/externalReport.ts`는 full-pipeline 완료 후 `report.md`, `external_validation_report.md`, `validation_report.*`, `confidence.md` 갱신을 전담한다.
-- `scripts/benchmark-iree.ts`는 IREE compile 성공과 runtime 성능 검증을 분리한다. baseline/hinted VMFB를 같은 입력 tensor로 실행하여 transform hint를 승격할지 판단한다.
+- SCALE-Sim cfg/topology/layout 자동 생성
+- IREE MLIR/transform/command 자동 생성
+- external validation report
+- raw log 보관
+- artifact integrity manifest
+- prediction contract
 
-이 분리는 빠른 estimate를 제품처럼 쓰기 위한 최소 조건이다. worker는 실행 orchestration만 맡고, metric 해석과 외부 report는 독립 테스트 가능한 모듈로 유지한다.
+## 목적 4: 반복 실험으로 예측 개선
+
+필요한 질문:
+
+- 특정 환경에서 estimator가 항상 낙관적인가?
+- sample이 쌓이면 보정할 수 있는가?
+- 학습 model이 적용 가능한 범위는 어디까지인가?
+
+TileForge 대응:
+
+- job sample collection
+- scoped dataset split
+- Estimator Suite training
+- readiness gate
+- prediction confidence
+- active validation plan
+
+## 최종 보고서에서의 구성 제안
+
+1. **문제 정의**: systolic array DSE와 GEMM/Conv tiling 문제
+2. **TileForge 목적**: 빠른 예측 + 외부 검증 + artifact 생성
+3. **프로그램 구조**: UI/API/lib/worker/external tools
+4. **파이프라인**: input → estimator → job queue → SCALE-Sim/IREE → report
+5. **예측 방법**: full-layer estimator, tile-policy estimator, roofline/energy/memory model
+6. **검증 방법**: SCALE-Sim, IREE, Estimator Suite readiness
+7. **결과 해석**: full-layer cycle과 tile-policy cycle 분리
+8. **한계와 향후 연구**: 실제 TPU runtime, 더 넓은 dataset, compiler lowering 측정
+
+## 핵심 메시지
+
+TileForge의 장점은 “가장 정확한 단일 simulator”가 되는 것이 아니라, 설계 탐색 과정에서 **빠른 후보 생성, 명시적 가정, 외부 검증, 학습형 보정, 재현 가능한 artifact**를 하나의 workflow로 묶는 것입니다.

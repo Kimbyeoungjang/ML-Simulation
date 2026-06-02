@@ -21,5 +21,5 @@ function walk(dir: string): void {
 
 walk(process.cwd());
 mkdirSync("release", { recursive: true });
-writeFileSync("release/tileforge-workbench-v13.zip", createZip(files));
-console.log(`release/tileforge-workbench-v13.zip (${Object.keys(files).length} files)`);
+writeFileSync("release/tileforge-workbench.zip", createZip(files));
+console.log(`release/tileforge-workbench.zip (${Object.keys(files).length} files)`);

@@ -1,19 +1,21 @@
 # Scoped Estimator Suite Pipeline
 
-TileForge now treats full-layer SCALE-Sim targets and tile-policy micro-run targets as two separate training problems instead of mixing them into one CSV/model.
+Estimator Suite는 SCALE-Sim/job 결과로 analytical estimator를 보정합니다. production 기준에서 가장 중요한 규칙은 **full-layer target과 tile-policy target을 절대 섞지 않는 것**입니다.
 
 ## Target scopes
 
-| Scope | Target value | Main use | Feature policy |
+| Scope | Target value | 주 사용처 | feature policy |
 |---|---|---|---|
-| `full-layer` | SCALE-Sim full topology `COMPUTE_REPORT.csv` layer cycle | external validation, full workload cycle reports | `tileM/tileN/tileK` are bookkeeping; learned features canonicalize them to the full GEMM shape |
-| `tile-policy` | tile micro-run cycle extrapolated by tile count | tile ranking, design-space sweet spot, active validation planning | tile geometry, padding, edge tiles, SRAM pressure, and tile-to-array fit remain active features |
+| `full-layer` | SCALE-Sim full topology `COMPUTE_REPORT.csv` layer cycle | 외부 검증, hardware design report, design-space | tileM/tileN/tileK는 bookkeeping이며 전체 GEMM shape 기준으로 canonicalize |
+| `tile-policy` | tile micro-run 또는 tile-extrapolated cycle | tile ranking, top-k validation, lowering hint | tile geometry, padding, edge tile, SRAM pressure를 feature로 유지 |
 
-This separation avoids comparing a tile micro-run extrapolation target against a full topology SCALE-Sim target. The two numbers can differ substantially because micro-runs repeat pipeline fill/drain and may miss full-layer overlap/reuse effects.
+## 왜 분리해야 하는가
+
+full topology SCALE-Sim은 layer 전체의 data reuse와 systolic schedule을 봅니다. 반면 tile micro-run은 특정 tile 후보를 반복 실행하는 진단값입니다. 두 값은 fill/drain, reuse, boundary effect 때문에 다를 수 있습니다. 하나의 CSV/model에 섞어 학습하면 validation MAPE가 낮아 보여도 실제 hardware-design 결정에는 잘못된 correction이 적용될 수 있습니다.
 
 ## Dataset layout
 
-The scoped pipeline writes artifacts in this layout:
+scope pipeline은 다음 구조로 artifact를 씁니다.
 
 ```text
 estimator-suite/<run-id>/
@@ -21,12 +23,18 @@ estimator-suite/<run-id>/
     merged/
       samples.csv
       report.md
+      readiness.md
+      readiness.json
     full-layer/
       samples.csv
       report.md
+      readiness.md
+      readiness.json
     tile-policy/
       samples.csv
       report.md
+      readiness.md
+      readiness.json
   estimator-suite/
     scoped-pipeline-report.md
     full-layer/
@@ -34,87 +42,87 @@ estimator-suite/<run-id>/
       report.md
       validation.csv
       predictions.csv
+      readiness.md
+      readiness.json
     tile-policy/
       model.json
       report.md
       validation.csv
       predictions.csv
+      readiness.md
+      readiness.json
 ```
 
-If a scope has fewer than 40 valid samples, the pipeline still writes its dataset/report but skips model training for that scope.
-
 ## API actions
-
-The Estimator Suite endpoint supports two scoped actions:
 
 ```json
 { "action": "split-dataset", "files": [{ "name": "samples.csv", "text": "..." }] }
 ```
 
-This only normalizes and splits the uploaded CSV into `full-layer` and `tile-policy` datasets.
+CSV를 정규화하고 `full-layer`, `tile-policy` dataset으로 나눕니다. training은 하지 않습니다.
 
 ```json
 { "action": "scope-pipeline", "files": [{ "name": "samples.csv", "text": "..." }] }
 ```
 
-This splits, trains one estimator suite per scope when enough samples exist, and writes separate evaluation reports.
+split 후 scope별로 충분한 sample이 있으면 train/evaluate/readiness report를 생성합니다.
 
-`split-and-train` is accepted as an alias for `scope-pipeline`.
+```json
+{ "action": "split-and-train", "files": [{ "name": "samples.csv", "text": "..." }] }
+```
+
+`scope-pipeline` alias입니다.
 
 ## Job sample collection
 
-`collectEstimatorSamplesFromJobs()` now emits both target scopes when both measurements are available:
+`collectEstimatorSamplesFromJobs()`는 완료된 job에서 가능한 경우 두 scope를 모두 추출합니다.
 
-- `candidate.tileExtrapolatedCycles` becomes a `tile-policy` row.
-- `layers.cycles` or `layers.scaleSimRawCycles` becomes a `full-layer` row.
+- `candidate.tileExtrapolatedCycles` → `tile-policy`
+- `layers.cycles` 또는 `layers.scaleSimRawCycles` → `full-layer`
 
-Rows include `targetScope` and `measuredSource` so later training and evaluation can keep the two targets separate.
+각 row에는 최소한 다음 metadata가 들어갑니다.
 
-## Hardware-design estimator contract
+- `targetScope`
+- `measuredSource`
+- hardware config
+- workload shape
+- dataflow
+- tile shape, tile-policy인 경우
+- predicted cycles
+- measured cycles
+- error ratio
 
-TileForge now uses **full-layer cycles** as the primary quantity for hardware-design reports, roofline/energy summaries, and external SCALE-Sim validation. Tile micro-run extrapolation remains available, but only as a tile-policy ranking signal.
+## Training policy
 
-The full-layer analytical baseline is implemented in `src/lib/fullLayerEstimator.ts`. For a WS GEMM it uses the same whole-topology systolic shape that SCALE-Sim's normal `COMPUTE_REPORT.csv` path follows:
-
-```text
-ceil(K / arrayRows) * ceil(N / arrayCols) * (M + 2*arrayRows + arrayCols - 3)
-```
-
-For the attached ViT-S sample this predicts:
-
-| Op | Full-layer estimator | SCALE-Sim full topology | Error |
-|---|---:|---:|---:|
-| attention_qkv | 31,212 | 31,265 | -0.17% |
-| mlp_fc1 | 20,808 | 20,843 | -0.17% |
-| mlp_fc2 | 20,808 | 20,843 | -0.17% |
-
-This fixes the earlier failure mode where a tile-policy learned model produced roughly 112k cycles and was compared against a 72,951-cycle full-layer SCALE-Sim run. The correct comparison is full-layer-to-full-layer; tile-policy costs are shown separately.
+- scope별 valid sample이 너무 적으면 model training을 skip합니다.
+- readiness가 blocked면 active model로 쓰지 않는 것이 원칙입니다.
+- validation split은 request option의 `validationFraction`을 따릅니다.
+- domain coverage가 부족한 후보에는 낮은 confidence를 부여합니다.
 
 ## Model application rule
 
-`applyEstimatorSuiteToSearchResponse()` is target-aware:
+`applyEstimatorSuiteToSearchResponse()`는 target-aware입니다.
 
-- `full-layer` model: may correct the full-layer hardware-design cycle.
-- `tile-policy` model: may rank/correct tile candidates, but must not overwrite full-layer cycle.
-- `mixed` or legacy model: treated conservatively; used only as tile-policy/ranking help, while full-layer cycle falls back to the full-layer analytical baseline.
+| Active model | 적용 위치 |
+|---|---|
+| `full-layer` model | full-layer hardware-design cycle correction |
+| `tile-policy` model | tile candidate ranking correction |
+| `mixed`/legacy model | conservative mode. full-layer cycle은 analytical baseline 유지 |
 
-The report now prints both values:
+## Report contract
 
-```text
-Full-layer cycle: hardware-design / SCALE-Sim validation target
-Tile-policy cycle: tile ranking / MLIR lowering candidate score
-```
+report는 다음 세 값을 분리해 보여야 합니다.
 
-This keeps the project aligned with the final goal: predicting accelerator-level cycle behavior for hardware design, while still using tile-policy estimation to choose a good implementation policy.
+1. **Full-layer cycle**: 하드웨어 설계/외부 검증 target
+2. **Tile-policy cycle**: tile 선택/ranking target
+3. **SRAM/DRAM traffic**: 병목 진단값이며 cycle과 다른 단위
 
-## Report and graph contract update
+## 권장 운영 방식
 
-The main report now starts with an interpretation guide that separates three quantities:
-
-1. **Full-layer hardware-design cycle** — the representative cycle used for SCALE-Sim full-topology validation and hardware design.
-2. **Tile-policy cycle** — the ranking cost for choosing tileM/tileN/tileK candidates.
-3. **SRAM/DRAM access** — full-layer traffic diagnostics, not cycle-equivalent values.
-
-The optimal tile table reports both `Tile SRAM KiB` and `Layer footprint KiB`. This avoids the earlier ambiguity where a tile scratchpad footprint and a whole-layer working-set footprint were shown under one `SRAM KiB` heading.
-
-For external validation, the top-k micro-run diagnostic table labels the predicted value as `TileForge tile-policy cycle` rather than `TileForge full-layer cycle`. Full-layer accuracy is evaluated only against the normal SCALE-Sim full topology rows.
+1. 작은 후보군으로 full-pipeline job을 여러 개 완료합니다.
+2. job에서 sample을 수집합니다.
+3. `split-dataset`으로 scope 분포를 확인합니다.
+4. `scope-pipeline`으로 학습합니다.
+5. readiness report를 확인합니다.
+6. active model로 적용합니다.
+7. design-space에서 low-confidence 후보는 다시 SCALE-Sim으로 검증합니다.
