@@ -9,6 +9,7 @@ import {
   type ExternalCommandResult,
 } from "./externalCommand";
 import { jobDir } from "./workspace";
+import { readTextTail as readTextTailFile } from "./fileTail";
 import { atomicWriteFile } from "./atomic";
 import {
   computeArtifactIntegrity,
@@ -345,16 +346,17 @@ async function pruneScaleSimRawOutputs(
 
 async function readTextTail(file: string, maxChars = 4000): Promise<string> {
   try {
-    const text = await readFile(file, "utf8");
-    return text.length > maxChars ? text.slice(-maxChars) : text;
+    return (await readTextTailFile(file, maxChars)).text;
   } catch {
     return "";
   }
 }
 
-async function listFiles(root: string, maxDepth = 4): Promise<string[]> {
+async function listFiles(root: string, maxDepth = 4, maxFiles = 2000): Promise<string[]> {
   const files: string[] = [];
+  let truncated = false;
   async function walk(dir: string, depth: number): Promise<void> {
+    if (files.length >= maxFiles) { truncated = true; return; }
     let entries: import("node:fs").Dirent[];
     try {
       entries = await readdir(dir, { withFileTypes: true });
@@ -362,6 +364,7 @@ async function listFiles(root: string, maxDepth = 4): Promise<string[]> {
       return;
     }
     for (const entry of entries) {
+      if (files.length >= maxFiles) { truncated = true; break; }
       const full = path.join(dir, entry.name);
       const rel = path.relative(root, full) || entry.name;
       if (entry.isFile()) files.push(rel);
@@ -369,7 +372,9 @@ async function listFiles(root: string, maxDepth = 4): Promise<string[]> {
     }
   }
   await walk(root, maxDepth);
-  return files.sort();
+  const sorted = files.sort();
+  if (truncated) sorted.push(`... truncated after ${maxFiles} files`);
+  return sorted;
 }
 
 async function requireNonEmptyFile(

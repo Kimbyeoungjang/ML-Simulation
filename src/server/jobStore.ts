@@ -18,6 +18,9 @@ const DEFAULT_MAX_ATTEMPTS = Number(process.env.TILEFORGE_JOB_MAX_ATTEMPTS ?? 1)
 const MAX_JOB_LOG_LINES = Math.max(50, Math.min(Number(process.env.TILEFORGE_MAX_JOB_LOG_LINES ?? 300), 2000));
 const JOB_SUMMARY_FILE = "job.summary.json";
 
+let jobSummariesCache: { expiresAt: number; jobs: JobRecord[] } | undefined;
+let jobSummariesInflight: Promise<JobRecord[]> | undefined;
+
 function envNumber(name: string, fallback: number): number {
   const envFile = readProjectDotEnv();
   const value = envFile[name] ?? process.env[name];
@@ -202,6 +205,7 @@ const jobSaveQueues = new Map<string, Promise<void>>();
 
 export async function saveJob(job: JobRecord) {
   pagedFallbackCache = undefined;
+  jobSummariesCache = undefined;
   job.updatedAt = nowIso();
   const id = job.id;
   const previous = jobSaveQueues.get(id) ?? Promise.resolve();
@@ -260,7 +264,11 @@ async function readJobSummaryFromDir(id: string): Promise<JobRecord | undefined>
   }
 }
 
-async function listJobSummaries(): Promise<JobRecord[]> {
+function jobSummaryIndexCacheMs(): number {
+  return Math.max(0, Math.min(envNumber("TILEFORGE_JOB_SUMMARY_INDEX_CACHE_MS", 2000), 30_000));
+}
+
+async function scanJobSummaries(): Promise<JobRecord[]> {
   await ensureJobRoot();
   const dirs = (await readdir(getJobRoot(), { withFileTypes: true })).filter((d) => d.isDirectory());
   const jobs: JobRecord[] = [];
@@ -277,16 +285,30 @@ async function listJobSummaries(): Promise<JobRecord[]> {
   return jobs.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
+async function listJobSummaries(): Promise<JobRecord[]> {
+  const ttl = jobSummaryIndexCacheMs();
+  const now = Date.now();
+  if (ttl > 0 && jobSummariesCache && jobSummariesCache.expiresAt > now) return jobSummariesCache.jobs;
+  if (jobSummariesInflight) return jobSummariesInflight;
+  jobSummariesInflight = scanJobSummaries().then((jobs) => {
+    if (ttl > 0) jobSummariesCache = { jobs, expiresAt: Date.now() + ttl };
+    return jobs;
+  }).finally(() => {
+    jobSummariesInflight = undefined;
+  });
+  return jobSummariesInflight;
+}
+
 export async function hasRunningJob(): Promise<boolean> {
   const n = sqlitePrimary() ? countJobsSqlite("running") : undefined;
   if (n !== undefined) return n > 0;
-  return (await listJobs()).some(j => j.status === "running");
+  return (await listJobSummaries()).some(j => j.status === "running");
 }
 
 export async function runningJobCount(): Promise<number> {
   const n = sqlitePrimary() ? countJobsSqlite("running") : undefined;
   if (n !== undefined) return n;
-  return (await listJobs()).filter(j => j.status === "running").length;
+  return (await listJobSummaries()).filter(j => j.status === "running").length;
 }
 
 export async function findQueued(excludeIds: string[] = []): Promise<JobRecord | undefined> {
@@ -294,9 +316,9 @@ export async function findQueued(excludeIds: string[] = []): Promise<JobRecord |
   if (running >= maxParallelJobs()) return undefined;
   const sqliteCandidates = sqlitePrimary() ? selectQueuedJobsSqlite(1, excludeIds) : undefined;
   if (sqliteCandidates) return sqliteCandidates[0];
-  const jobs = await listJobs();
   const excluded = new Set(excludeIds);
-  return jobs.reverse().find(j => j.status === "queued" && !excluded.has(j.id));
+  const summary = (await listJobSummaries()).reverse().find(j => j.status === "queued" && !excluded.has(j.id));
+  return summary ? readJob(summary.id).catch(() => undefined) : undefined;
 }
 
 export async function claimQueuedJob(
@@ -311,11 +333,13 @@ export async function claimQueuedJob(
   const rawSqliteCandidates = sqlitePrimary() ? selectQueuedJobsSqlite(128, excludeIds) : undefined;
   const sqliteCandidates = Array.isArray(rawSqliteCandidates) ? rawSqliteCandidates.filter(matchesKind) : undefined;
   const fallbackCandidates = async () => {
-    const jobs = await listJobs();
+    const summaries = await listJobSummaries();
     const excluded = new Set(excludeIds);
-    return jobs.reverse().filter(j => j.status === "queued" && !excluded.has(j.id) && matchesKind(j));
+    return summaries.reverse().filter(j => j.status === "queued" && !excluded.has(j.id) && matchesKind(j));
   };
-  for (const job of (sqliteCandidates ?? await fallbackCandidates())) {
+  for (const candidate of (sqliteCandidates ?? await fallbackCandidates())) {
+    const job = sqliteCandidates ? candidate : await readJob(candidate.id).catch(() => undefined);
+    if (!job || job.status !== "queued" || !matchesKind(job)) continue;
     const locked = await acquireJobLock(job);
     if (!locked) continue;
     job.status = "running";
@@ -330,12 +354,13 @@ export async function claimQueuedJob(
 
 
 export async function recoverStaleRunningJobs(): Promise<number> {
-  const jobs = await listJobs();
+  const runningSummaries = (await listJobSummaries()).filter((j) => j.status === "running");
   const now = Date.now();
   const deadLockGraceMs = Math.max(5_000, envNumber("TILEFORGE_STALE_RUNNING_GRACE_MS", 30_000));
   let recovered = 0;
-  for (const job of jobs) {
-    if (job.status !== "running") continue;
+  for (const summary of runningSummaries) {
+    const job = await readJob(summary.id).catch(() => undefined);
+    if (!job || job.status !== "running") continue;
     const ageMs = now - Date.parse(job.updatedAt || job.createdAt || new Date(0).toISOString());
     const lockDead = await lockProcessIsDead(job);
     const staleMs = lockDead
@@ -644,6 +669,7 @@ export async function listJobsPaged(options: ListJobsOptions = {}): Promise<Page
 
 export async function deleteJob(id: string): Promise<void> {
   pagedFallbackCache = undefined;
+  jobSummariesCache = undefined;
   await rm(jobDir(id), { recursive: true, force: true });
   deleteJobSqlite(id);
 }
@@ -652,7 +678,7 @@ export async function enforceJobQuota(incoming = 1) {
   const { quotaConfig } = await import("@/lib/quotas");
   const quota = quotaConfig();
   const queuedFromDb = sqlitePrimary() ? countJobsSqlite("queued") : undefined;
-  const queued = queuedFromDb ?? (await listJobs()).filter(j => j.status === "queued").length;
+  const queued = queuedFromDb ?? (await listJobSummaries()).filter(j => j.status === "queued").length;
   if (queued + Math.max(1, incoming) - 1 >= quota.maxQueuedJobs) {
     throw new Error(`JOB_QUOTA_EXCEEDED: queued jobs ${queued} + incoming ${incoming} >= ${quota.maxQueuedJobs}`);
   }

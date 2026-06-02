@@ -257,7 +257,14 @@ export function Artifact({
   download: DownloadFn;
 }) {
   const [showRaw, setShowRaw] = useState(false);
+  const [showFullPreview, setShowFullPreview] = useState(false);
   const isMarkdown = name.toLowerCase().endsWith(".md");
+  const previewLimit = 200_000;
+  const previewText = !showFullPreview && text.length > previewLimit
+    ? `${text.slice(0, previewLimit)}
+
+… ${name} 미리보기가 ${previewLimit.toLocaleString()}자로 제한되었습니다. 다운로드 버튼은 전체 파일을 저장합니다.`
+    : text;
   return (
     <section className="artifact-panel" title={`${name} 미리보기와 다운로드입니다.`}>
       <div className="artifact-toolbar">
@@ -265,6 +272,11 @@ export function Artifact({
           tip={`${name} 파일을 다운로드합니다.`}
           onClick={() => download(name, text)}
         >{`${name} 다운로드`}</ActionButton>
+        {text.length > previewLimit && (
+          <button className="secondary" onClick={() => setShowFullPreview((v) => !v)} title="대용량 artifact 렌더링 비용을 줄이기 위해 미리보기 길이를 전환합니다.">
+            {showFullPreview ? "짧은 미리보기" : "전체 미리보기"}
+          </button>
+        )}
         {isMarkdown && (
           <button className="secondary" onClick={() => setShowRaw((v) => !v)} title="Markdown 렌더링과 원문 보기를 전환합니다.">
             {showRaw ? "렌더링 보기" : "원문 보기"}
@@ -272,10 +284,10 @@ export function Artifact({
         )}
       </div>
       {isMarkdown && !showRaw ? (
-        <MarkdownView text={text} />
+        <MarkdownView text={previewText} />
       ) : (
         <pre className="pre" title={`${name} 파일 내용 미리보기입니다.`}>
-          {text}
+          {previewText}
         </pre>
       )}
     </section>

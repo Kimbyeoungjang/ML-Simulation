@@ -126,10 +126,16 @@ TILEFORGE_JOBS_DASHBOARD_ARTIFACTS="0"
 TILEFORGE_JOBS_ARTIFACT_PREVIEW_LIMIT="8"
 TILEFORGE_JOBS_API_CACHE_MS="2000"
 TILEFORGE_JOBS_FALLBACK_CACHE_MS="10000"
+TILEFORGE_JOB_SUMMARY_INDEX_CACHE_MS="2000"
+TILEFORGE_ARTIFACT_LIST_CACHE_MS="5000"
+TILEFORGE_ARTIFACT_HASH_CONCURRENCY="8"
+TILEFORGE_MAX_BUNDLE_FILES="20000"
 TILEFORGE_STATUS_SCAN_STORAGE="0"
 ```
 
-SQLite native module을 사용할 수 없는 환경에서는 `job.summary.json` fallback이 사용됩니다. 기존 job은 첫 조회 때 summary가 생성되므로 첫 목록 조회만 상대적으로 느릴 수 있고, 이후 조회는 작은 summary 파일을 읽습니다.
+SQLite native module을 사용할 수 없는 환경에서는 `job.summary.json` fallback이 사용됩니다. 기존 job은 첫 조회 때 summary가 생성되므로 첫 목록 조회만 상대적으로 느릴 수 있고, 이후 조회는 작은 summary 파일과 짧은 TTL의 summary index cache를 사용합니다. worker scheduling도 전체 `job.json` 파싱 대신 summary로 후보를 찾은 뒤 선택 후보만 full read합니다.
+
+Artifact가 수천 개이면 목록은 `/artifacts?limit=...&page=...`로 페이지 단위 조회하고, ZIP bundle은 먼저 파일 수/용량을 preflight한 뒤 읽습니다. 단일 artifact와 외부 로그 미리보기는 stream/tail read를 사용하므로 대형 파일을 한 번에 메모리에 올리지 않습니다.
 
 정리:
 

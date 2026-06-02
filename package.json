@@ -11,7 +11,7 @@
     "setup:iree": "tsx -r tsconfig-paths/register scripts/install-iree.ts",
     "setup:scalesim": "tsx -r tsconfig-paths/register scripts/install-scalesim-fork.ts",
     "section:dev": "node -e \"console.log('development scripts')\"",
-    "dev": "npm run setup:env && concurrently -n web,worker -c blue,green \"next dev\" \"node --max-old-space-size=4096 ./node_modules/tsx/dist/cli.mjs -r tsconfig-paths/register scripts/worker.ts\"",
+    "dev": "npm run setup:env && concurrently -n web,worker -c blue,green \"npm run dev:web\" \"npm run dev:worker\"",
     "dev:web": "tsx -r tsconfig-paths/register scripts/run-next.ts dev",
     "dev:worker": "node --max-old-space-size=4096 ./node_modules/tsx/dist/cli.mjs -r tsconfig-paths/register scripts/worker.ts",
     "build": "next build",

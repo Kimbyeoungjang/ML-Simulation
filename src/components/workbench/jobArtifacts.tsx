@@ -73,10 +73,12 @@ export function CsvArtifactTable({ jobId, path, title }: { jobId: string; path: 
     async function load() {
       if (!jobId) return;
       try {
-        const r = await apiFetch(`/api/jobs/${jobId}/artifact?path=${encodeURIComponent(path)}`, { cache: "no-store" });
+        const r = await apiFetch(`/api/jobs/${jobId}/artifact?path=${encodeURIComponent(path)}&maxBytes=750000`, { cache: "no-store" });
         if (!r.ok) throw new Error(`${path} artifact를 읽지 못했습니다.`);
         const t = await r.text();
-        if (!cancelled) { setText(t); setError(""); }
+        const truncated = r.headers.get("x-tileforge-truncated") === "1";
+        if (!cancelled) { setText(truncated ? `${t}
+# __TILEFORGE_TRUNCATED_PREVIEW__` : t); setError(""); }
       } catch (e: any) {
         if (!cancelled) setError(e.message || String(e));
       }
@@ -89,11 +91,15 @@ export function CsvArtifactTable({ jobId, path, title }: { jobId: string; path: 
   if (!text) return <p className="small">{title}를 불러오는 중입니다.</p>;
   const rows = text.trim().split(/\r?\n/).map((line) => line.split(","));
   const header = rows[0] ?? [];
-  const body = rows.slice(1);
+  const truncatedPreview = text.includes("#__TILEFORGE_TRUNCATED_PREVIEW__") || text.includes("# __TILEFORGE_TRUNCATED_PREVIEW__");
+  const body = rows.slice(1).filter((row) => row.join("").trim() !== "# __TILEFORGE_TRUNCATED_PREVIEW__");
+  const maxPreviewRows = 500;
+  const visibleBody = body.slice(0, maxPreviewRows);
   return (
     <section className="job-artifact-view">
       <div className="artifact-toolbar"><b>{title}</b><a className="help-link" title="이 artifact 원본을 새 탭에서 엽니다." href={apiUrl(`/api/jobs/${jobId}/artifact?path=${encodeURIComponent(path)}`)} target="_blank">원본 열기</a></div>
-      <div className="md-table-wrap"><table className="md-table"><thead><tr>{header.map((h, i) => <th key={i}>{h}</th>)}</tr></thead><tbody>{body.map((r, i) => <tr key={i}>{header.map((_, j) => <td key={j}>{r[j] ?? ""}</td>)}</tr>)}</tbody></table></div>
+      {(truncatedPreview || body.length > visibleBody.length) && <p className="small warn">대용량 CSV라서 미리보기는 최대 {maxPreviewRows}행 / 750KB까지만 렌더링합니다. 전체 파일은 원본 열기나 artifact 다운로드를 사용하세요.</p>}
+      <div className="md-table-wrap"><table className="md-table"><thead><tr>{header.map((h, i) => <th key={i}>{h}</th>)}</tr></thead><tbody>{visibleBody.map((r, i) => <tr key={i}>{header.map((_, j) => <td key={j}>{r[j] ?? ""}</td>)}</tr>)}</tbody></table></div>
     </section>
   );
 }

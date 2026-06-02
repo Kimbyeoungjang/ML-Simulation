@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
-import { readFile, readdir, stat } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import path from "node:path";
 import { jobDir } from "@/server/workspace";
+import { readTextTail } from "@/server/fileTail";
 
 export const dynamic = "force-dynamic";
 
@@ -38,13 +39,12 @@ function sanitizeExternalToolLogForDisplay(text: string): string {
 }
 
 async function readTail(file: string, maxChars: number): Promise<{ text: string; bytes: number; updatedAt?: string }> {
-  const s = await stat(file);
-  const raw = await readFile(file, "utf8").catch(() => "");
-  const text = sanitizeExternalToolLogForDisplay(raw);
+  const tail = await readTextTail(file, maxChars * 2);
+  const text = sanitizeExternalToolLogForDisplay(tail.text);
   return {
     text: text.length > maxChars ? text.slice(-maxChars) : text,
-    bytes: s.size,
-    updatedAt: s.mtime.toISOString(),
+    bytes: tail.bytes,
+    updatedAt: tail.updatedAt,
   };
 }
 
