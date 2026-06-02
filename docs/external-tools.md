@@ -117,6 +117,13 @@ npm run validate:external:mock
 
 ## `.env` 예시
 
+```env
+TILEFORGE_WEB_PORT="3000"
+TILEFORGE_WEB_HOST="127.0.0.1"
+NEXT_PUBLIC_TILEFORGE_API_BASE_URL=""
+```
+
+
 ```dotenv
 TILEFORGE_SCALE_SIM_CMD="py -3 -m scalesim.scale"
 TILEFORGE_IREE_COMPILE_CMD="py -3 -m iree.compiler.tools.scripts.iree_compile"

@@ -1,5 +1,6 @@
 "use client";
 
+import { apiFetch } from "@/lib/apiClient";
 import { useEffect, useRef, useState } from "react";
 
 export function JobExternalLogs({
@@ -21,7 +22,7 @@ export function JobExternalLogs({
         return;
       }
       try {
-        const r = await fetch(`/api/jobs/${jobId}/external-logs?maxChars=30000`, { cache: "no-store" });
+        const r = await apiFetch(`/api/jobs/${jobId}/external-logs?maxChars=30000`, { cache: "no-store" });
         if (r.ok) {
           const j = await r.json();
           if (!cancelled) setLogs(Array.isArray(j.logs) ? j.logs : []);

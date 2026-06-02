@@ -1,5 +1,6 @@
 "use client";
 
+import { apiFetch } from "@/lib/apiClient";
 import { useEffect, useMemo, useState } from "react";
 import { ActionButton, Artifact, MarkdownView, type DownloadFn } from "./primitives";
 
@@ -36,7 +37,7 @@ function sameOp(a: any, b: any): boolean {
 }
 
 async function postTpu(action: string, body: Record<string, unknown>) {
-  const res = await fetch("/api/tpu", {
+  const res = await apiFetch("/api/tpu", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action, ...body }),
@@ -328,7 +329,7 @@ export function TpuComparisonPanel({
   }, [request, shapeCount]);
 
   useEffect(() => {
-    fetch("/api/tpu")
+    apiFetch("/api/tpu")
       .then((r) => r.json())
       .then((j) => setWebRunEnabled(Boolean(j.webRunEnabled)))
       .catch(() => setWebRunEnabled(false));

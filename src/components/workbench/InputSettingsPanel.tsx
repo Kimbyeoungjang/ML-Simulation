@@ -21,6 +21,9 @@ const dataflowCopy: Record<Dataflow, { title: string; desc: string }> = {
 };
 
 const envSettingTips: Record<string, string> = {
+  TILEFORGE_WEB_PORT: "Next.js 웹 서버가 listen할 포트입니다. 예: 3000, 4000. 저장 후 서버를 재시작해야 반영됩니다.",
+  TILEFORGE_WEB_HOST: "웹 서버 bind 주소입니다. 로컬 전용은 127.0.0.1, 같은 네트워크 접근 허용은 0.0.0.0을 사용합니다. 저장 후 재시작해야 반영됩니다.",
+  NEXT_PUBLIC_TILEFORGE_API_BASE_URL: "브라우저가 호출할 API 서버 주소입니다. 비워두면 현재 웹 서버의 /api를 사용합니다. 예: http://127.0.0.1:4000",
   TILEFORGE_SCALE_SIM_CMD: "SCALE-Sim 실행 명령입니다. 예: py -3 -m scalesim.scale 또는 npx tsx scripts/mock-scalesim.ts",
   TILEFORGE_IREE_COMPILE_CMD: "IREE 컴파일 명령입니다. 예: py -3 -m iree.compiler.tools.core 또는 iree-compile",
   TILEFORGE_MAX_PARALLEL_JOBS: "worker가 동시에 처리할 full-pipeline 작업 수입니다. 너무 크게 잡으면 메모리 사용량이 급증합니다.",
@@ -28,6 +31,8 @@ const envSettingTips: Record<string, string> = {
   TILEFORGE_JOB_STORE: "작업 큐 상태를 저장할 SQLite 파일 경로입니다.",
   TILEFORGE_CACHE_DIR: "estimator와 외부 실행 캐시를 저장할 폴더입니다.",
   TILEFORGE_EXTERNAL_TIMEOUT_MS: "SCALE-Sim/IREE 외부 명령 하나에 허용할 최대 실행 시간(ms)입니다.",
+  TILEFORGE_ENABLE_TPU_WEB_RUN: "TPU VM에서 웹 서버를 실행 중일 때 /api/tpu 서버 실행을 허용하려면 1로 설정합니다.",
+  TILEFORGE_TPU_WEB_TIMEOUT_MS: "TPU 웹 benchmark 실행 요청의 최대 대기 시간(ms)입니다.",
 };
 
 function envTip(key: string) {

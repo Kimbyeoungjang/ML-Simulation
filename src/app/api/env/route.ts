@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { readProjectDotEnv, upsertProjectDotEnv } from "@/server/env";
 
 const allowedKeys = [
+  "TILEFORGE_WEB_PORT",
+  "TILEFORGE_WEB_HOST",
+  "NEXT_PUBLIC_TILEFORGE_API_BASE_URL",
   "TILEFORGE_SCALE_SIM_CMD",
   "TILEFORGE_IREE_COMPILE_CMD",
   "TILEFORGE_MAX_PARALLEL_JOBS",
@@ -9,6 +12,8 @@ const allowedKeys = [
   "TILEFORGE_JOB_STORE",
   "TILEFORGE_CACHE_DIR",
   "TILEFORGE_EXTERNAL_TIMEOUT_MS",
+  "TILEFORGE_ENABLE_TPU_WEB_RUN",
+  "TILEFORGE_TPU_WEB_TIMEOUT_MS",
 ];
 
 function currentValues() {

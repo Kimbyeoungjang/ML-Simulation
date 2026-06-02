@@ -1,5 +1,6 @@
 "use client";
 
+import { apiFetch, apiUrl } from "@/lib/apiClient";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 type RefreshJobsFn = (options?: { switchTab?: boolean; updateReport?: boolean }) => void | Promise<void>;
@@ -47,7 +48,7 @@ export function useLiveJobEvents({
       setLiveConnected(true);
       openJobsTab();
 
-      const es = new EventSource(`/api/jobs/${trimmed}/events?tail=1000`);
+      const es = new EventSource(apiUrl(`/api/jobs/${trimmed}/events?tail=1000`));
       liveEventSource.current = es;
       es.addEventListener("job", (ev: MessageEvent) => {
         const data = JSON.parse(ev.data);

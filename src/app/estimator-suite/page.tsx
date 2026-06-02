@@ -1,5 +1,6 @@
 "use client";
 
+import { apiFetch } from "@/lib/apiClient";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { defaultCandidates, defaultHardware, defaultShapes } from "@/lib/defaults";
@@ -68,7 +69,7 @@ export default function EstimatorSuitePage() {
   async function post(action: string, extra: Record<string, any> = {}) {
     setBusy(true);
     try {
-      const r = await fetch("/api/estimator-suite", {
+      const r = await apiFetch("/api/estimator-suite", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action, request: defaultRequest, csvText: csv, options, ...extra }),
@@ -87,7 +88,7 @@ export default function EstimatorSuitePage() {
   }
 
   async function refreshModels() {
-    const r = await fetch("/api/estimator-suite");
+    const r = await apiFetch("/api/estimator-suite");
     const j = await r.json();
     if (!j.ok) return;
     setModels(j.models ?? []);
@@ -95,7 +96,7 @@ export default function EstimatorSuitePage() {
   }
 
   async function refreshPresets() {
-    const r = await fetch("/api/presets?kind=estimator");
+    const r = await apiFetch("/api/presets?kind=estimator");
     const j = await r.json();
     if (j.ok) setPresets(j.presets ?? builtInEstimatorPresets);
   }
@@ -112,7 +113,7 @@ export default function EstimatorSuitePage() {
   async function savePreset() {
     const name = presetName.trim();
     if (!name) return setResult({ ok: false, error: "저장할 프리셋 이름을 입력하세요." });
-    const r = await fetch("/api/presets", {
+    const r = await apiFetch("/api/presets", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ kind: "estimator", name, description: "사용자 Estimator 프리셋", planOptions, trainOptions: options }),
@@ -127,7 +128,7 @@ export default function EstimatorSuitePage() {
   async function deletePreset(idOrName: string) {
     const preset = effectivePresets.find((p: any) => p.id === idOrName || p.name === idOrName);
     if (!preset || preset.source === "builtin") return;
-    const r = await fetch(`/api/presets?kind=estimator&name=${encodeURIComponent(preset.name)}`, { method: "DELETE" });
+    const r = await apiFetch(`/api/presets?kind=estimator&name=${encodeURIComponent(preset.name)}`, { method: "DELETE" });
     if (r.ok) await refreshPresets();
   }
 

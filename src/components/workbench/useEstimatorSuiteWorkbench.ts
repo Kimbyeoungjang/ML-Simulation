@@ -1,5 +1,6 @@
 "use client";
 
+import { apiFetch } from "@/lib/apiClient";
 import { useEffect, useState } from "react";
 import { defaultCandidates, defaultHardware } from "@/lib/defaults";
 import type { EstimatorSuiteModel } from "@/lib/estimatorSuite";
@@ -71,7 +72,7 @@ export function useEstimatorSuiteWorkbench({
 
   async function refreshEstimatorSuiteModels() {
     try {
-      const r = await fetch("/api/estimator-suite", { cache: "no-store" });
+      const r = await apiFetch("/api/estimator-suite", { cache: "no-store" });
       const j = await r.json();
       if (!r.ok || !j.ok) throw new Error(j.error || "Estimator suite model 목록을 불러오지 못했습니다.");
       const models = Array.isArray(j.models) ? j.models : [];
@@ -105,7 +106,7 @@ export function useEstimatorSuiteWorkbench({
 
   async function generateEstimatorSuiteDesign() {
     await runBusy("Estimator suite 설계", async () => {
-      const r = await fetch("/api/estimator-suite", {
+      const r = await apiFetch("/api/estimator-suite", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: "design", request, options: { topK: estimatorSuiteOptions.topK } }),
@@ -120,7 +121,7 @@ export function useEstimatorSuiteWorkbench({
 
   async function generateEstimatorSamplingPlan(enqueue = false) {
     await runBusy("Estimator 표본 계획", async () => {
-      const r = await fetch("/api/estimator-suite", {
+      const r = await apiFetch("/api/estimator-suite", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -145,7 +146,7 @@ export function useEstimatorSuiteWorkbench({
 
   async function collectEstimatorSamplesFromJobsWeb() {
     await runBusy("Estimator sample 수집", async () => {
-      const r = await fetch("/api/estimator-suite", {
+      const r = await apiFetch("/api/estimator-suite", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: "collect-jobs", csvText: estimatorSuiteCsv }),
@@ -160,7 +161,7 @@ export function useEstimatorSuiteWorkbench({
 
   async function importEstimatorDatasetWeb(files: Array<{ name: string; text: string }>, train: boolean) {
     await runBusy("Estimator dataset 처리", async () => {
-      const r = await fetch("/api/estimator-suite", {
+      const r = await apiFetch("/api/estimator-suite", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: train ? "dataset-job" : "dataset", request, files, options: estimatorSuiteOptions, train, activate: true }),
@@ -184,7 +185,7 @@ export function useEstimatorSuiteWorkbench({
 
   async function runEstimatorSuiteWeb() {
     await runBusy("Estimator suite", async () => {
-      const r = await fetch("/api/estimator-suite", {
+      const r = await apiFetch("/api/estimator-suite", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: "suite-job", request, csvText: estimatorSuiteCsv, options: estimatorSuiteOptions, activate: true }),
@@ -201,7 +202,7 @@ export function useEstimatorSuiteWorkbench({
 
   async function activateEstimatorSuiteModelWeb(runId: string) {
     await runBusy("Estimator suite 활성화", async () => {
-      const r = await fetch("/api/estimator-suite", {
+      const r = await apiFetch("/api/estimator-suite", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: "activate", runId }),
@@ -216,7 +217,7 @@ export function useEstimatorSuiteWorkbench({
 
   async function clearActiveEstimatorSuiteModelWeb() {
     await runBusy("Estimator suite 해제", async () => {
-      const r = await fetch("/api/estimator-suite", {
+      const r = await apiFetch("/api/estimator-suite", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: "clear-active" }),

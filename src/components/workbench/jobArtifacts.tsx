@@ -1,5 +1,6 @@
 "use client";
 
+import { apiFetch, apiUrl } from "@/lib/apiClient";
 import { useEffect, useState } from "react";
 import type { DownloadFn } from "./primitives";
 import { Artifact } from "./primitives";
@@ -72,7 +73,7 @@ export function CsvArtifactTable({ jobId, path, title }: { jobId: string; path: 
     async function load() {
       if (!jobId) return;
       try {
-        const r = await fetch(`/api/jobs/${jobId}/artifact?path=${encodeURIComponent(path)}`, { cache: "no-store" });
+        const r = await apiFetch(`/api/jobs/${jobId}/artifact?path=${encodeURIComponent(path)}`, { cache: "no-store" });
         if (!r.ok) throw new Error(`${path} artifact를 읽지 못했습니다.`);
         const t = await r.text();
         if (!cancelled) { setText(t); setError(""); }
@@ -91,7 +92,7 @@ export function CsvArtifactTable({ jobId, path, title }: { jobId: string; path: 
   const body = rows.slice(1);
   return (
     <section className="job-artifact-view">
-      <div className="artifact-toolbar"><b>{title}</b><a className="help-link" title="이 artifact 원본을 새 탭에서 엽니다." href={`/api/jobs/${jobId}/artifact?path=${encodeURIComponent(path)}`} target="_blank">원본 열기</a></div>
+      <div className="artifact-toolbar"><b>{title}</b><a className="help-link" title="이 artifact 원본을 새 탭에서 엽니다." href={apiUrl(`/api/jobs/${jobId}/artifact?path=${encodeURIComponent(path)}`)} target="_blank">원본 열기</a></div>
       <div className="md-table-wrap"><table className="md-table"><thead><tr>{header.map((h, i) => <th key={i}>{h}</th>)}</tr></thead><tbody>{body.map((r, i) => <tr key={i}>{header.map((_, j) => <td key={j}>{r[j] ?? ""}</td>)}</tr>)}</tbody></table></div>
     </section>
   );
@@ -106,7 +107,7 @@ export function JobArtifactText({ jobId, path, title }: { jobId: string; path: s
     async function load() {
       if (!jobId) return;
       try {
-        const r = await fetch(`/api/jobs/${jobId}/artifact?path=${encodeURIComponent(path)}`, { cache: "no-store" });
+        const r = await apiFetch(`/api/jobs/${jobId}/artifact?path=${encodeURIComponent(path)}`, { cache: "no-store" });
         if (!r.ok) throw new Error(`${path} artifact를 읽지 못했습니다.`);
         const t = await r.text();
         if (!cancelled) { setText(t); setError(""); }
@@ -148,7 +149,7 @@ export function JobArtifactList({ jobId, jobsPayload }: { jobId: string; jobsPay
         return;
       }
       try {
-        const r = await fetch(`/api/jobs/${jobId}/artifacts`, { cache: "no-store" });
+        const r = await apiFetch(`/api/jobs/${jobId}/artifacts`, { cache: "no-store" });
         if (!r.ok) throw new Error(`artifact list api ${r.status}`);
         const payload = await r.json();
         const names = Array.isArray(payload?.artifacts)
@@ -198,7 +199,7 @@ export function JobArtifactList({ jobId, jobsPayload }: { jobId: string; jobsPay
   const selectAll = () => setSelected(artifacts);
   const clearAll = () => setSelected([]);
   const saveBlob = async (url: string, filename: string) => {
-    const r = await fetch(url, { cache: "no-store" });
+    const r = await apiFetch(url, { cache: "no-store" });
     if (!r.ok) { alert(await r.text()); return; }
     const blob = await r.blob();
     const objectUrl = URL.createObjectURL(blob);

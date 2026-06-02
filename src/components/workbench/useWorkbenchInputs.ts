@@ -1,5 +1,6 @@
 "use client";
 
+import { apiFetch } from "@/lib/apiClient";
 import { useMemo, useState } from "react";
 import { conv2dToGemm } from "@/lib/conv";
 import { parseShapesCsv } from "@/lib/csv";
@@ -130,7 +131,7 @@ export function useWorkbenchInputs({ setServerMessage }: { setServerMessage: (me
     if (!file) return;
     const form = new FormData();
     form.append("file", file);
-    const r = await fetch("/api/import/onnx", { method: "POST", body: form });
+    const r = await apiFetch("/api/import/onnx", { method: "POST", body: form });
     const j = await r.json();
     if (!r.ok) {
       setServerMessage(j.error || "ONNX 불러오기에 실패했습니다.");

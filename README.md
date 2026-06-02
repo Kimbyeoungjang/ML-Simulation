@@ -42,7 +42,7 @@ npm run doctor
 npm run dev
 ```
 
-브라우저에서 `http://localhost:3000`을 엽니다. `npm run dev`는 Next.js 웹 서버와 TileForge worker를 함께 실행합니다.
+브라우저에서 기본값 기준 `http://127.0.0.1:3000`을 엽니다. `npm run dev`는 `.env`의 `TILEFORGE_WEB_PORT`, `TILEFORGE_WEB_HOST`를 읽어 Next.js 웹 서버와 TileForge worker를 함께 실행합니다.
 
 외부 도구까지 설치하려면:
 
@@ -53,6 +53,16 @@ npm run validate:external:required
 ```
 
 SCALE-Sim/IREE가 없어도 estimator, graph, report preview는 동작합니다. 다만 full-pipeline의 외부 검증 단계는 skipped artifact로 기록됩니다.
+
+웹 서버 포트/API 주소를 바꾸려면 `.env`에 다음 값을 설정합니다. 저장 후 웹 서버를 재시작해야 반영됩니다.
+
+```env
+TILEFORGE_WEB_PORT="4000"
+TILEFORGE_WEB_HOST="127.0.0.1"
+NEXT_PUBLIC_TILEFORGE_API_BASE_URL=""
+```
+
+`NEXT_PUBLIC_TILEFORGE_API_BASE_URL`을 비워두면 브라우저는 현재 웹 서버의 `/api`를 호출합니다. 프론트엔드와 API를 분리해 실행할 때만 `http://host:port` 형태로 지정하세요.
 
 ## production 실행
 

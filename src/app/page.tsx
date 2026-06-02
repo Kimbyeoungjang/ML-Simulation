@@ -1,5 +1,6 @@
 "use client";
 
+import { apiFetch, apiUrl } from "@/lib/apiClient";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { conv2dToGemm } from "@/lib/conv";
@@ -86,6 +87,9 @@ const inputTabTips: Record<InputTab, string> = {
 };
 
 const envSettingKeys = [
+  "TILEFORGE_WEB_PORT",
+  "TILEFORGE_WEB_HOST",
+  "NEXT_PUBLIC_TILEFORGE_API_BASE_URL",
   "TILEFORGE_SCALE_SIM_CMD",
   "TILEFORGE_IREE_COMPILE_CMD",
   "TILEFORGE_MAX_PARALLEL_JOBS",
@@ -93,6 +97,8 @@ const envSettingKeys = [
   "TILEFORGE_JOB_STORE",
   "TILEFORGE_CACHE_DIR",
   "TILEFORGE_EXTERNAL_TIMEOUT_MS",
+  "TILEFORGE_ENABLE_TPU_WEB_RUN",
+  "TILEFORGE_TPU_WEB_TIMEOUT_MS",
 ];
 
 const tabTips: Record<Tab, string> = {
@@ -330,7 +336,7 @@ export default function Home() {
 
   async function refreshEnvSettings() {
     try {
-      const r = await fetch("/api/env");
+      const r = await apiFetch("/api/env");
       const j = await r.json();
       if (!r.ok || !j.ok) throw new Error(j.error || "env read failed");
       setEnvValues(j.values ?? {});
@@ -342,7 +348,7 @@ export default function Home() {
 
   async function saveEnvSettings() {
     try {
-      const r = await fetch("/api/env", {
+      const r = await apiFetch("/api/env", {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ values: envValues }),
@@ -350,7 +356,7 @@ export default function Home() {
       const j = await r.json();
       if (!r.ok || !j.ok) throw new Error(j.error || "env save failed");
       setEnvValues(j.values ?? envValues);
-      setEnvMessage(".env를 저장했습니다. 실행 중인 작업에는 다음 실행부터 반영됩니다.");
+      setEnvMessage(".env를 저장했습니다. 포트/API 주소 변경은 서버 재시작 후 반영됩니다.");
     } catch (error: any) {
       setEnvMessage(`설정 저장 실패: ${error?.message ?? error}`);
     }
@@ -358,7 +364,7 @@ export default function Home() {
 
   async function refreshEstimatorSuiteModels() {
     try {
-      const r = await fetch("/api/estimator-suite", { cache: "no-store" });
+      const r = await apiFetch("/api/estimator-suite", { cache: "no-store" });
       const j = await r.json();
       if (!r.ok || !j.ok) throw new Error(j.error || "Estimator suite model 목록을 불러오지 못했습니다.");
       setEstimatorSuiteModels(Array.isArray(j.models) ? j.models : []);
@@ -376,7 +382,7 @@ export default function Home() {
 
   async function refreshPresets() {
     try {
-      const r = await fetch("/api/presets", { cache: "no-store" });
+      const r = await apiFetch("/api/presets", { cache: "no-store" });
       if (!r.ok) throw new Error("프리셋 목록을 불러오지 못했습니다.");
       const data = await r.json();
       setCustomPresets(Array.isArray(data.presets) ? data.presets : []);
@@ -421,7 +427,7 @@ export default function Home() {
     setLiveLogs([`[local] 작업 ${trimmed} 실시간 로그 연결 중...`]);
     setLiveConnected(true);
     setTab("jobs");
-    const es = new EventSource(`/api/jobs/${trimmed}/events?tail=1000`);
+    const es = new EventSource(apiUrl(`/api/jobs/${trimmed}/events?tail=1000`));
     liveEventSource.current = es;
     es.addEventListener("job", (ev: any) => {
       const data = JSON.parse(ev.data);
@@ -505,7 +511,7 @@ export default function Home() {
       return;
     }
     try {
-      const r = await fetch("/api/presets", {
+      const r = await apiFetch("/api/presets", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -534,7 +540,7 @@ export default function Home() {
       return;
     }
     if (!window.confirm(`Estimator 프리셋 '${preset.name}'을 삭제할까요?`)) return;
-    const r = await fetch(`/api/presets?kind=estimator&name=${encodeURIComponent(preset.name)}`, { method: "DELETE" });
+    const r = await apiFetch(`/api/presets?kind=estimator&name=${encodeURIComponent(preset.name)}`, { method: "DELETE" });
     if (!r.ok) return setServerMessage(`Estimator 프리셋 삭제 실패: ${await r.text()}`);
     await refreshPresets();
     if (selectedEstimatorPreset === preset.id || selectedEstimatorPreset === preset.name) setSelectedEstimatorPreset("quick-512");
@@ -545,7 +551,7 @@ export default function Home() {
   async function generateEstimatorSuiteDesign() {
     setEstimatorSuiteBusy(true);
     try {
-      const r = await fetch("/api/estimator-suite", {
+      const r = await apiFetch("/api/estimator-suite", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: "design", request, options: { topK: estimatorSuiteOptions.topK } }),
@@ -565,7 +571,7 @@ export default function Home() {
   async function generateEstimatorSamplingPlan(enqueue = false) {
     setEstimatorSuiteBusy(true);
     try {
-      const r = await fetch("/api/estimator-suite", {
+      const r = await apiFetch("/api/estimator-suite", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -596,7 +602,7 @@ export default function Home() {
   async function collectEstimatorSamplesFromJobsWeb() {
     setEstimatorSuiteBusy(true);
     try {
-      const r = await fetch("/api/estimator-suite", {
+      const r = await apiFetch("/api/estimator-suite", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: "collect-jobs", csvText: estimatorSuiteCsv }),
@@ -617,7 +623,7 @@ export default function Home() {
   async function importEstimatorDatasetWeb(files: Array<{ name: string; text: string }>, train: boolean) {
     setEstimatorSuiteBusy(true);
     try {
-      const r = await fetch("/api/estimator-suite", {
+      const r = await apiFetch("/api/estimator-suite", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: train ? "dataset-job" : "dataset", request, files, options: estimatorSuiteOptions, train, activate: true }),
@@ -646,7 +652,7 @@ export default function Home() {
   async function runEstimatorSuiteWeb() {
     setEstimatorSuiteBusy(true);
     try {
-      const r = await fetch("/api/estimator-suite", {
+      const r = await apiFetch("/api/estimator-suite", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: "suite-job", request, csvText: estimatorSuiteCsv, options: estimatorSuiteOptions, activate: true }),
@@ -668,7 +674,7 @@ export default function Home() {
   async function activateEstimatorSuiteModelWeb(runId: string) {
     setEstimatorSuiteBusy(true);
     try {
-      const r = await fetch("/api/estimator-suite", {
+      const r = await apiFetch("/api/estimator-suite", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: "activate", runId }),
@@ -688,7 +694,7 @@ export default function Home() {
   async function clearActiveEstimatorSuiteModelWeb() {
     setEstimatorSuiteBusy(true);
     try {
-      const r = await fetch("/api/estimator-suite", {
+      const r = await apiFetch("/api/estimator-suite", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: "clear-active" }),
@@ -706,7 +712,7 @@ export default function Home() {
   }
 
   async function runServerEstimate() {
-    const r = await fetch("/api/estimate", {
+    const r = await apiFetch("/api/estimate", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ ...request, arraySweep: defaultArraySweep }),
@@ -717,7 +723,7 @@ export default function Home() {
     );
   }
   async function saveProject() {
-    const r = await fetch("/api/project", {
+    const r = await apiFetch("/api/project", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: result.artifacts.projectJson,
@@ -746,7 +752,7 @@ export default function Home() {
         applyProjectState(JSON.parse(await file.text()), file.name);
         return;
       }
-      const r = await fetch("/api/project");
+      const r = await apiFetch("/api/project");
       if (!r.ok) return setServerMessage("저장된 프로젝트가 없습니다.");
       applyProjectState(await r.json(), ".tileforge/project.json");
     } catch (error: any) {
@@ -760,7 +766,7 @@ export default function Home() {
       const dfHardware = { ...hardware, dataflow: df };
       const dfRequest = { ...request, hardware: dfHardware };
       const suffix = modes.length > 1 ? `_${df}` : "";
-      const r = await fetch("/api/jobs", {
+      const r = await apiFetch("/api/jobs", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ kind, name: `${dfHardware.name}_${kind}${suffix}`, request: dfRequest }),
@@ -775,7 +781,7 @@ export default function Home() {
   async function fetchJobReport(id: string, options: { manual?: boolean } = {}) {
     if (!id) return;
     try {
-      const r = await fetch(`/api/jobs/${id}/artifacts/report.md`, {
+      const r = await apiFetch(`/api/jobs/${id}/artifacts/report.md`, {
         cache: "no-store",
       });
       if (!r.ok) return;
@@ -785,7 +791,7 @@ export default function Home() {
         setServerReportJobId(id);
         setAnalysisJobId(id);
         try {
-          const cr = await fetch(`/api/jobs/${id}/artifacts/confidence.md`, {
+          const cr = await apiFetch(`/api/jobs/${id}/artifacts/confidence.md`, {
             cache: "no-store",
           });
           if (cr.ok) {
@@ -826,7 +832,7 @@ export default function Home() {
       : `limit=${jobsPageSize}&page=${jobsPage}&external=0&t=${Date.now()}`;
     let payload: any;
     try {
-      const r = await fetch(`/api/jobs?${params}`, { cache: "no-store" });
+      const r = await apiFetch(`/api/jobs?${params}`, { cache: "no-store" });
       if (!r.ok) throw new Error(`jobs api ${r.status}`);
       payload = await r.json();
     } catch (error: any) {
@@ -851,7 +857,7 @@ export default function Home() {
   async function deleteJobById(id: string) {
     if (!id) return;
     if (!window.confirm(`작업 ${id}와 관련 artifact를 삭제할까요?`)) return;
-    const r = await fetch(`/api/jobs/${id}`, { method: "DELETE" });
+    const r = await apiFetch(`/api/jobs/${id}`, { method: "DELETE" });
     const j = await r.json().catch(() => ({ ok: false }));
     setServerMessage(`삭제 결과: ${j.ok ? "성공" : "실패"}`);
     if (serverReportJobId === id) {
@@ -873,7 +879,7 @@ export default function Home() {
     if (!window.confirm(`선택한 작업 ${unique.length}개와 관련 artifact를 삭제할까요?`)) return;
     let ok = 0;
     for (const id of unique) {
-      const r = await fetch(`/api/jobs/${id}`, { method: "DELETE" });
+      const r = await apiFetch(`/api/jobs/${id}`, { method: "DELETE" });
       if (r.ok) ok += 1;
     }
     setSelectedJobIds((prev) => prev.filter((id) => !unique.includes(id)));
@@ -890,7 +896,7 @@ export default function Home() {
 
   async function cancelJobById(id: string) {
     if (!id) return;
-    const r = await fetch(`/api/jobs/${id}`, {
+    const r = await apiFetch(`/api/jobs/${id}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ action: "cancel" }),
@@ -906,7 +912,7 @@ export default function Home() {
     if (!window.confirm(`선택한 작업 ${unique.length}개를 중지할까요? 실행 중인 외부 프로세스는 다음 체크포인트에서 취소됩니다.`)) return;
     let ok = 0;
     for (const id of unique) {
-      const r = await fetch(`/api/jobs/${id}`, {
+      const r = await apiFetch(`/api/jobs/${id}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: "cancel" }),
@@ -929,7 +935,7 @@ export default function Home() {
     await cancelJobById(target);
   }
   async function runDoctorCheck() {
-    const r = await fetch("/api/doctor");
+    const r = await apiFetch("/api/doctor");
     const j = await r.json();
     setServerMessage(
       `진단 ${j.ok ? "정상" : "확인 필요"}: ${j.checks.map((c: any) => `${c.name}=${c.ok ? "정상" : "경고"}`).join(", ")}`,
@@ -939,7 +945,7 @@ export default function Home() {
     if (options.skipIfBusy && statusRefreshInFlight.current) return;
     statusRefreshInFlight.current = true;
     try {
-      const r = await fetch("/api/system/status", { cache: "no-store" });
+      const r = await apiFetch("/api/system/status", { cache: "no-store" });
       if (!r.ok) throw new Error(`status api ${r.status}`);
       const payload = await r.json();
       setStatusPayload(payload);
@@ -953,7 +959,7 @@ export default function Home() {
   }
 
   async function updateParallelJobs(value: number) {
-    const r = await fetch("/api/system/config", {
+    const r = await apiFetch("/api/system/config", {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ maxParallelJobs: value }),
@@ -988,7 +994,7 @@ export default function Home() {
     if (!file) return;
     const form = new FormData();
     form.append("file", file);
-    const r = await fetch("/api/import/onnx", { method: "POST", body: form });
+    const r = await apiFetch("/api/import/onnx", { method: "POST", body: form });
     const j = await r.json();
     if (!r.ok)
       return setServerMessage(j.error || "ONNX 불러오기에 실패했습니다.");
@@ -1026,7 +1032,7 @@ export default function Home() {
       return;
     }
     try {
-      const r = await fetch("/api/presets", {
+      const r = await apiFetch("/api/presets", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(nextPreset),
@@ -1063,7 +1069,7 @@ export default function Home() {
       return;
     }
     try {
-      const r = await fetch(`/api/presets?name=${encodeURIComponent(name)}`, { method: "DELETE" });
+      const r = await apiFetch(`/api/presets?name=${encodeURIComponent(name)}`, { method: "DELETE" });
       if (!r.ok) throw new Error(await r.text());
       await refreshPresets();
       if (customPresetName === name) setCustomPresetName("");
@@ -1076,7 +1082,7 @@ export default function Home() {
   async function saveHardwarePreset() {
     const name = hardwarePresetName.trim() || hardware.name;
     try {
-      const r = await fetch("/api/presets", {
+      const r = await apiFetch("/api/presets", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ kind: "hardware", name, hardware: { ...hardware, name } }),
@@ -1093,7 +1099,7 @@ export default function Home() {
   async function deleteHardwarePreset(name: string) {
     if (!name) return;
     if (!window.confirm(`하드웨어 프리셋 '${name}'을 삭제할까요?`)) return;
-    const r = await fetch(`/api/presets?kind=hardware&name=${encodeURIComponent(name)}`, { method: "DELETE" });
+    const r = await apiFetch(`/api/presets?kind=hardware&name=${encodeURIComponent(name)}`, { method: "DELETE" });
     if (!r.ok) return setServerMessage(`하드웨어 프리셋 삭제 실패: ${await r.text()}`);
     await refreshPresets();
     if (hardwarePresetName === name) setHardwarePresetName("");
@@ -1103,7 +1109,7 @@ export default function Home() {
   async function saveWorkloadPreset() {
     const name = workloadPresetName.trim() || `workload_${new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-")}`;
     try {
-      const r = await fetch("/api/presets", {
+      const r = await apiFetch("/api/presets", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ kind: "workload", name, shapes }),
@@ -1120,7 +1126,7 @@ export default function Home() {
   async function deleteWorkloadPreset(name: string) {
     if (!name) return;
     if (!window.confirm(`워크로드 프리셋 '${name}'을 삭제할까요?`)) return;
-    const r = await fetch(`/api/presets?kind=workload&name=${encodeURIComponent(name)}`, { method: "DELETE" });
+    const r = await apiFetch(`/api/presets?kind=workload&name=${encodeURIComponent(name)}`, { method: "DELETE" });
     if (!r.ok) return setServerMessage(`워크로드 프리셋 삭제 실패: ${await r.text()}`);
     await refreshPresets();
     if (workloadPresetName === name) setWorkloadPresetName("");

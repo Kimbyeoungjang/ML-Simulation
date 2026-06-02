@@ -87,6 +87,9 @@ async function main() {
 
 
   const defaultEnv: Record<string, string> = {
+    TILEFORGE_WEB_PORT: "3000",
+    TILEFORGE_WEB_HOST: "127.0.0.1",
+    NEXT_PUBLIC_TILEFORGE_API_BASE_URL: "",
     TILEFORGE_MAX_PARALLEL_JOBS: "6",
     TILEFORGE_MAX_PARALLEL_JOBS_CAP: "8",
     TILEFORGE_MAX_QUEUED_JOBS: "10000",

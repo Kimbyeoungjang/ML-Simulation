@@ -1,5 +1,6 @@
 "use client";
 
+import { apiFetch } from "@/lib/apiClient";
 import type { ElementType } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { analyzeFusion, fusionMarkdown } from "@/lib/fusion";
@@ -541,11 +542,11 @@ export function Graphs({
       if (!jobId) return;
       try {
         const [r, sr] = await Promise.all([
-          fetch(
+          apiFetch(
             `/api/jobs/${jobId}/artifact?path=${encodeURIComponent("result.json")}`,
             { cache: "no-store" },
           ),
-          fetch(
+          apiFetch(
             `/api/jobs/${jobId}/artifact?path=${encodeURIComponent("scalesim_summary.json")}`,
             { cache: "no-store" },
           ),

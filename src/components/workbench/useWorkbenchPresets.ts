@@ -1,5 +1,6 @@
 "use client";
 
+import { apiFetch } from "@/lib/apiClient";
 import { useMemo, useState } from "react";
 import { estimatorPresets as builtInEstimatorPresets, findEstimatorPreset } from "@/lib/estimatorPresets";
 import { hardwarePresets, workloadPresets } from "@/lib/presets";
@@ -84,7 +85,7 @@ export function useWorkbenchPresets({
 
   async function refreshPresets() {
     try {
-      const r = await fetch("/api/presets", { cache: "no-store" });
+      const r = await apiFetch("/api/presets", { cache: "no-store" });
       if (!r.ok) throw new Error("프리셋 목록을 불러오지 못했습니다.");
       const data = await r.json();
       setCustomPresets(Array.isArray(data.presets) ? data.presets : []);
@@ -129,7 +130,7 @@ export function useWorkbenchPresets({
       return;
     }
     try {
-      const r = await fetch("/api/presets", {
+      const r = await apiFetch("/api/presets", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(nextPreset),
@@ -169,7 +170,7 @@ export function useWorkbenchPresets({
       return;
     }
     try {
-      const r = await fetch(`/api/presets?name=${encodeURIComponent(name)}`, { method: "DELETE" });
+      const r = await apiFetch(`/api/presets?name=${encodeURIComponent(name)}`, { method: "DELETE" });
       if (!r.ok) throw new Error(await r.text());
       await refreshPresets();
       if (customPresetName === name) setCustomPresetName("");
@@ -182,7 +183,7 @@ export function useWorkbenchPresets({
   async function saveHardwarePreset() {
     const name = hardwarePresetName.trim() || hardware.name;
     try {
-      const r = await fetch("/api/presets", {
+      const r = await apiFetch("/api/presets", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ kind: "hardware", name, hardware: { ...hardware, name } }),
@@ -199,7 +200,7 @@ export function useWorkbenchPresets({
   async function deleteHardwarePreset(name: string) {
     if (!name) return;
     if (!window.confirm(`하드웨어 프리셋 '${name}'을 삭제할까요?`)) return;
-    const r = await fetch(`/api/presets?kind=hardware&name=${encodeURIComponent(name)}`, { method: "DELETE" });
+    const r = await apiFetch(`/api/presets?kind=hardware&name=${encodeURIComponent(name)}`, { method: "DELETE" });
     if (!r.ok) return setServerMessage(`하드웨어 프리셋 삭제 실패: ${await r.text()}`);
     await refreshPresets();
     if (hardwarePresetName === name) setHardwarePresetName("");
@@ -209,7 +210,7 @@ export function useWorkbenchPresets({
   async function saveWorkloadPreset() {
     const name = workloadPresetName.trim() || `workload_${new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-")}`;
     try {
-      const r = await fetch("/api/presets", {
+      const r = await apiFetch("/api/presets", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ kind: "workload", name, shapes }),
@@ -226,7 +227,7 @@ export function useWorkbenchPresets({
   async function deleteWorkloadPreset(name: string) {
     if (!name) return;
     if (!window.confirm(`워크로드 프리셋 '${name}'을 삭제할까요?`)) return;
-    const r = await fetch(`/api/presets?kind=workload&name=${encodeURIComponent(name)}`, { method: "DELETE" });
+    const r = await apiFetch(`/api/presets?kind=workload&name=${encodeURIComponent(name)}`, { method: "DELETE" });
     if (!r.ok) return setServerMessage(`워크로드 프리셋 삭제 실패: ${await r.text()}`);
     await refreshPresets();
     if (workloadPresetName === name) setWorkloadPresetName("");
@@ -252,7 +253,7 @@ export function useWorkbenchPresets({
       return;
     }
     try {
-      const r = await fetch("/api/presets", {
+      const r = await apiFetch("/api/presets", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -281,7 +282,7 @@ export function useWorkbenchPresets({
       return;
     }
     if (!window.confirm(`Estimator 프리셋 '${preset.name}'을 삭제할까요?`)) return;
-    const r = await fetch(`/api/presets?kind=estimator&name=${encodeURIComponent(preset.name)}`, { method: "DELETE" });
+    const r = await apiFetch(`/api/presets?kind=estimator&name=${encodeURIComponent(preset.name)}`, { method: "DELETE" });
     if (!r.ok) return setServerMessage(`Estimator 프리셋 삭제 실패: ${await r.text()}`);
     await refreshPresets();
     if (selectedEstimatorPreset === preset.id || selectedEstimatorPreset === preset.name) setSelectedEstimatorPreset("quick-512");

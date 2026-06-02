@@ -1,5 +1,6 @@
 "use client";
 
+import { apiFetch } from "@/lib/apiClient";
 import type { Dataflow, HardwareConfig, MatmulShape, Objective, ScaleSimOverrides } from "@/types/domain";
 
 type UseProjectIOArgs = {
@@ -44,7 +45,7 @@ export function useProjectIO({
   }
 
   async function saveProject() {
-    const r = await fetch("/api/project", {
+    const r = await apiFetch("/api/project", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: projectJson,
@@ -58,7 +59,7 @@ export function useProjectIO({
         applyProjectState(JSON.parse(await file.text()), file.name);
         return;
       }
-      const r = await fetch("/api/project");
+      const r = await apiFetch("/api/project");
       if (!r.ok) return setServerMessage("저장된 프로젝트가 없습니다.");
       applyProjectState(await r.json(), ".tileforge/project.json");
     } catch (error: any) {

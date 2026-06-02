@@ -1,5 +1,6 @@
 "use client";
 
+import { apiFetch } from "@/lib/apiClient";
 import { useEffect, useState } from "react";
 import { jobDisplayName } from "@/components/workbench/resultTabs";
 import type { ConfidenceAssessment } from "@/lib/confidence";
@@ -58,7 +59,7 @@ export function useWorkbenchJobs({
   async function fetchJobReport(id: string, options: { manual?: boolean } = {}) {
     if (!id) return;
     try {
-      const r = await fetch(`/api/jobs/${id}/artifacts/report.md`, {
+      const r = await apiFetch(`/api/jobs/${id}/artifacts/report.md`, {
         cache: "no-store",
       });
       if (!r.ok) return;
@@ -68,7 +69,7 @@ export function useWorkbenchJobs({
         setServerReportJobId(id);
         setAnalysisJobId(id);
         try {
-          const cr = await fetch(`/api/jobs/${id}/artifacts/confidence.md`, {
+          const cr = await apiFetch(`/api/jobs/${id}/artifacts/confidence.md`, {
             cache: "no-store",
           });
           if (cr.ok) {
@@ -94,7 +95,7 @@ export function useWorkbenchJobs({
       : `limit=${jobsPageSize}&page=${jobsPage}&external=0&t=${Date.now()}`;
     let payload: any;
     try {
-      const r = await fetch(`/api/jobs?${params}`, { cache: "no-store" });
+      const r = await apiFetch(`/api/jobs?${params}`, { cache: "no-store" });
       if (!r.ok) throw new Error(`jobs api ${r.status}`);
       payload = await r.json();
     } catch (error: any) {
@@ -116,7 +117,7 @@ export function useWorkbenchJobs({
 
   async function refreshStatus(switchTab = true) {
     try {
-      const r = await fetch("/api/system/status", { cache: "no-store" });
+      const r = await apiFetch("/api/system/status", { cache: "no-store" });
       if (!r.ok) throw new Error(`status api ${r.status}`);
       const payload = await r.json();
       setStatusPayload(payload);
@@ -170,7 +171,7 @@ export function useWorkbenchJobs({
       const dfHardware = { ...hardware, dataflow: df };
       const dfRequest = { ...request, hardware: dfHardware };
       const suffix = modes.length > 1 ? `_${df}` : "";
-      const r = await fetch("/api/jobs", {
+      const r = await apiFetch("/api/jobs", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ kind, name: `${dfHardware.name}_${kind}${suffix}`, request: dfRequest }),
@@ -186,7 +187,7 @@ export function useWorkbenchJobs({
   async function deleteJobById(id: string) {
     if (!id) return;
     if (!window.confirm(`작업 ${id}와 관련 artifact를 삭제할까요?`)) return;
-    const r = await fetch(`/api/jobs/${id}`, { method: "DELETE" });
+    const r = await apiFetch(`/api/jobs/${id}`, { method: "DELETE" });
     const j = await r.json().catch(() => ({ ok: false }));
     setServerMessage(`삭제 결과: ${j.ok ? "성공" : "실패"}`);
     if (serverReportJobId === id) {
@@ -206,7 +207,7 @@ export function useWorkbenchJobs({
     if (!window.confirm(`선택한 작업 ${unique.length}개와 관련 artifact를 삭제할까요?`)) return;
     let ok = 0;
     for (const id of unique) {
-      const r = await fetch(`/api/jobs/${id}`, { method: "DELETE" });
+      const r = await apiFetch(`/api/jobs/${id}`, { method: "DELETE" });
       if (r.ok) ok += 1;
     }
     setSelectedJobIds((prev) => prev.filter((id) => !unique.includes(id)));
@@ -223,7 +224,7 @@ export function useWorkbenchJobs({
 
   async function cancelJobById(id: string) {
     if (!id) return;
-    const r = await fetch(`/api/jobs/${id}`, {
+    const r = await apiFetch(`/api/jobs/${id}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ action: "cancel" }),
@@ -239,7 +240,7 @@ export function useWorkbenchJobs({
     if (!window.confirm(`선택한 작업 ${unique.length}개를 중지할까요? 실행 중인 외부 프로세스는 다음 체크포인트에서 취소됩니다.`)) return;
     let ok = 0;
     for (const id of unique) {
-      const r = await fetch(`/api/jobs/${id}`, {
+      const r = await apiFetch(`/api/jobs/${id}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ action: "cancel" }),
@@ -264,7 +265,7 @@ export function useWorkbenchJobs({
   }
 
   async function runDoctorCheck() {
-    const r = await fetch("/api/doctor");
+    const r = await apiFetch("/api/doctor");
     const j = await r.json();
     setServerMessage(
       `진단 ${j.ok ? "정상" : "확인 필요"}: ${j.checks.map((c: any) => `${c.name}=${c.ok ? "정상" : "경고"}`).join(", ")}`,
@@ -278,7 +279,7 @@ export function useWorkbenchJobs({
   }
 
   async function updateParallelJobs(value: number) {
-    const r = await fetch("/api/system/config", {
+    const r = await apiFetch("/api/system/config", {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ maxParallelJobs: value }),

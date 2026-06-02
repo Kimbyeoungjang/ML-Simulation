@@ -53,6 +53,9 @@ export const inputTabTips: Record<InputTab, string> = {
 };
 
 export const envSettingKeys = [
+  "TILEFORGE_WEB_PORT",
+  "TILEFORGE_WEB_HOST",
+  "NEXT_PUBLIC_TILEFORGE_API_BASE_URL",
   "TILEFORGE_SCALE_SIM_CMD",
   "TILEFORGE_IREE_COMPILE_CMD",
   "TILEFORGE_MAX_PARALLEL_JOBS",

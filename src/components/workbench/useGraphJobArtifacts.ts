@@ -1,5 +1,6 @@
 "use client";
 
+import { apiFetch } from "@/lib/apiClient";
 import { useEffect, useState } from "react";
 
 export function useGraphJobArtifacts(jobId?: string) {
@@ -16,8 +17,8 @@ export function useGraphJobArtifacts(jobId?: string) {
       if (!jobId) return;
       try {
         const [resultResponse, scaleResponse] = await Promise.all([
-          fetch(`/api/jobs/${jobId}/artifact?path=${encodeURIComponent("result.json")}`, { cache: "no-store" }),
-          fetch(`/api/jobs/${jobId}/artifact?path=${encodeURIComponent("scalesim_summary.json")}`, { cache: "no-store" }),
+          apiFetch(`/api/jobs/${jobId}/artifact?path=${encodeURIComponent("result.json")}`, { cache: "no-store" }),
+          apiFetch(`/api/jobs/${jobId}/artifact?path=${encodeURIComponent("scalesim_summary.json")}`, { cache: "no-store" }),
         ]);
         if (!resultResponse.ok) throw new Error(await resultResponse.text());
         const parsed = JSON.parse(await resultResponse.text());

@@ -1,5 +1,6 @@
 "use client";
 
+import { apiFetch } from "@/lib/apiClient";
 import { useEffect, useMemo, useState } from "react";
 import {
   bestDesignRow,
@@ -78,7 +79,7 @@ export function DesignSpacePanel({
     setActiveLearningPending(true);
     setActiveLearningMessage("추천 후보와 앞뒤 범위를 확장해 최소 40개 학습 샘플을 만들 실험 batch를 등록하는 중입니다.");
     try {
-      const response = await fetch("/api/estimator-suite", {
+      const response = await apiFetch("/api/estimator-suite", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
