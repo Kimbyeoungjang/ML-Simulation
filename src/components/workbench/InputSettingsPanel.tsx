@@ -15,10 +15,24 @@ type InputTab =
 type InputSettingsPanelProps = Record<string, any>;
 
 const dataflowCopy: Record<Dataflow, { title: string; desc: string }> = {
-  WS: { title: "Weight Stationary", desc: "필터/가중치를 PE 안에 오래 두는 방식입니다. 큰 GEMM과 Conv projection 비교에 자주 씁니다." },
-  OS: { title: "Output Stationary", desc: "부분합을 오래 유지해 write-back 부담을 줄이는 방식입니다. 누산이 큰 연산을 비교할 때 좋습니다." },
-  IS: { title: "Input Stationary", desc: "입력 activation 재사용을 우선하는 방식입니다. SRAM/DRAM 병목 비교에 유용합니다." },
+  WS: { title: "Weight Stationary", desc: "가중치를 PE 안에 오래 유지해 weight 재사용을 높이는 방식입니다. TPU형 GEMM/Conv projection 비교의 기본 기준으로 쓰기 좋습니다." },
+  OS: { title: "Output Stationary", desc: "부분합을 PE 안에 오래 유지해 ofmap write-back 부담을 줄이는 방식입니다. 누산량이 큰 연산의 대안으로 비교합니다." },
+  IS: { title: "Input Stationary", desc: "입력 activation 재사용을 우선하는 방식입니다. 입력 재사용과 SRAM/DRAM 병목을 비교할 때 사용합니다." },
 };
+
+const envSettingTips: Record<string, string> = {
+  TILEFORGE_SCALE_SIM_CMD: "SCALE-Sim 실행 명령입니다. 예: py -3 -m scalesim.scale 또는 npx tsx scripts/mock-scalesim.ts",
+  TILEFORGE_IREE_COMPILE_CMD: "IREE 컴파일 명령입니다. 예: py -3 -m iree.compiler.tools.core 또는 iree-compile",
+  TILEFORGE_MAX_PARALLEL_JOBS: "worker가 동시에 처리할 full-pipeline 작업 수입니다. 너무 크게 잡으면 메모리 사용량이 급증합니다.",
+  TILEFORGE_WORKSPACE_DIR: "job artifact, 임시 cfg/topology, 보고서를 저장할 작업 폴더입니다.",
+  TILEFORGE_JOB_STORE: "작업 큐 상태를 저장할 SQLite 파일 경로입니다.",
+  TILEFORGE_CACHE_DIR: "estimator와 외부 실행 캐시를 저장할 폴더입니다.",
+  TILEFORGE_EXTERNAL_TIMEOUT_MS: "SCALE-Sim/IREE 외부 명령 하나에 허용할 최대 실행 시간(ms)입니다.",
+};
+
+function envTip(key: string) {
+  return envSettingTips[key] ?? ".env에 저장되는 TileForge 실행 설정입니다. 비워두면 프로그램 기본값을 사용합니다.";
+}
 
 export function InputSettingsPanel(props: InputSettingsPanelProps) {
   const {
@@ -202,7 +216,7 @@ export function InputSettingsPanel(props: InputSettingsPanelProps) {
               <MiniField label="원소당 byte" tip="fp16/bfloat16은 보통 2, fp32는 4, int8은 1입니다.">
                 <input type="number" value={hardware.bytesPerElement} onChange={(e) => updateHw({ bytesPerElement: +e.target.value })} />
               </MiniField>
-              <MiniField label="메모리 BW GB/s" tip="DRAM roofline과 memory-bound 판단에 사용합니다.">
+              <MiniField label="메모리 BW GB/s" tip="하드웨어가 제공하는 외부 메모리 대역폭입니다. Roofline과 full-layer memory-bound 판단에 사용합니다.">
                 <input type="number" value={hardware.memoryBandwidthGBs ?? 100} onChange={(e) => updateHw({ memoryBandwidthGBs: +e.target.value })} />
               </MiniField>
             </div>
@@ -214,13 +228,13 @@ export function InputSettingsPanel(props: InputSettingsPanelProps) {
                 <MiniField label="pJ/DRAM byte" tip="DRAM byte 접근당 에너지입니다."><input type="number" value={hardware.energyPerDramBytePJ ?? 60} onChange={(e) => updateHw({ energyPerDramBytePJ: +e.target.value })} /></MiniField>
               </div>
               <div className="row3">
-                <MiniField label="Ifmap SRAM KiB" tip="SCALE-Sim ifmap SRAM입니다."><input type="number" value={scaleSim.ifmapSramKB ?? Math.floor(hardware.sramKB / 3)} onChange={(e) => updateScaleSim({ ifmapSramKB: +e.target.value })} /></MiniField>
-                <MiniField label="Filter SRAM KiB" tip="SCALE-Sim filter SRAM입니다."><input type="number" value={scaleSim.filterSramKB ?? Math.floor(hardware.sramKB / 3)} onChange={(e) => updateScaleSim({ filterSramKB: +e.target.value })} /></MiniField>
-                <MiniField label="Ofmap SRAM KiB" tip="SCALE-Sim ofmap SRAM입니다."><input type="number" value={scaleSim.ofmapSramKB ?? Math.floor(hardware.sramKB / 3)} onChange={(e) => updateScaleSim({ ofmapSramKB: +e.target.value })} /></MiniField>
+                <MiniField label="Ifmap SRAM KiB" tip="SCALE-Sim cfg의 ifmap SRAM 용량입니다. 입력 activation 버퍼 크기를 KiB 단위로 지정합니다."><input type="number" value={scaleSim.ifmapSramKB ?? Math.floor(hardware.sramKB / 3)} onChange={(e) => updateScaleSim({ ifmapSramKB: +e.target.value })} /></MiniField>
+                <MiniField label="Filter SRAM KiB" tip="SCALE-Sim cfg의 filter SRAM 용량입니다. weight 버퍼 크기를 KiB 단위로 지정합니다."><input type="number" value={scaleSim.filterSramKB ?? Math.floor(hardware.sramKB / 3)} onChange={(e) => updateScaleSim({ filterSramKB: +e.target.value })} /></MiniField>
+                <MiniField label="Ofmap SRAM KiB" tip="SCALE-Sim cfg의 ofmap SRAM 용량입니다. output/partial-sum 버퍼 크기를 KiB 단위로 지정합니다."><input type="number" value={scaleSim.ofmapSramKB ?? Math.floor(hardware.sramKB / 3)} onChange={(e) => updateScaleSim({ ofmapSramKB: +e.target.value })} /></MiniField>
               </div>
               <div className="row">
-                <MiniField label="DRAM / Interface Bandwidth" tip="SCALE-Sim cfg bandwidth 값입니다."><input type="number" value={(scaleSim as any).dramBandwidth ?? scaleSim.bandwidth ?? 128} onChange={(e) => updateScaleSim({ bandwidth: +e.target.value, ...({ dramBandwidth: +e.target.value } as any) })} /></MiniField>
-                <MiniField label="run_name" tip="SCALE-Sim 결과 디렉터리 이름입니다."><input value={scaleSim.runName ?? "tileforge_generated"} onChange={(e) => updateScaleSim({ runName: e.target.value })} /></MiniField>
+                <MiniField label="DRAM / Interface Bandwidth" tip="SCALE-Sim Bandwidth 값입니다. TileForge에서는 DRAM/global interface의 elements/cycle로 해석해 외부 검증과 full-layer bandwidth sweep에 사용합니다."><input type="number" value={(scaleSim as any).dramBandwidth ?? scaleSim.bandwidth ?? 128} onChange={(e) => updateScaleSim({ bandwidth: +e.target.value, ...({ dramBandwidth: +e.target.value } as any) })} /></MiniField>
+                <MiniField label="run_name" tip="SCALE-Sim cfg의 run_name입니다. 결과 폴더와 로그를 구분할 때 사용합니다."><input value={scaleSim.runName ?? "tileforge_generated"} onChange={(e) => updateScaleSim({ runName: e.target.value })} /></MiniField>
               </div>
             </details>
           </>
@@ -236,7 +250,7 @@ export function InputSettingsPanel(props: InputSettingsPanelProps) {
               <MiniField label="tileK" tip="GEMM K축 reduction 타일 후보입니다."><input value={tileK} onChange={(e) => setTileK(e.target.value)} /></MiniField>
             </div>
             <FieldLabel tip="최적 타일을 고를 때 우선할 기준입니다.">최적화 목표</FieldLabel>
-            <select value={objective} onChange={(e) => setObjective(e.target.value as Objective)}>
+            <select title="타일 후보 ranking에 사용할 최적화 기준입니다." value={objective} onChange={(e) => setObjective(e.target.value as Objective)}>
               <option value="balanced">균형</option>
               <option value="cycles">사이클 최소</option>
               <option value="utilization">활용률 우선</option>
@@ -251,8 +265,8 @@ export function InputSettingsPanel(props: InputSettingsPanelProps) {
           <>
             <h3>워크로드</h3>
             <p className="small">분석할 GEMM 목록을 구성합니다. Conv2D는 im2col 기준 GEMM으로 변환해 같은 목록에 추가합니다.</p>
-            <FieldLabel tip="name,m,n,k 형식의 CSV를 붙여넣습니다.">CSV 입력</FieldLabel>
-            <textarea value={csvText} onChange={(e) => setCsvText(e.target.value)} rows={6} />
+            <FieldLabel tip="CSV 헤더를 포함해 GEMM 목록을 붙여넣습니다. 권장 열은 id,model,op_name 또는 opName,m,n,k,dtype_bytes입니다.">CSV 입력</FieldLabel>
+            <textarea title="id,model,op_name,m,n,k,dtype_bytes 형식의 GEMM CSV를 입력합니다." value={csvText} onChange={(e) => setCsvText(e.target.value)} rows={6} />
             <ActionButton tip="CSV를 현재 workload 목록에 반영합니다." onClick={importCsv}>CSV 적용</ActionButton>
             <h4>수동 GEMM 추가</h4>
             <div className="row3">
@@ -280,7 +294,7 @@ export function InputSettingsPanel(props: InputSettingsPanelProps) {
               <ActionButton tip="현재 Conv2D 파라미터를 im2col GEMM shape로 변환해 workload 목록에 추가합니다." onClick={addConv}>Conv2D → GEMM 추가</ActionButton>
             </details>
             <FieldLabel tip="ONNX 파일에서 MatMul/Gemm 노드를 가져옵니다.">ONNX 가져오기</FieldLabel>
-            <input type="file" accept=".onnx" onChange={(e: ChangeEvent<HTMLInputElement>) => e.target.files?.[0] && importOnnxFile(e.target.files[0])} />
+            <input title="ONNX 파일을 선택하면 MatMul/Gemm 노드 shape를 workload 목록으로 가져옵니다." type="file" accept=".onnx" onChange={(e: ChangeEvent<HTMLInputElement>) => e.target.files?.[0] && importOnnxFile(e.target.files[0])} />
             <div className="shape-list clean-shape-list">
               {shapes.map((s: any, idx: number) => (
                 <div key={`${shapeName(s)}-${idx}`} className="shape-row">
@@ -307,9 +321,9 @@ export function InputSettingsPanel(props: InputSettingsPanelProps) {
             {liveJobId && (
               <div className="live-job-actions">
                 <span className="small">실시간 작업: {liveJobId}</span>
-                <button className="secondary" onClick={() => watchJob(liveJobId)}>보기</button>
-                <button className="secondary" onClick={() => cancelJob(liveJobId)}>취소</button>
-                <button className="secondary danger-button" onClick={() => deleteJobPrompt(liveJobId)}>삭제</button>
+                <button className="secondary" title="현재 실시간 작업의 콘솔/로그 패널을 엽니다." onClick={() => watchJob(liveJobId)}>보기</button>
+                <button className="secondary" title="현재 실시간 작업을 cancelled 상태로 전환합니다." onClick={() => cancelJob(liveJobId)}>취소</button>
+                <button className="secondary danger-button" title="현재 실시간 작업 기록과 산출물을 삭제합니다." onClick={() => deleteJobPrompt(liveJobId)}>삭제</button>
               </div>
             )}
             {serverMessage && <p className="small status-note">{serverMessage}</p>}
@@ -331,21 +345,21 @@ export function InputSettingsPanel(props: InputSettingsPanelProps) {
             <FieldLabel tip="현재 전체 설정을 사용자 프리셋으로 저장합니다.">전체 프리셋 이름</FieldLabel>
             <input value={customPresetName} onChange={(e) => setCustomPresetName(e.target.value)} placeholder="예: vit-s_128x128_ws" />
             <div className="graph-actions">
-              <button onClick={saveCustomPreset}>전체 프리셋 저장</button>
-              <button className="secondary" onClick={() => applyCustomPreset(customPresetName)} disabled={!customPresetName}>전체 프리셋 적용</button>
-              <button className="secondary danger-button" onClick={() => deleteCustomPreset(customPresetName)} disabled={!customPresetName}>삭제</button>
+              <button title="현재 하드웨어, 타일 후보, workload, SCALE-Sim 설정을 하나의 사용자 프리셋으로 저장합니다." onClick={saveCustomPreset}>전체 프리셋 저장</button>
+              <button className="secondary" title="입력한 이름의 전체 프리셋을 현재 화면에 적용합니다." onClick={() => applyCustomPreset(customPresetName)} disabled={!customPresetName}>전체 프리셋 적용</button>
+              <button className="secondary danger-button" title="입력한 이름의 전체 사용자 프리셋을 삭제합니다." onClick={() => deleteCustomPreset(customPresetName)} disabled={!customPresetName}>삭제</button>
             </div>
             <details className="advanced-box"><summary>하드웨어/워크로드 개별 저장</summary>
               <MiniField label="하드웨어 이름" tip="현재 하드웨어만 저장합니다."><input value={hardwarePresetName} onChange={(e) => setHardwarePresetName(e.target.value)} placeholder={hardware.name} /></MiniField>
-              <div className="graph-actions"><button onClick={saveHardwarePreset}>하드웨어 저장</button><button className="secondary danger-button" onClick={() => deleteHardwarePreset(hardwarePresetName)} disabled={!hardwarePresetName}>하드웨어 삭제</button></div>
+              <div className="graph-actions"><button title="현재 하드웨어 설정만 사용자 프리셋으로 저장합니다." onClick={saveHardwarePreset}>하드웨어 저장</button><button className="secondary danger-button" title="입력한 이름의 하드웨어 프리셋을 삭제합니다." onClick={() => deleteHardwarePreset(hardwarePresetName)} disabled={!hardwarePresetName}>하드웨어 삭제</button></div>
               <MiniField label="워크로드 이름" tip="현재 shape 목록만 저장합니다."><input value={workloadPresetName} onChange={(e) => setWorkloadPresetName(e.target.value)} placeholder="my_workload" /></MiniField>
-              <div className="graph-actions"><button onClick={saveWorkloadPreset}>워크로드 저장</button><button className="secondary" onClick={() => applyWorkloadPreset(workloadPresetName)} disabled={!workloadPresetName}>워크로드 적용</button><button className="secondary danger-button" onClick={() => deleteWorkloadPreset(workloadPresetName)} disabled={!workloadPresetName}>워크로드 삭제</button></div>
+              <div className="graph-actions"><button title="현재 workload shape 목록만 사용자 프리셋으로 저장합니다." onClick={saveWorkloadPreset}>워크로드 저장</button><button className="secondary" title="입력한 이름의 workload 프리셋을 현재 shape 목록에 적용합니다." onClick={() => applyWorkloadPreset(workloadPresetName)} disabled={!workloadPresetName}>워크로드 적용</button><button className="secondary danger-button" title="입력한 이름의 workload 프리셋을 삭제합니다." onClick={() => deleteWorkloadPreset(workloadPresetName)} disabled={!workloadPresetName}>워크로드 삭제</button></div>
             </details>
             <div className="run-actions">
-              <button className="secondary" onClick={saveProject}>프로젝트 저장</button>
+              <button className="secondary" title="현재 프로젝트를 .tileforge/project.json 및 다운로드 가능한 JSON으로 저장합니다." onClick={saveProject}>프로젝트 저장</button>
               <button className="secondary" title="서버에 저장된 .tileforge/project.json을 불러옵니다." onClick={() => loadProject()}>최근 프로젝트 불러오기</button>
               <label className="button-like secondary" title="내 컴퓨터의 project.tileforge.json 파일을 불러옵니다.">프로젝트 파일 불러오기<input type="file" accept=".json" onChange={(e) => e.target.files?.[0] && loadProject(e.target.files[0])} hidden /></label>
-              <Link className="button-like secondary" href="/estimator-suite">Estimator Suite 열기</Link>
+              <Link className="button-like secondary" title="Estimator Suite 학습/평가 화면으로 이동합니다." href="/estimator-suite">Estimator Suite 열기</Link>
             </div>
             {(customPresets.length > 0 || userHardwarePresets.length > 0 || userWorkloadPresets.length > 0) && <p className="small">사용자 프리셋: 전체 {customPresets.length}개, 하드웨어 {userHardwarePresets.length}개, 워크로드 {userWorkloadPresets.length}개</p>}
           </>
@@ -356,16 +370,19 @@ export function InputSettingsPanel(props: InputSettingsPanelProps) {
             <h3>설정</h3>
             <p className="small">외부 도구 명령, 작업 폴더, 병렬 실행 수를 관리합니다. 저장한 값은 다음 작업부터 적용됩니다.</p>
             <div className="env-grid">
-              {envKeys.map((key: string) => (
-                <label key={key} className="env-row">
-                  <span>{key}</span>
-                  <input value={envValues[key] ?? ""} onChange={(e) => updateEnvValue(key, e.target.value)} placeholder="비워두면 기본값 사용" />
-                </label>
-              ))}
+              {envKeys.map((key: string) => {
+                const tip = envTip(key);
+                return (
+                  <label key={key} className="env-row" title={tip}>
+                    <span>{key}<small>{tip}</small></span>
+                    <input title={tip} value={envValues[key] ?? ""} onChange={(e) => updateEnvValue(key, e.target.value)} placeholder="비워두면 기본값 사용" />
+                  </label>
+                );
+              })}
             </div>
             <div className="run-actions">
-              <button className="secondary" onClick={refreshEnvSettings}>다시 읽기</button>
-              <button onClick={() => saveEnvSettings?.()}>.env 저장</button>
+              <button className="secondary" title="서버의 현재 .env 값을 다시 읽어 입력창에 반영합니다." onClick={refreshEnvSettings}>다시 읽기</button>
+              <button title="입력한 환경 설정을 .env 파일에 저장합니다. 실행 중인 작업에는 다음 실행부터 반영됩니다." onClick={() => saveEnvSettings?.()}>.env 저장</button>
             </div>
             {envMessage && <p className="small status-note">{envMessage}</p>}
           </>

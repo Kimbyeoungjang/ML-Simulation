@@ -117,9 +117,9 @@ export function EstimatorSuitePanel({
           바꿉니다.
         </p>
         <div className="row2">
-          <label className="mini-field">
-            <span>프리셋</span>
+          <MiniField label="프리셋" tip="표본 계획과 학습 하이퍼파라미터를 한 번에 바꾸는 preset입니다.">
             <select
+              title="적용할 Estimator Suite 프리셋을 선택합니다."
               value={selectedPresetId ?? ""}
               onChange={(e) => setSelectedPresetId?.(e.target.value)}
             >
@@ -130,19 +130,20 @@ export function EstimatorSuitePanel({
                 </option>
               ))}
             </select>
-          </label>
-          <label className="mini-field">
-            <span>저장 이름</span>
+          </MiniField>
+          <MiniField label="저장 이름" tip="현재 Estimator Suite 설정을 사용자 프리셋으로 저장할 이름입니다.">
             <input
+              title="새 사용자 프리셋 이름을 입력합니다."
               value={presetName ?? ""}
               onChange={(e) => setPresetName?.(e.target.value)}
               placeholder="예: vit_s_4096_train"
             />
-          </label>
+          </MiniField>
         </div>
         <div className="estimator-actions">
           <button
             className="secondary"
+            title="선택한 프리셋의 표본 계획과 학습 설정을 현재 화면에 적용합니다."
             onClick={() =>
               selectedPresetId && onApplyPreset?.(selectedPresetId)
             }
@@ -150,11 +151,12 @@ export function EstimatorSuitePanel({
           >
             프리셋 적용
           </button>
-          <button className="secondary" onClick={onSavePreset} disabled={busy}>
+          <button className="secondary" title="현재 표본 계획과 학습 설정을 사용자 프리셋으로 저장합니다." onClick={onSavePreset} disabled={busy}>
             현재 설정을 사용자 프리셋으로 저장
           </button>
           <button
             className="secondary"
+            title="선택한 사용자 Estimator 프리셋을 삭제합니다. 기본 프리셋은 삭제할 수 없습니다."
             onClick={() =>
               selectedPresetId && onDeletePreset?.(selectedPresetId)
             }
@@ -192,6 +194,7 @@ export function EstimatorSuitePanel({
         <div className="estimator-actions">
           <button
             className="secondary"
+            title="서버에 저장된 estimator-suite-model.json 목록을 다시 불러옵니다."
             onClick={onRefreshModels}
             disabled={busy}
           >
@@ -199,6 +202,7 @@ export function EstimatorSuitePanel({
           </button>
           <button
             className="secondary"
+            title="현재 적용 중인 learned estimator 보정을 해제하고 analytical estimator 기준으로 되돌립니다."
             onClick={onClearActiveModel}
             disabled={busy || !active?.runId}
           >
@@ -244,6 +248,7 @@ export function EstimatorSuitePanel({
                     <td>
                       <button
                         className="secondary"
+                        title="이 모델을 일반 TileForge estimator 보정 모델로 적용합니다."
                         onClick={() => onActivateModel(m.runId)}
                         disabled={busy || m.runId === active?.runId}
                       >
@@ -420,10 +425,10 @@ export function EstimatorSuitePanel({
           현재 workload shape 포함
         </label>
         <div className="estimator-actions">
-          <button className="secondary" onClick={onPlan} disabled={busy}>
+          <button className="secondary" title="입력한 범위로 학습/검증용 sample plan CSV를 생성합니다." onClick={onPlan} disabled={busy}>
             {busy ? "생성 중..." : "범위로 표본 CSV 생성"}
           </button>
-          <button onClick={onQueuePlan} disabled={busy}>
+          <button title="생성된 표본 계획을 full-pipeline 작업 큐에 등록합니다." onClick={onQueuePlan} disabled={busy}>
             {busy ? "등록 중..." : "표본을 full-pipeline 큐에 등록"}
           </button>
         </div>
@@ -447,15 +452,15 @@ export function EstimatorSuitePanel({
           원하면 바로 Estimator Suite 학습까지 실행합니다.
         </p>
         <div className="row2">
-          <label className="mini-field">
-            <span>CSV 파일 업로드</span>
+          <MiniField label="CSV 파일 업로드" tip="SCALE-Sim 결과가 포함된 여러 CSV를 선택하면 하나의 학습 dataset으로 병합합니다.">
             <input
+              title="병합할 CSV 파일을 여러 개 선택합니다."
               type="file"
               accept=".csv,text/csv"
               multiple
               onChange={(e) => void onDatasetFilesSelected(e)}
             />
-          </label>
+          </MiniField>
           <label
             className="check"
             title="켜면 업로드 후 병합 dataset으로 즉시 Tree/Neural/Ensemble 학습까지 실행합니다."
@@ -484,6 +489,7 @@ export function EstimatorSuitePanel({
         )}
         <div className="estimator-actions">
           <button
+            title="선택한 CSV들을 병합하고 유효성 검사 후, 옵션에 따라 즉시 학습합니다."
             onClick={() =>
               onImportDataset(datasetFiles, datasetTrainAfterImport)
             }
@@ -496,6 +502,7 @@ export function EstimatorSuitePanel({
           {datasetFiles.length > 0 && (
             <button
               className="secondary"
+              title="선택한 CSV 파일 목록을 비웁니다."
               onClick={() => setDatasetFiles([])}
               disabled={busy}
             >
@@ -635,17 +642,18 @@ export function EstimatorSuitePanel({
       </section>
 
       <div className="estimator-actions">
-        <button className="secondary" onClick={onDesign} disabled={busy}>
+        <button className="secondary" title="현재 화면 설정으로 학습 입력 CSV 초안을 생성합니다." onClick={onDesign} disabled={busy}>
           {busy ? "실행 중..." : "현재 설정으로 설계 CSV 생성"}
         </button>
-        <button className="secondary" onClick={onCollectJobs} disabled={busy}>
+        <button className="secondary" title="완료된 full-pipeline 작업 artifact에서 measuredCycles를 찾아 CSV에 채웁니다." onClick={onCollectJobs} disabled={busy}>
           {busy ? "수집 중..." : "완료 작업에서 measuredCycles 채우기"}
         </button>
-        <button onClick={onRun} disabled={busy}>
+        <button title="현재 CSV로 Tree/Neural/Ensemble Estimator Suite 학습을 실행합니다." onClick={onRun} disabled={busy}>
           {busy ? "학습 중..." : "CSV로 Estimator Suite 학습"}
         </button>
         <button
           className="secondary"
+          title="현재 학습/설계 CSV 입력을 파일로 저장합니다."
           onClick={() => download("estimator-suite-input.csv", csv, "text/csv")}
         >
           입력 CSV 다운로드
@@ -653,6 +661,7 @@ export function EstimatorSuitePanel({
         {result?.reportMarkdown && (
           <button
             className="secondary"
+            title="최근 학습 결과 리포트를 Markdown 파일로 저장합니다."
             onClick={() =>
               download(
                 "estimator-suite-report.md",
@@ -667,6 +676,7 @@ export function EstimatorSuitePanel({
         {result?.validationCsv && (
           <button
             className="secondary"
+            title="검증 split별 오차와 모델 비교 결과 CSV를 저장합니다."
             onClick={() =>
               download(
                 "estimator-suite-validation.csv",
@@ -681,6 +691,7 @@ export function EstimatorSuitePanel({
         {result?.predictionsCsv && (
           <button
             className="secondary"
+            title="sample별 예측값과 실제 measuredCycles 비교 CSV를 저장합니다."
             onClick={() =>
               download(
                 "estimator-suite-predictions.csv",

@@ -79,7 +79,7 @@ export function Jobs({
         >
           {autoRefreshEnabled ? "자동 갱신 중" : "자동 갱신 꺼짐"}
         </span>
-        <label className="terminal-check">
+        <label className="terminal-check" title="켜면 작업 큐와 시스템 상태를 주기적으로 새로고칩니다.">
           <input
             type="checkbox"
             checked={autoRefreshEnabled}
@@ -182,9 +182,9 @@ export function QueueSummary({
           {payload?.view === "dashboard" && <span className="badge ok-badge">상태 우선</span>}
           {payload?.degraded && <span className="badge warn-badge" title={payload?.note ?? "SQLite가 바쁜 동안 느린 전체 스캔을 건너뛰었습니다."}>경량 fallback</span>}
           <span className="badge">selected {selectedJobIds.length}</span>
-          <button className="secondary" onClick={toggleAll} disabled={visible.length === 0}>{allVisibleSelected ? "전체 해제" : "표시 작업 전체 선택"}</button>
-          <button className="secondary" onClick={() => onCancelSelected(selectedJobIds)} disabled={selectedJobIds.length === 0}>선택 중지</button>
-          <button className="secondary danger-button" onClick={() => onDeleteSelected(selectedJobIds)} disabled={selectedJobIds.length === 0}>선택 삭제</button>
+          <button className="secondary" title="현재 표시된 작업들을 모두 선택하거나 선택 해제합니다." onClick={toggleAll} disabled={visible.length === 0}>{allVisibleSelected ? "전체 해제" : "표시 작업 전체 선택"}</button>
+          <button className="secondary" title="선택한 queued/running 작업을 중지합니다." onClick={() => onCancelSelected(selectedJobIds)} disabled={selectedJobIds.length === 0}>선택 중지</button>
+          <button className="secondary danger-button" title="선택한 작업 기록과 artifact를 삭제합니다." onClick={() => onDeleteSelected(selectedJobIds)} disabled={selectedJobIds.length === 0}>선택 삭제</button>
           <select value={jobsViewMode} onChange={(e) => { setJobsViewMode(e.target.value as "dashboard" | "paged"); setJobsPage(1); }} title="대량 작업 큐 표시 방식">
             <option value="dashboard">상태 우선</option>
             <option value="paged">작업 목록</option>
@@ -198,15 +198,15 @@ export function QueueSummary({
 
       {jobsViewMode === "paged" && (
         <div className="queue-pagination" title="대량 큐 페이지 이동">
-          <button className="secondary" onClick={() => setJobsPage(Math.max(1, jobsPage - 1))} disabled={jobsPage <= 1}>이전</button>
+          <button className="secondary" title="이전 작업 목록 페이지로 이동합니다." onClick={() => setJobsPage(Math.max(1, jobsPage - 1))} disabled={jobsPage <= 1}>이전</button>
           {Array.from({ length: Math.min(7, Math.max(1, Number(payload?.totalPages ?? 1))) }, (_, i) => {
             const totalPages = Math.max(1, Number(payload?.totalPages ?? 1));
             const start = Math.max(1, Math.min(jobsPage - 3, totalPages - 6));
             const page = start + i;
             if (page > totalPages) return null;
-            return <button key={page} className={page === jobsPage ? "" : "secondary"} onClick={() => setJobsPage(page)}>{page}</button>;
+            return <button key={page} title={`${page}페이지로 이동합니다.`} className={page === jobsPage ? "" : "secondary"} onClick={() => setJobsPage(page)}>{page}</button>;
           })}
-          <button className="secondary" onClick={() => setJobsPage(Math.min(Number(payload?.totalPages ?? jobsPage + 1), jobsPage + 1))} disabled={jobsPage >= Number(payload?.totalPages ?? 1)}>다음</button>
+          <button className="secondary" title="다음 작업 목록 페이지로 이동합니다." onClick={() => setJobsPage(Math.min(Number(payload?.totalPages ?? jobsPage + 1), jobsPage + 1))} disabled={jobsPage >= Number(payload?.totalPages ?? 1)}>다음</button>
           <span className="small">page {payload?.page ?? jobsPage} / {payload?.totalPages ?? 1}</span>
         </div>
       )}
@@ -237,9 +237,9 @@ export function QueueSummary({
                   <td>{job.stage ?? "-"}</td>
                   <td>{Number(job.progress ?? 0)}%</td>
                   <td>{job.createdAt ? new Date(job.createdAt).toLocaleTimeString() : "-"}</td>
-                  <td><button className="secondary" onClick={() => onWatchJob(job.id)}>{job.id === activeJobId ? "보는 중" : "콘솔 보기"}</button></td>
-                  <td><button className="secondary" onClick={() => onCancelJob(job.id)} disabled={["succeeded", "failed", "cancelled", "succeeded_with_warnings"].includes(job.status)}>중지</button></td>
-                  <td><button className="secondary danger-button" onClick={() => onDeleteJob(job.id)}>삭제</button></td>
+                  <td><button className="secondary" title="이 작업의 실시간 콘솔과 로그를 엽니다." onClick={() => onWatchJob(job.id)}>{job.id === activeJobId ? "보는 중" : "콘솔 보기"}</button></td>
+                  <td><button className="secondary" title="이 작업을 중지합니다. 이미 끝난 작업은 중지할 수 없습니다." onClick={() => onCancelJob(job.id)} disabled={["succeeded", "failed", "cancelled", "succeeded_with_warnings"].includes(job.status)}>중지</button></td>
+                  <td><button className="secondary danger-button" title="이 작업 기록과 artifact를 삭제합니다." onClick={() => onDeleteJob(job.id)}>삭제</button></td>
                 </tr>
               ))}
             </tbody>

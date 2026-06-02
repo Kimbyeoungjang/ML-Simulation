@@ -274,7 +274,7 @@ export function ResourceMonitor({ payload, onParallelChange }: { payload: any | 
             onChange={(e) => setParallelDraft(e.target.value)}
             title="동시에 실행할 최대 job 수입니다."
           />
-          <button onClick={() => onParallelChange(Number(parallelDraft))}>.env에 저장</button>
+          <button title="병렬 실행 수를 .env에 저장하고 현재 서버 프로세스에 반영합니다." onClick={() => onParallelChange(Number(parallelDraft))}>.env에 저장</button>
         </div>
       </div>
       {cores.length > 0 && (
@@ -318,7 +318,7 @@ export function StatusTab({
         >
           {autoRefreshEnabled ? "자동 갱신 중" : "자동 갱신 꺼짐"}
         </span>
-        <label className="terminal-check">
+        <label className="terminal-check" title="켜면 시스템 상태와 작업 상태를 주기적으로 새로고칩니다.">
           <input
             type="checkbox"
             checked={autoRefreshEnabled}

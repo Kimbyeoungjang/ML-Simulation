@@ -45,8 +45,8 @@ export function EstimatorSuiteSamplingPlanPanel({
         <input type="checkbox" checked={Boolean(planOptions.includeCurrentShapes)} onChange={(e) => updatePlanOptions({ includeCurrentShapes: e.target.checked })} /> 현재 workload shape 포함
       </label>
       <div className="estimator-actions">
-        <button className="secondary" onClick={onPlan} disabled={busy}>{busy ? "생성 중..." : "범위로 표본 CSV 생성"}</button>
-        <button onClick={onQueuePlan} disabled={busy}>{busy ? "등록 중..." : "표본을 full-pipeline 큐에 등록"}</button>
+        <button className="secondary" title="입력한 범위로 학습/검증용 sample plan CSV를 생성합니다." onClick={onPlan} disabled={busy}>{busy ? "생성 중..." : "범위로 표본 CSV 생성"}</button>
+        <button title="생성된 표본 계획을 full-pipeline 작업 큐에 등록합니다." onClick={onQueuePlan} disabled={busy}>{busy ? "등록 중..." : "표본을 full-pipeline 큐에 등록"}</button>
       </div>
       {queuedCount > 0 && <p className="small good">최근 표본 계획에서 작업 {queuedCount.toLocaleString()}개를 큐에 등록했습니다.</p>}
     </section>

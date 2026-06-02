@@ -472,11 +472,11 @@ export function TpuComparisonPanel({
       <div className="run-actions" style={{ marginTop: 8 }}>
         <label className="mini-field" title="서버에서 바로 실행할 때 사용할 반복 횟수입니다. raw sample 그래프의 점 개수와 직접 연결됩니다.">
           <span className="mini-field-label">reps</span>
-          <input type="number" min={1} max={1000} value={reps} onChange={(e) => setReps(Number(e.target.value))} />
+          <input title="각 shape를 몇 번 반복 측정할지 정합니다." type="number" min={1} max={1000} value={reps} onChange={(e) => setReps(Number(e.target.value))} />
         </label>
         <label className="mini-field" title="서버에서 바로 실행할 때 사용할 warm-up 횟수입니다.">
           <span className="mini-field-label">warmup</span>
-          <input type="number" min={0} max={1000} value={warmup} onChange={(e) => setWarmup(Number(e.target.value))} />
+          <input title="측정 전에 버릴 warm-up 반복 횟수입니다." type="number" min={0} max={1000} value={warmup} onChange={(e) => setWarmup(Number(e.target.value))} />
         </label>
         <button className="secondary" onClick={() => void runOnServer()} disabled={busy || !webRunEnabled} title="TileForge 서버가 TPU VM에서 실행 중이고 TILEFORGE_ENABLE_TPU_WEB_RUN=1일 때만 동작합니다.">
           서버에서 바로 실행
@@ -490,19 +490,19 @@ export function TpuComparisonPanel({
       <div className="stacked-fields">
         <label className="field-label" title="TPU VM에서 생성한 measurements.csv를 업로드합니다.">
           <span>TPU measurements.csv 업로드</span>
-          <input type="file" accept=".csv,text/csv" onChange={(e) => void readMeasurementFile(e.target.files?.[0] ?? null)} />
+          <input title="TPU VM에서 생성한 measurements.csv 파일을 선택합니다." type="file" accept=".csv,text/csv" onChange={(e) => void readMeasurementFile(e.target.files?.[0] ?? null)} />
         </label>
         <label className="field-label" title="TPU VM에서 --samples-out으로 생성한 raw timing sample CSV를 업로드합니다.">
           <span>TPU tpu_samples.csv 업로드</span>
-          <input type="file" accept=".csv,text/csv" onChange={(e) => void readSamplesFile(e.target.files?.[0] ?? null)} />
+          <input title="TPU VM에서 생성한 tpu_samples.csv raw timing 파일을 선택합니다." type="file" accept=".csv,text/csv" onChange={(e) => void readSamplesFile(e.target.files?.[0] ?? null)} />
         </label>
         <label className="field-label" title="파일 업로드 대신 measurements.csv 원문을 붙여넣어도 됩니다.">
           <span>measurements.csv 원문</span>
-          <textarea value={measurementsCsv} onChange={(e) => setMeasurementsCsv(e.target.value)} rows={6} placeholder="id,model,op_name,m,n,k,median_us,mean_us,min_us,max_us,p90_us,achieved_tflops,reps\n..." />
+          <textarea title="measurements.csv 원문을 직접 붙여넣습니다." value={measurementsCsv} onChange={(e) => setMeasurementsCsv(e.target.value)} rows={6} placeholder="id,model,op_name,m,n,k,median_us,mean_us,min_us,max_us,p90_us,achieved_tflops,reps\n..." />
         </label>
         <label className="field-label" title="파일 업로드 대신 tpu_samples.csv 원문을 붙여넣어도 됩니다. 이 값이 있어야 분포 그래프가 풍부하게 그려집니다.">
           <span>tpu_samples.csv 원문</span>
-          <textarea value={samplesCsv} onChange={(e) => setSamplesCsv(e.target.value)} rows={5} placeholder="id,model,op_name,m,n,k,dtype,rep,measured_us\n..." />
+          <textarea title="tpu_samples.csv 원문을 직접 붙여넣습니다." value={samplesCsv} onChange={(e) => setSamplesCsv(e.target.value)} rows={5} placeholder="id,model,op_name,m,n,k,dtype,rep,measured_us\n..." />
         </label>
       </div>
 
@@ -516,10 +516,10 @@ export function TpuComparisonPanel({
       {summaryMd && (
         <div className="artifact-panel" style={{ marginTop: 16 }}>
           <div className="artifact-toolbar">
-            <button className="secondary" onClick={() => download("tpu_comparison.csv", comparisonCsv, "text/csv")}>comparison.csv 다운로드</button>
-            <button className="secondary" onClick={() => download("tpu_calibration.csv", calibrationCsv, "text/csv")}>calibration.csv 다운로드</button>
-            <button className="secondary" onClick={() => download("tpu_sample_comparison.csv", sampleComparisonCsv, "text/csv")} disabled={!sampleComparisonCsv}>sample-comparison.csv 다운로드</button>
-            <button className="secondary" onClick={() => download("tpu_summary.md", summaryMd, "text/markdown")}>summary.md 다운로드</button>
+            <button className="secondary" title="예측 시간과 TPU 측정 시간을 op별로 비교한 CSV를 저장합니다." onClick={() => download("tpu_comparison.csv", comparisonCsv, "text/csv")}>comparison.csv 다운로드</button>
+            <button className="secondary" title="TileForge 예측을 TPU 측정값에 맞춰 보정할 때 사용할 calibration CSV를 저장합니다." onClick={() => download("tpu_calibration.csv", calibrationCsv, "text/csv")}>calibration.csv 다운로드</button>
+            <button className="secondary" title="반복 측정 raw sample과 예측값을 비교한 CSV를 저장합니다." onClick={() => download("tpu_sample_comparison.csv", sampleComparisonCsv, "text/csv")} disabled={!sampleComparisonCsv}>sample-comparison.csv 다운로드</button>
+            <button className="secondary" title="TPU 비교 결과 요약 보고서를 Markdown으로 저장합니다." onClick={() => download("tpu_summary.md", summaryMd, "text/markdown")}>summary.md 다운로드</button>
           </div>
           <MarkdownView text={summaryMd} />
         </div>

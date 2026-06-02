@@ -47,7 +47,7 @@ export function JobExternalLogs({
           <label className="terminal-check" title="외부 도구 로그가 갱신될 때 각 로그 박스를 맨 아래로 이동합니다.">
             <input type="checkbox" checked={autoScroll} onChange={(e) => setAutoScroll(e.target.checked)} /> 자동 스크롤
           </label>
-          <button className="secondary" onClick={() => setOpen((v) => !v)}>{open ? "접기" : "펼치기"}</button>
+          <button className="secondary" title="외부 도구 로그 목록을 접거나 펼칩니다." onClick={() => setOpen((v) => !v)}>{open ? "접기" : "펼치기"}</button>
         </div>
       </div>
       {open && logs.length === 0 && (

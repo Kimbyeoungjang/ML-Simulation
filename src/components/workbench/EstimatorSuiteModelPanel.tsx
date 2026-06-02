@@ -29,11 +29,12 @@ export function EstimatorSuiteModelPanel({
         full-pipeline 작업에도 같은 활성 모델이 적용됩니다.
       </p>
       <div className="estimator-actions">
-        <button className="secondary" onClick={onRefreshModels} disabled={busy}>
+        <button className="secondary" title="서버에 저장된 estimator-suite-model.json 목록을 다시 불러옵니다." onClick={onRefreshModels} disabled={busy}>
           모델 목록 새로고침
         </button>
         <button
           className="secondary"
+          title="현재 적용 중인 learned estimator 보정을 해제하고 analytical estimator 기준으로 되돌립니다."
           onClick={onClearActiveModel}
           disabled={busy || !active?.runId}
         >
@@ -74,6 +75,7 @@ export function EstimatorSuiteModelPanel({
                   <td>
                     <button
                       className="secondary"
+                      title="이 모델을 일반 TileForge estimator 보정 모델로 적용합니다."
                       onClick={() => onActivateModel(m.runId)}
                       disabled={busy || m.runId === active?.runId}
                     >

@@ -7,8 +7,15 @@ export type DownloadFn = (name: string, text: string, type?: string) => void;
 function InfoHint({ tip }: { tip?: string }) {
   if (!tip) return null;
   return (
-    <span className="hint" title={tip} aria-label={tip} role="img">
-      i
+    <span
+      className="hint"
+      title={tip}
+      aria-label={tip}
+      role="note"
+      tabIndex={0}
+      data-tip={tip}
+    >
+      ?
     </span>
   );
 }
@@ -21,7 +28,7 @@ export function FieldLabel({
   tip: string;
 }) {
   return (
-    <label className="field-label" title={tip}>
+    <label className="field-label" title={tip} data-tip={tip}>
       <span>{children}</span>
       <InfoHint tip={tip} />
     </label>
@@ -58,12 +65,14 @@ export function MiniField({
   children: ReactNode;
 }) {
   return (
-    <div className="mini-field">
-      <span className="mini-field-label" title={tip}>
+    <div className="mini-field" title={tip} data-tip={tip}>
+      <span className="mini-field-label">
         {label}
         <InfoHint tip={tip} />
       </span>
-      {children}
+      <div className="mini-field-control" title={tip}>
+        {children}
+      </div>
     </div>
   );
 }

@@ -91,7 +91,7 @@ export function CsvArtifactTable({ jobId, path, title }: { jobId: string; path: 
   const body = rows.slice(1);
   return (
     <section className="job-artifact-view">
-      <div className="artifact-toolbar"><b>{title}</b><a className="help-link" href={`/api/jobs/${jobId}/artifact?path=${encodeURIComponent(path)}`} target="_blank">원본 열기</a></div>
+      <div className="artifact-toolbar"><b>{title}</b><a className="help-link" title="이 artifact 원본을 새 탭에서 엽니다." href={`/api/jobs/${jobId}/artifact?path=${encodeURIComponent(path)}`} target="_blank">원본 열기</a></div>
       <div className="md-table-wrap"><table className="md-table"><thead><tr>{header.map((h, i) => <th key={i}>{h}</th>)}</tr></thead><tbody>{body.map((r, i) => <tr key={i}>{header.map((_, j) => <td key={j}>{r[j] ?? ""}</td>)}</tr>)}</tbody></table></div>
     </section>
   );
@@ -227,19 +227,19 @@ export function JobArtifactList({ jobId, jobsPayload }: { jobId: string; jobsPay
           <p className="small">체크한 산출물만 ZIP으로 내려받을 수 있습니다. 선택 상태는 작업별로 유지됩니다.</p>
         </div>
         <div className="artifact-actions">
-          <button className="secondary" onClick={selectAll} disabled={allSelected}>모두 선택</button>
-          <button className="secondary" onClick={clearAll} disabled={selected.length === 0}>모두 해제</button>
-          <button onClick={downloadSelected}>{selected.length ? `선택 ${selected.length}개 다운로드` : "모두 다운로드"}</button>
+          <button className="secondary" title="현재 작업의 모든 artifact를 선택합니다." onClick={selectAll} disabled={allSelected}>모두 선택</button>
+          <button className="secondary" title="선택한 artifact 목록을 모두 해제합니다." onClick={clearAll} disabled={selected.length === 0}>모두 해제</button>
+          <button title="선택한 artifact만 ZIP으로 내려받습니다. 선택이 없으면 전체 artifact를 다운로드합니다." onClick={downloadSelected}>{selected.length ? `선택 ${selected.length}개 다운로드` : "모두 다운로드"}</button>
         </div>
       </div>
       <div className="artifact-grid selectable-artifacts">
         {artifacts.map((a) => (
           <div key={a} className={`artifact-download artifact-card ${selected.includes(a) ? "selected" : ""}`} title={a}>
             <label className="artifact-select-label">
-              <input type="checkbox" checked={selected.includes(a)} onChange={() => toggleOne(a)} />
+              <input title="이 artifact를 ZIP 다운로드 대상에 포함하거나 제외합니다." type="checkbox" checked={selected.includes(a)} onChange={() => toggleOne(a)} />
               <span>{a}</span>
             </label>
-            <button className="secondary tiny-download" onClick={() => downloadArtifact(a)}>다운로드</button>
+            <button className="secondary tiny-download" title="이 artifact 하나만 다운로드합니다." onClick={() => downloadArtifact(a)}>다운로드</button>
           </div>
         ))}
       </div>

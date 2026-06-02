@@ -68,16 +68,18 @@ export function EstimatorSuitePresetPanel({
       <div className="estimator-actions">
         <button
           className="secondary"
+          title="선택한 프리셋의 표본 계획과 학습 설정을 현재 화면에 적용합니다."
           onClick={() => selectedPresetId && onApplyPreset?.(selectedPresetId)}
           disabled={busy || !selectedPresetId}
         >
           프리셋 적용
         </button>
-        <button className="secondary" onClick={onSavePreset} disabled={busy}>
+        <button className="secondary" title="현재 표본 계획과 학습 설정을 사용자 프리셋으로 저장합니다." onClick={onSavePreset} disabled={busy}>
           현재 설정을 사용자 프리셋으로 저장
         </button>
         <button
           className="secondary"
+          title="선택한 사용자 Estimator 프리셋을 삭제합니다. 기본 프리셋은 삭제할 수 없습니다."
           onClick={() => selectedPresetId && onDeletePreset?.(selectedPresetId)}
           disabled={busy || !selectedPresetId || selected?.source === "builtin"}
         >
