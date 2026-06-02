@@ -32,15 +32,17 @@ export function ActionButton({
   children,
   tip,
   className,
+  disabled,
   onClick,
 }: {
   children: ReactNode;
   tip: string;
   className?: string;
+  disabled?: boolean;
   onClick: () => void;
 }) {
   return (
-    <button className={className} title={tip} aria-label={typeof children === "string" ? `${children}: ${tip}` : tip} onClick={onClick}>
+    <button className={className} title={tip} aria-label={typeof children === "string" ? `${children}: ${tip}` : tip} disabled={disabled} onClick={onClick}>
       {children}
     </button>
   );

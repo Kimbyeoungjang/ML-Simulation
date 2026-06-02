@@ -836,6 +836,114 @@ export function validationPlanRows(
   });
 }
 
+export interface ExpandedValidationPlanItem extends ValidationPlanRow {
+  variant: "seed" | "neighbor";
+}
+
+export function expandedValidationPlanRows(
+  rows: DesignSweepRow[],
+  options: {
+    seedLimit?: number;
+    minSamples?: number;
+    samplesPerRequest?: number;
+    oversampleFactor?: number;
+    neighborhoodRadius?: number;
+    maxRequests?: number;
+  } = {},
+): ExpandedValidationPlanItem[] {
+  const samplesPerRequest = Math.max(1, Math.floor(options.samplesPerRequest ?? 1));
+  const targetRequests = Math.min(
+    Math.max(1, options.maxRequests ?? Number.POSITIVE_INFINITY),
+    Math.max(
+      options.seedLimit ?? 5,
+      Math.ceil(((options.minSamples ?? 40) / samplesPerRequest) * (options.oversampleFactor ?? 1)),
+    ),
+  );
+  const seedLimit = Math.max(1, options.seedLimit ?? 5);
+  const radius = Math.max(1, Math.floor(options.neighborhoodRadius ?? 3));
+  const seeds = validationPlanRows(rows, seedLimit);
+  const allRows = rows.filter((row) => !row.isBase).slice().sort(compareDesignRows);
+  const scoreMap = validationSelectionScores(rows);
+  const out: ExpandedValidationPlanItem[] = [];
+  const seen = new Set<string>();
+  const push = (row: DesignSweepRow, variant: ExpandedValidationPlanItem["variant"]) => {
+    if (out.length >= targetRequests) return;
+    const key = `${row.axis}:${roundFactor(row.x)}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    const selectionScore = validationSelectionScore(row, scoreMap);
+    out.push({
+      rank: out.length + 1,
+      row,
+      variant,
+      selectionScore,
+      rationale: variant === "seed" ? validationRationale(row, selectionScore) : `neighbor of validation seed; ${validationRationale(row, selectionScore)}`,
+    });
+  };
+
+  for (const seed of seeds) push(seed.row, "seed");
+
+  for (const seed of seeds) {
+    const sameAxis = allRows
+      .filter((row) => row.axis === seed.row.axis && row !== seed.row)
+      .sort((a, b) => Math.abs(Math.log(a.x / seed.row.x)) - Math.abs(Math.log(b.x / seed.row.x)));
+    for (const row of sameAxis.slice(0, radius * 2)) push(row, "neighbor");
+  }
+
+  for (const row of allRows) push(row, out.length < seedLimit ? "seed" : "neighbor");
+
+  // Very small design spaces can have fewer unique existing rows than the
+  // training floor. In that case, create conservative synthetic neighbors by
+  // nudging the best seed factors geometrically. requestForDesignSweepRow can
+  // execute these rows because the axis/x contract is the only required input.
+  let syntheticStep = 1;
+  while (out.length < targetRequests && seeds.length) {
+    for (const seed of seeds) {
+      const sign = syntheticStep % 2 === 0 ? 1 : -1;
+      const magnitude = Math.ceil(syntheticStep / 2);
+      const factor = roundFactor(seed.row.x * Math.pow(1.08, sign * magnitude));
+      push({ ...seed.row, x: factor, value: factor, label: `${seed.row.label} n${sign > 0 ? "+" : "-"}${magnitude}`, isBase: Math.abs(factor - 1) < 1e-9 }, "neighbor");
+      if (out.length >= targetRequests) break;
+    }
+    syntheticStep++;
+  }
+
+  return out;
+}
+
+export function requestForDesignSweepRow(
+  req: SearchRequest,
+  row: Pick<DesignSweepRow, "axis" | "x" | "label">,
+  options: { rank?: number; runNamePrefix?: string } = {},
+): SearchRequest {
+  const factor = Math.max(1e-9, Number(row.x) || 1);
+  const hw = { ...req.hardware };
+  let next: SearchRequest;
+  if (row.axis === "array") {
+    next = { ...req, hardware: { ...hw, arrayRows: Math.max(1, Math.round(hw.arrayRows * factor)), arrayCols: Math.max(1, Math.round(hw.arrayCols * factor)) } };
+  } else if (row.axis === "frequency") {
+    next = { ...req, hardware: { ...hw, frequencyMHz: Math.max(1, Math.round(hw.frequencyMHz * factor)) } };
+  } else if (row.axis === "sram") {
+    next = { ...req, hardware: { ...hw, sramKB: Math.max(1, Math.round(hw.sramKB * factor)) } };
+  } else if (row.axis === "dram") {
+    next = scaleDramBandwidth(req, factor);
+  } else if (row.axis === "shape-m" || row.axis === "shape-n" || row.axis === "shape-k") {
+    const axis = row.axis.slice("shape-".length) as "m" | "n" | "k";
+    next = { ...req, shapes: req.shapes.map((shape) => scaledShape(shape, axis, factor)) };
+  } else {
+    next = { ...req };
+  }
+  const rank = String(Math.max(1, Math.floor(options.rank ?? 1))).padStart(2, "0");
+  const safeAxis = row.axis.replace(/[^a-z0-9_-]+/gi, "_");
+  const safeFactor = roundFactor(factor).toString().replace(/[^0-9a-z_-]+/gi, "p");
+  const runName = `${options.runNamePrefix ?? "design_validation"}_${rank}_${safeAxis}_${safeFactor}`;
+  return {
+    ...next,
+    hardware: { ...next.hardware, name: `${req.hardware.name} / ${row.label}` },
+    scaleSim: { ...(next.scaleSim ?? {}), runName },
+  };
+}
+
 export function exportValidationPlanJson(rows: DesignSweepRow[], limit = 5) {
   const plan = validationPlanRows(rows, limit).map((item) => ({
     rank: item.rank,

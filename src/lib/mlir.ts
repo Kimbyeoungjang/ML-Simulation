@@ -10,6 +10,11 @@ import { compareDataflows, dataflowComparisonCsv } from "./dataflow";
 import { memoryTrafficFor, memoryTrafficCsv } from "./memoryTraffic";
 import { pruneTileCandidates, compactPruneReport } from "./pruning";
 import { tileScheduleSvg } from "./scheduleViz";
+import { buildCompilerHints, compilerHintsMarkdown } from "./compilerHints";
+import { buildHardwareDesignPlan, hardwareDesignPlanMarkdown } from "./hardwareDesignPlan";
+import { buildIreeBenchmarkPlan, ireeBenchmarkPlanMarkdown } from "./ireeBenchmarkPlan";
+import { buildPredictionContract } from "./predictionContract";
+import { buildTilingStrategyReport, tilingStrategyMarkdown } from "./tilingStrategy";
 
 export function generateArtifacts(res: Omit<SearchResponse, "artifacts"> & { artifacts?: any }) {
   const policyCsv = generatePolicyCsv(res as SearchResponse);
@@ -35,13 +40,51 @@ export function generateArtifacts(res: Omit<SearchResponse, "artifacts"> & { art
   const first = res.results[0];
   const prune = first ? compactPruneReport(pruneTileCandidates(res.request.hardware, first.shape, res.request.candidates)) : "shape가 없습니다";
   const scheduleSvg = first ? tileScheduleSvg(res.request.hardware, first.shape, first.best) : "";
-  return { policyCsv, mlir, transformDialect, reportMarkdown: "", scaleSimConfig, scaleSimTopology, scaleSimLayout, scaleSimTopkTopology, scaleSimTopkLayout, projectJson, manifestJson, ireeCommand, latexTable, svgSummary, experimentComparisonCsv, validationMarkdown: validation.markdown, validationCsv: validation.csv, robustPolicyMarkdown: robust.markdown, robustPolicyCsv: robust.csv, dataflowComparisonCsv: dataflowCsv, memoryTrafficCsv: trafficCsv, pruneReportMarkdown: prune, tileScheduleSvg: scheduleSvg };
+  const compilerHints = buildCompilerHints(res as SearchResponse);
+  const ireeBenchmarkPlan = buildIreeBenchmarkPlan(res as SearchResponse);
+  const hardwareDesignPlan = buildHardwareDesignPlan(res as SearchResponse);
+  const tilingStrategy = buildTilingStrategyReport(res as SearchResponse);
+  const predictionContract = buildPredictionContract(res as SearchResponse);
+  return {
+    policyCsv,
+    mlir,
+    transformDialect,
+    reportMarkdown: "",
+    scaleSimConfig,
+    scaleSimTopology,
+    scaleSimLayout,
+    scaleSimTopkTopology,
+    scaleSimTopkLayout,
+    projectJson,
+    manifestJson,
+    ireeCommand,
+    latexTable,
+    svgSummary,
+    experimentComparisonCsv,
+    validationMarkdown: validation.markdown,
+    validationCsv: validation.csv,
+    robustPolicyMarkdown: robust.markdown,
+    robustPolicyCsv: robust.csv,
+    dataflowComparisonCsv: dataflowCsv,
+    memoryTrafficCsv: trafficCsv,
+    pruneReportMarkdown: prune,
+    tileScheduleSvg: scheduleSvg,
+    compilerHintsJson: JSON.stringify(compilerHints, null, 2),
+    compilerHintsMarkdown: compilerHintsMarkdown(compilerHints),
+    ireeBenchmarkPlanJson: JSON.stringify(ireeBenchmarkPlan, null, 2),
+    ireeBenchmarkPlanMarkdown: ireeBenchmarkPlanMarkdown(ireeBenchmarkPlan),
+    hardwareDesignPlanJson: JSON.stringify(hardwareDesignPlan, null, 2),
+    hardwareDesignPlanMarkdown: hardwareDesignPlanMarkdown(hardwareDesignPlan),
+    tilingStrategyJson: JSON.stringify(tilingStrategy, null, 2),
+    tilingStrategyMarkdown: tilingStrategyMarkdown(tilingStrategy),
+    predictionContractJson: JSON.stringify(predictionContract, null, 2),
+  };
 }
 export function generatePolicyCsv(res: SearchResponse): string {
-  const rows = ["모델(model),연산(op_name),M,N,K,배열_rows(array_rows),배열_cols(array_cols),데이터플로우(dataflow),타일_M(tile_m),타일_N(tile_n),타일_K(tile_k),tileM,tileN,tileK,사이클(cycles),full_layer_cycles,tile_policy_cycles,시간_us(time_us),PE_사용률(utilization),패딩_비율(padding_ratio),SRAM_bytes,점수(score),경고(warnings),설명(explanation)"];
+  const rows = ["모델(model),연산(op_name),M,N,K,배열_rows(array_rows),배열_cols(array_cols),데이터플로우(dataflow),타일_M(tile_m),타일_N(tile_n),타일_K(tile_k),tileM,tileN,tileK,사이클(cycles),full_layer_cycles,tile_policy_cycles,시간_us(time_us),PE_사용률(utilization),패딩_비율(padding_ratio),SRAM_bytes,tile_scratch_bytes,full_layer_working_set_bytes,점수(score),경고(warnings),설명(explanation)"];
   for (const r of res.results) {
     const b = r.best, s = r.shape, h = res.request.hardware;
-    rows.push([s.model,s.opName,s.m,s.n,s.k,h.arrayRows,h.arrayCols,h.dataflow,b.tileM,b.tileN,b.tileK,b.tileM,b.tileN,b.tileK,b.cycles,b.fullLayerCycles ?? b.cycles,b.tilePolicyCycles ?? b.cycles,b.timeUs.toFixed(4),b.utilization.toFixed(6),b.paddingRatio.toFixed(6),b.sramBytes,b.score.toFixed(6),`"${b.warnings.join("; ")}"`,`"${b.explanation.replaceAll('"','""')}"`].join(","));
+    rows.push([s.model,s.opName,s.m,s.n,s.k,h.arrayRows,h.arrayCols,h.dataflow,b.tileM,b.tileN,b.tileK,b.tileM,b.tileN,b.tileK,b.cycles,b.fullLayerCycles ?? b.cycles,b.tilePolicyCycles ?? b.cycles,b.timeUs.toFixed(4),b.utilization.toFixed(6),b.paddingRatio.toFixed(6),b.sramBytes,b.tileScratchBytes ?? b.sramBytes,b.fullLayerSramBytes ?? b.sramBytes,b.score.toFixed(6),`"${b.warnings.join("; ")}"`,`"${b.explanation.replaceAll('"','""')}"`].join(","));
   }
   return rows.join("\n");
 }
@@ -84,6 +127,7 @@ export function generateScaleSimConfig(res: SearchResponse): string {
   const sc = res.request.scaleSim ?? {};
   const perBufferKb = Math.max(1, Math.floor(h.sramKB / 3));
   const bool = (v: boolean | undefined, fallback = false) => (v ?? fallback) ? "True" : "False";
+  const positiveInt = (v: unknown, fallback: number) => Math.max(1, Math.round(Number(v ?? fallback)));
   const lines = [
     "[general]",
     `run_name = ${sc.runName ?? "tileforge_generated"}`,
@@ -97,7 +141,7 @@ export function generateScaleSimConfig(res: SearchResponse): string {
     `FilterOffset = ${Math.max(0, Math.floor(sc.filterOffset ?? 10000000))}`,
     `OfmapOffset = ${Math.max(0, Math.floor(sc.ofmapOffset ?? 20000000))}`,
     `Dataflow = ${String(sc.dataflow ?? h.dataflow).toLowerCase()}`,
-    `Bandwidth = ${sc.dramBandwidth ?? sc.bandwidth ?? 128}`,
+    `Bandwidth = ${positiveInt(sc.dramBandwidth ?? sc.bandwidth, 128)}`,
     "[run_presets]",
     `InterfaceBandwidth = ${sc.interfaceBandwidth ?? "USER"}`,
   ];
@@ -112,12 +156,12 @@ export function generateScaleSimConfig(res: SearchResponse): string {
     "[layout]",
     `IfmapCustomLayout = ${bool(sc.ifmapCustomLayout)}`,
     `FilterCustomLayout = ${bool(sc.filterCustomLayout)}`,
-    `IfmapSRAMBankBandwidth = ${sc.ifmapSRAMBankBandwidth ?? 10}`,
-    `IfmapSRAMBankNum = ${sc.ifmapSRAMBankNum ?? 10}`,
-    `IfmapSRAMBankPort = ${sc.ifmapSRAMBankPort ?? 2}`,
-    `FilterSRAMBankBandwidth = ${sc.filterSRAMBankBandwidth ?? 10}`,
-    `FilterSRAMBankNum = ${sc.filterSRAMBankNum ?? 10}`,
-    `FilterSRAMBankPort = ${sc.filterSRAMBankPort ?? 2}`,
+    `IfmapSRAMBankBandwidth = ${positiveInt(sc.ifmapSRAMBankBandwidth, 10)}`,
+    `IfmapSRAMBankNum = ${positiveInt(sc.ifmapSRAMBankNum, 10)}`,
+    `IfmapSRAMBankPort = ${positiveInt(sc.ifmapSRAMBankPort, 2)}`,
+    `FilterSRAMBankBandwidth = ${positiveInt(sc.filterSRAMBankBandwidth, 10)}`,
+    `FilterSRAMBankNum = ${positiveInt(sc.filterSRAMBankNum, 10)}`,
+    `FilterSRAMBankPort = ${positiveInt(sc.filterSRAMBankPort, 2)}`,
   );
   return lines.join("\n") + "\n";
 }

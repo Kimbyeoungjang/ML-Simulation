@@ -1,11 +1,11 @@
-import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, readdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { estimateAll } from "@/lib/estimator";
 import { defaultCandidates, defaultHardware, defaultShapes } from "@/lib/defaults";
 import type { HardwareConfig, MatmulShape, TileCandidates } from "@/types/domain";
 import type { SearchResponse } from "@/types/domain";
-import { commandLabel, formatCandidateErrors, ireeCompileCommandCandidates, scaleSimArgs, scaleSimCommandCandidates, withPrependedPythonPath } from "@/server/externalToolCandidates";
-export { commandLabel, formatCandidateErrors, ireeCompileCommandCandidates, scaleSimArgs, scaleSimCommandCandidates } from "@/server/externalToolCandidates";
+import { absolutizeConfiguredToolCommand, commandLabel, formatCandidateErrors, ireeCompileCommandCandidates, scaleSimArgs, scaleSimCommandCandidates, withPrependedPythonPath } from "@/server/externalToolCandidates";
+export { absolutizeConfiguredToolCommand, commandLabel, formatCandidateErrors, ireeCompileCommandCandidates, scaleSimArgs, scaleSimCommandCandidates } from "@/server/externalToolCandidates";
 
 export interface CliOptions { [key: string]: string | boolean | undefined; }
 
@@ -67,6 +67,34 @@ export async function writeArtifacts(outDir: string, response: SearchResponse): 
   await writeFile(path.join(outDir, "topology.csv"), response.artifacts.scaleSimTopology, "utf8");
   await writeFile(path.join(outDir, "layout.csv"), response.artifacts.scaleSimLayout ?? "", "utf8");
   await writeFile(path.join(outDir, "report.md"), response.artifacts.reportMarkdown, "utf8");
+}
+
+export async function missingArtifactInputs(root: string, names: string[]): Promise<string[]> {
+  const missing: string[] = [];
+  for (const name of names) {
+    try {
+      await access(path.join(root, name));
+    } catch {
+      missing.push(name);
+    }
+  }
+  return missing;
+}
+
+export async function ensureArtifactInputs(
+  root: string,
+  names: string[],
+  options: { allowDemoIfMissing?: boolean } = {},
+): Promise<{ root: string; missing: string[]; createdDemo: boolean }> {
+  const missing = await missingArtifactInputs(root, names);
+  if (!missing.length) return { root, missing: [], createdDemo: false };
+  if (options.allowDemoIfMissing === false) {
+    throw new Error(`missing artifact input(s): ${missing.join(", ")}`);
+  }
+  await makeDemoArtifacts(root, "smoke");
+  const stillMissing = await missingArtifactInputs(root, names);
+  if (stillMissing.length) throw new Error(`missing artifact input(s): ${stillMissing.join(", ")}`);
+  return { root, missing, createdDemo: true };
 }
 
 export function csvRows(text: string): Array<Record<string, string>> {

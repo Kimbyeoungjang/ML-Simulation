@@ -32,6 +32,11 @@ export interface JobRecord {
     options?: Record<string, unknown>;
     dedupe?: boolean;
     activate?: boolean;
+    autoCollect?: {
+      jobIds?: string[];
+      maxWaitMs?: number;
+      includeExistingCompletedJobs?: boolean;
+    };
   };
   stageHistory?: Array<{ stage: JobStage; status: "pending" | "running" | "done" | "failed" | "skipped"; at: string; detail?: string }>;
 }

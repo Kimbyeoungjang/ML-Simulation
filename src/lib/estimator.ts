@@ -28,7 +28,11 @@ export function estimateAll(req: SearchRequest, options: { includeArtifacts?: bo
     meanUtilization: mean(bests.map(b=>b.utilization)),
     meanPaddingRatio: mean(bests.map(b=>b.paddingRatio)),
     maxSramBytes: Math.max(...bests.map(b=>b.sramBytes), 0),
-    bottleneckOp: bests.slice().sort((a,b)=>b.cycles-a.cycles)[0]?.opName ?? "none"
+    bottleneckOp: bests.slice().sort((a,b)=>b.cycles-a.cycles)[0]?.opName ?? "none",
+    totalTilePolicyCycles: bests.reduce((a,b)=>a+Math.max(1, b.tilePolicyCycles ?? b.cycles),0),
+    maxTileScratchBytes: Math.max(...bests.map(b=>b.tileScratchBytes ?? b.sramBytes), 0),
+    maxFullLayerSramBytes: Math.max(...bests.map(b=>b.fullLayerSramBytes ?? b.sramBytes), 0),
+    minPredictionConfidence: Math.min(...bests.map(b=>b.predictionConfidence ?? 1), 1),
   };
   const designAdvice = makeDesignAdvice(req.hardware, bests);
   const pairs = results.map(r => ({ shape: r.shape, best: r.best }));
@@ -123,12 +127,14 @@ function toHardwareDesignBest(hw: HardwareConfig, shape: MatmulShape, candidate:
     fullLayerMappingEfficiency: mappingEfficiencyPercent(hw, shape),
     fullLayerSramBytes: full.sramBytes,
     fullLayerDramBytes: full.dramBytes,
+    predictionConfidence: candidate.predictionConfidence ?? 1,
+    predictionNotes: candidate.predictionNotes ?? [],
     predictionTarget: "full-layer",
     rawCycles: full.cycles,
     cycles,
     timeUs: cycles / Math.max(1, hw.frequencyMHz),
     utilization: full.utilization,
-    sramBytes: Math.max(tileScratchBytes, full.sramBytes),
+    sramBytes: tileScratchBytes,
     warnings: Array.from(new Set(warnings)),
     explanation: `${candidate.explanation} Hardware-design cycle은 full-layer systolic model(${full.formula}) 기준 ${cycles.toLocaleString()} cycles입니다. Tile-policy cost ${Math.round(tilePolicyCycles).toLocaleString()} cycles는 후보 ranking 참고값입니다.`,
   };

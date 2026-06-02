@@ -17,6 +17,7 @@ import {
   type EstimatorSuiteModel,
   type TrainEstimatorSuiteOptions,
 } from "./estimatorSuite";
+import { assessEstimatorSuiteReadiness, estimatorSuiteReadinessMarkdown } from "./estimatorSuiteReadiness";
 
 export type EstimatorTargetScope = "full-layer" | "tile-policy";
 
@@ -184,6 +185,7 @@ function firstMape(result: ScopedEstimatorTrainingResult) {
 function combinedReport(
   datasets: ScopedEstimatorDatasetsResult,
   training: Record<EstimatorTargetScope, ScopedEstimatorTrainingResult>,
+  readiness: Record<"merged" | EstimatorTargetScope, ReturnType<typeof assessEstimatorSuiteReadiness>>,
 ) {
   const rows = ESTIMATOR_TARGET_SCOPES.map((scope) => {
     const ds = datasets.scopes[scope];
@@ -213,6 +215,7 @@ function combinedReport(
     "",
     `- Merged samples: ${datasets.mergedSummary.validSamples.toLocaleString()}`,
     `- Target scopes: ${Object.entries(datasets.mergedSummary.targetScopes).map(([k, v]) => `${k}=${v}`).join(", ") || "none"}`,
+    `- Merged readiness: ${readiness.merged.level} (${(readiness.merged.score * 100).toFixed(1)}%)`,
     "",
     datasets.warnings.length ? ["## 경고", "", ...datasets.warnings.map((w) => `- ${w}`)].join("\n") : "## 경고\n\n없음",
   ].join("\n");
@@ -227,15 +230,44 @@ export function buildScopedEstimatorPipeline(
   const training = Object.fromEntries(
     ESTIMATOR_TARGET_SCOPES.map((scope) => [scope, trainOneScope(datasets.scopes[scope], options, minSamples)]),
   ) as Record<EstimatorTargetScope, ScopedEstimatorTrainingResult>;
+  const readiness = {
+    merged: assessEstimatorSuiteReadiness(datasets.mergedSamples, {
+      scope: "merged",
+      minSamples,
+      requireExplicitScope: true,
+      requireMultipleArrays: true,
+      requireMultipleDataflows: true,
+    }),
+    "full-layer": assessEstimatorSuiteReadiness(datasets.scopes["full-layer"].samples, {
+      scope: "full-layer",
+      minSamples,
+      requireExplicitScope: true,
+      requireMultipleArrays: true,
+      requireMultipleDataflows: true,
+      model: training["full-layer"].model,
+    }),
+    "tile-policy": assessEstimatorSuiteReadiness(datasets.scopes["tile-policy"].samples, {
+      scope: "tile-policy",
+      minSamples,
+      requireExplicitScope: true,
+      requireMultipleArrays: true,
+      requireMultipleDataflows: true,
+      model: training["tile-policy"].model,
+    }),
+  } satisfies Record<"merged" | EstimatorTargetScope, ReturnType<typeof assessEstimatorSuiteReadiness>>;
   const filesOut: Record<string, string> = {
     "datasets/merged/samples.csv": datasets.mergedCsv,
     "datasets/merged/report.md": datasets.mergedReportMarkdown,
+    "datasets/merged/readiness.json": JSON.stringify(readiness.merged, null, 2),
+    "datasets/merged/readiness.md": estimatorSuiteReadinessMarkdown(readiness.merged),
   };
   for (const scope of ESTIMATOR_TARGET_SCOPES) {
     const slug = scopeSlug(scope);
     const dataset = datasets.scopes[scope];
     filesOut[`datasets/${slug}/samples.csv`] = dataset.csv;
     filesOut[`datasets/${slug}/report.md`] = dataset.reportMarkdown;
+    filesOut[`datasets/${slug}/readiness.json`] = JSON.stringify(readiness[scope], null, 2);
+    filesOut[`datasets/${slug}/readiness.md`] = estimatorSuiteReadinessMarkdown(readiness[scope]);
     const trained = training[scope];
     filesOut[`estimator-suite/${slug}/report.md`] = trained.reportMarkdown;
     if (trained.artifacts) {
@@ -246,7 +278,7 @@ export function buildScopedEstimatorPipeline(
       filesOut[`estimator-suite/${slug}/predictions.csv`] = trained.artifacts.predictionsCsv;
     }
   }
-  const combinedReportMarkdown = combinedReport(datasets, training);
+  const combinedReportMarkdown = combinedReport(datasets, training, readiness);
   filesOut["estimator-suite/scoped-pipeline-report.md"] = combinedReportMarkdown;
   return { ...datasets, training, files: filesOut, combinedReportMarkdown };
 }

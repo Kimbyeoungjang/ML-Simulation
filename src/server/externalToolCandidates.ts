@@ -10,6 +10,54 @@ export function uniqueCommands(commands: Array<string | undefined>): string[] {
   return Array.from(new Set(commands.filter((v): v is string => typeof v === "string" && v.trim().length > 0).map(v => v.trim())));
 }
 
+function splitCommandLine(command: string): string[] {
+  const parts: string[] = [];
+  let current = "";
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if ((ch === '"' || ch === "'") && command[i - 1] !== "\\") {
+      quote = quote === ch ? null : quote ? quote : ch;
+      current += ch;
+      continue;
+    }
+    if (/\s/.test(ch) && !quote) {
+      if (current) parts.push(current);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  if (current) parts.push(current);
+  return parts;
+}
+
+function quoteIfNeeded(value: string) {
+  return /\s/.test(value) ? `"${value.replace(/"/g, '\\"')}"` : value;
+}
+
+function stripQuotes(value: string) {
+  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+    return value.slice(1, -1);
+  }
+  return value;
+}
+
+function looksLikeRelativeFileOperand(value: string) {
+  if (!value || value.startsWith("-") || /^[A-Za-z]:[\\/]/.test(value) || path.isAbsolute(value)) return false;
+  return /^(scripts|external|\.\.?[\\/])/.test(value) || /\.(?:py|ts|tsx|js|cjs|mjs|mlir|cfg|csv|json)$/i.test(value);
+}
+
+export function absolutizeConfiguredToolCommand(command: string, root = process.cwd()): string {
+  const parts = splitCommandLine(command.trim());
+  if (!parts.length) return command;
+  return parts.map((part) => {
+    const unquoted = stripQuotes(part);
+    if (!looksLikeRelativeFileOperand(unquoted)) return part;
+    return quoteIfNeeded(path.resolve(root, unquoted));
+  }).join(" ");
+}
+
 function pythonScriptCommandCandidates(scriptPath: string): string[] {
   return pythonCommandCandidates().map(candidate => commandLineFor(candidate, [scriptPath]));
 }
@@ -28,7 +76,7 @@ export function scaleSimCommandCandidates(preferred?: string, options: { ignoreE
   // the single source of truth. This prevents noisy fallback probes such as
   // Windows `python3` command-not-found errors after setup has found a working
   // command.
-  if (raw?.trim()) return uniqueCommands([raw]);
+  if (raw?.trim()) return uniqueCommands([absolutizeConfiguredToolCommand(raw)]);
 
   // Prefer the installed module form because it is independent of cwd.
   // SCALE-Sim is intentionally executed from its output directory so older
@@ -44,7 +92,7 @@ export function scaleSimCommandCandidates(preferred?: string, options: { ignoreE
 export function ireeCompileCommandCandidates(preferred?: string, options: { ignoreEnv?: boolean } = {}): string[] {
   const raw = preferred || (options.ignoreEnv ? undefined : process.env.TILEFORGE_IREE_COMPILE_CMD);
   // Same rule as SCALE-Sim: a configured command is authoritative.
-  if (raw?.trim()) return uniqueCommands([raw]);
+  if (raw?.trim()) return uniqueCommands([absolutizeConfiguredToolCommand(raw)]);
   return uniqueCommands([
     "iree-compile",
     // The Python package exposes the console entry point through this module.
