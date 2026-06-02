@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createJob, listJobsPaged } from "@/server/jobStore";
+import { createJob, deleteJob, listJobsPaged, requestCancel } from "@/server/jobStore";
 import { formatZodError, parseJobKind, parseSearchRequest } from "@/lib/validation";
 import { getExternalToolsStatus } from "@/server/externalStatus";
 
@@ -54,6 +54,27 @@ export async function GET(req: Request) {
   }
 }
 
+
+async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = [];
+  let index = 0;
+  async function worker() {
+    while (index < items.length) {
+      const i = index++;
+      out[i] = await fn(items[i]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}
+
+function parseIds(body: any): string[] {
+  const ids = (Array.isArray(body?.ids) ? body.ids : [])
+    .map((x: unknown) => String(x).trim())
+    .filter((x: string) => x.length > 0);
+  return Array.from(new Set<string>(ids)).slice(0, 20_000);
+}
+
 export async function POST(req: Request) {
   try {
     const body = await req.json();
@@ -66,4 +87,42 @@ export async function POST(req: Request) {
     const quota = String(error?.message ?? "").startsWith("JOB_QUOTA_EXCEEDED");
     return NextResponse.json({ error: quota ? "Job quota exceeded" : "Invalid job request", code: quota ? "JOB_QUOTA_EXCEEDED" : "VALIDATION_ERROR", detail }, { status: quota ? 429 : 400 });
   }
+}
+
+
+export async function DELETE(req: Request) {
+  const body = await req.json().catch(() => ({}));
+  const ids = parseIds(body);
+  if (!ids.length) return NextResponse.json({ error: "ids array is required" }, { status: 400 });
+  let ok = 0;
+  const failures: Array<{ id: string; error: string }> = [];
+  await mapWithConcurrency(ids, 16, async (id) => {
+    try {
+      await deleteJob(id);
+      ok += 1;
+    } catch (error: any) {
+      failures.push({ id, error: error?.message ?? String(error) });
+    }
+  });
+  jobsGetCache = undefined;
+  return NextResponse.json({ ok: failures.length === 0, requested: ids.length, deleted: ok, failures });
+}
+
+export async function PATCH(req: Request) {
+  const body = await req.json().catch(() => ({}));
+  const ids = parseIds(body);
+  if (body.action !== "cancel") return NextResponse.json({ error: "Unsupported action" }, { status: 400 });
+  if (!ids.length) return NextResponse.json({ error: "ids array is required" }, { status: 400 });
+  let ok = 0;
+  const failures: Array<{ id: string; error: string }> = [];
+  await mapWithConcurrency(ids, 16, async (id) => {
+    try {
+      await requestCancel(id);
+      ok += 1;
+    } catch (error: any) {
+      failures.push({ id, error: error?.message ?? String(error) });
+    }
+  });
+  jobsGetCache = undefined;
+  return NextResponse.json({ ok: failures.length === 0, requested: ids.length, cancelled: ok, failures });
 }

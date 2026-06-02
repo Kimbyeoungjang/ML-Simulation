@@ -200,7 +200,7 @@ const JOB_SUMMARY_COLUMNS_FROM_PICKED = `
   p.id, p.status, p.kind, p.stage, p.progress, p.created_at, p.updated_at, p.started_at, p.finished_at,
   p.name, p.request_hash,
   0 AS artifact_count,
-  0 AS has_report
+  COALESCE((SELECT 1 FROM artifacts a WHERE a.job_id = p.id AND a.name = 'report.md' LIMIT 1), 0) AS has_report
 `;
 
 const JOB_SUMMARY_COLUMNS_WITH_ARTIFACTS_FROM_PICKED = `

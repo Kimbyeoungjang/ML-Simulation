@@ -116,15 +116,20 @@ TILEFORGE_IREE_COMPILE_CMD="C:\\Path\\To\\python.exe -m iree.compiler.tools.scri
 
 ## job 목록이 느림
 
-대량 job/artifact가 있을 때 dashboard가 무거울 수 있습니다.
+대량 job/artifact가 있을 때는 job 목록이 전체 `job.json`, log, artifact 배열을 직접 렌더링하지 않아야 합니다. 최신 UI는 `/api/jobs`에서 경량 summary만 받고, artifact 목록은 선택한 job을 열 때 `/api/jobs/:id/artifacts?limit=200&page=1`처럼 페이지 단위로 가져옵니다.
 
 권장 `.env`:
 
 ```dotenv
+TILEFORGE_SQLITE_PRIMARY="1"
 TILEFORGE_JOBS_DASHBOARD_ARTIFACTS="0"
+TILEFORGE_JOBS_ARTIFACT_PREVIEW_LIMIT="8"
 TILEFORGE_JOBS_API_CACHE_MS="2000"
+TILEFORGE_JOBS_FALLBACK_CACHE_MS="10000"
 TILEFORGE_STATUS_SCAN_STORAGE="0"
 ```
+
+SQLite native module을 사용할 수 없는 환경에서는 `job.summary.json` fallback이 사용됩니다. 기존 job은 첫 조회 때 summary가 생성되므로 첫 목록 조회만 상대적으로 느릴 수 있고, 이후 조회는 작은 summary 파일을 읽습니다.
 
 정리:
 

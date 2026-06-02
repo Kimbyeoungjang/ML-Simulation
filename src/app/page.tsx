@@ -877,11 +877,13 @@ export default function Home() {
     const unique = Array.from(new Set(ids.filter(Boolean)));
     if (unique.length === 0) return;
     if (!window.confirm(`선택한 작업 ${unique.length}개와 관련 artifact를 삭제할까요?`)) return;
-    let ok = 0;
-    for (const id of unique) {
-      const r = await apiFetch(`/api/jobs/${id}`, { method: "DELETE" });
-      if (r.ok) ok += 1;
-    }
+    const r = await apiFetch(`/api/jobs`, {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ids: unique }),
+    });
+    const payload = await r.json().catch(() => ({ deleted: 0 }));
+    const ok = Number(payload?.deleted ?? 0);
     setSelectedJobIds((prev) => prev.filter((id) => !unique.includes(id)));
     if (unique.includes(serverReportJobId)) {
       setServerReportMarkdown("");
@@ -910,15 +912,13 @@ export default function Home() {
     const unique = Array.from(new Set(ids.filter(Boolean)));
     if (unique.length === 0) return;
     if (!window.confirm(`선택한 작업 ${unique.length}개를 중지할까요? 실행 중인 외부 프로세스는 다음 체크포인트에서 취소됩니다.`)) return;
-    let ok = 0;
-    for (const id of unique) {
-      const r = await apiFetch(`/api/jobs/${id}`, {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ action: "cancel" }),
-      });
-      if (r.ok) ok += 1;
-    }
+    const r = await apiFetch(`/api/jobs`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "cancel", ids: unique }),
+    });
+    const payload = await r.json().catch(() => ({ cancelled: 0 }));
+    const ok = Number(payload?.cancelled ?? 0);
     setServerMessage(`선택 작업 중지 요청 완료: ${ok}/${unique.length}`);
     await refreshJobs({ switchTab: false, updateReport: true });
     await refreshStatus(false);

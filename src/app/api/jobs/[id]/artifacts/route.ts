@@ -5,13 +5,37 @@ import { jobDir } from "@/server/workspace";
 
 const INTERNAL_JOB_FILES = new Set(["job.json", "job.json.tmp", "job.lock", "events.jsonl"]);
 
-export async function GET(_: Request, ctx: { params: Promise<{ id: string }> }) {
+function parsePositiveInt(value: string | null, fallback: number, max: number): number {
+  const parsed = Number(value ?? fallback);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(1, Math.min(Math.floor(parsed), max));
+}
+
+export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }) {
   const { id } = await ctx.params;
+  const url = new URL(req.url);
   const dir = jobDir(id);
-  const names = await readdir(dir);
+  const page = parsePositiveInt(url.searchParams.get("page"), 1, 100_000);
+  const limitParam = url.searchParams.get("limit");
+  const limit = limitParam ? parsePositiveInt(limitParam, 200, 1000) : undefined;
+  const includeSize = url.searchParams.get("includeSize") === "1" || url.searchParams.get("size") === "1";
+  const names = (await readdir(dir, { withFileTypes: true }))
+    .filter((entry) => entry.isFile())
+    .map((entry) => entry.name)
+    .filter((name) => !INTERNAL_JOB_FILES.has(name) && !name.endsWith(".tmp"))
+    .sort((a, b) => a.localeCompare(b));
+  const total = names.length;
+  const start = limit ? (page - 1) * limit : 0;
+  const picked = limit ? names.slice(start, start + limit) : names;
   const artifacts = [];
-  for (const name of names) {
-    if (INTERNAL_JOB_FILES.has(name) || name.endsWith(".tmp")) continue;
+  for (const name of picked) {
+    if (!includeSize) {
+      artifacts.push({
+        name,
+        url: `/api/jobs/${id}/artifact?path=${encodeURIComponent(name)}`,
+      });
+      continue;
+    }
     const s = await stat(path.join(dir, name));
     if (!s.isFile()) continue;
     artifacts.push({
@@ -20,6 +44,13 @@ export async function GET(_: Request, ctx: { params: Promise<{ id: string }> }) 
       url: `/api/jobs/${id}/artifact?path=${encodeURIComponent(name)}`,
     });
   }
-  artifacts.sort((a, b) => a.name.localeCompare(b.name));
-  return NextResponse.json({ id, artifacts });
+  return NextResponse.json({
+    id,
+    artifacts,
+    total,
+    page,
+    pageSize: limit ?? total,
+    totalPages: limit ? Math.max(1, Math.ceil(total / limit)) : 1,
+    hasMore: limit ? start + picked.length < total : false,
+  });
 }

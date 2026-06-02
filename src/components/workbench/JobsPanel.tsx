@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import type { DownloadFn } from "./primitives";
 import { ActionButton } from "./primitives";
 import { JobExternalLogs, jobDisplayName, jobLabel, jobTooltip } from "./resultTabs";
@@ -85,7 +85,7 @@ export function Jobs({
             checked={autoRefreshEnabled}
             onChange={(e) => setAutoRefreshEnabled(e.target.checked)}
           />{" "}
-10초마다 jobs/status 갱신
+15초마다 jobs/status 갱신
         </label>
         <label className="terminal-check" title="켜면 새 작업을 만들 때 실시간 콘솔이 그 작업으로 자동 전환됩니다. 끄면 현재 콘솔은 유지되고 큐 목록에만 추가됩니다.">
           <input
@@ -165,12 +165,13 @@ export function QueueSummary({
   const counts = payload?.counts ?? {};
   const queuedTotal = Number(counts.queued ?? queued.length);
   const runningTotal = Number(counts.running ?? running.length);
-  const recentDone = jobs.filter((j: any) => ["succeeded", "succeeded_with_warnings", "failed", "cancelled"].includes(j.status)).slice(0, 20);
   const visible = jobs;
-  const visibleIds = visible.map((j: any) => j.id);
-  const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id: string) => selectedJobIds.includes(id));
-  const toggleOne = (id: string) => setSelectedJobIds(selectedJobIds.includes(id) ? selectedJobIds.filter((x) => x !== id) : [...selectedJobIds, id]);
-  const toggleAll = () => setSelectedJobIds(allVisibleSelected ? selectedJobIds.filter((id) => !visibleIds.includes(id)) : Array.from(new Set([...selectedJobIds, ...visibleIds])));
+  const visibleIds = useMemo(() => visible.map((j: any) => j.id), [visible]);
+  const selectedSet = useMemo(() => new Set(selectedJobIds), [selectedJobIds]);
+  const visibleIdSet = useMemo(() => new Set(visibleIds), [visibleIds]);
+  const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id: string) => selectedSet.has(id));
+  const toggleOne = (id: string) => setSelectedJobIds(selectedSet.has(id) ? selectedJobIds.filter((x) => x !== id) : [...selectedJobIds, id]);
+  const toggleAll = () => setSelectedJobIds(allVisibleSelected ? selectedJobIds.filter((id) => !visibleIdSet.has(id)) : Array.from(new Set([...selectedJobIds, ...visibleIds])));
   return (
     <section className="queue-panel" title="현재 worker 큐에 들어간 작업과 실행 중인 작업을 보여줍니다.">
       <div className="queue-header">
@@ -231,7 +232,7 @@ export function QueueSummary({
             <tbody>
               {visible.map((job: any) => (
                 <tr key={job.id} className={job.id === activeJobId ? "active-row" : ""}>
-                  <td><input type="checkbox" checked={selectedJobIds.includes(job.id)} onChange={() => toggleOne(job.id)} title="삭제할 작업 선택" /></td>
+                  <td><input type="checkbox" checked={selectedSet.has(job.id)} onChange={() => toggleOne(job.id)} title="삭제할 작업 선택" /></td>
                   <td><span className={`badge ${job.status === "running" ? "warn-badge" : job.status === "queued" ? "" : job.status === "failed" ? "err-badge" : "ok-badge"}`}>{job.status}</span></td>
                   <td title={jobTooltip(job)}>{jobDisplayName(job)}</td>
                   <td>{job.stage ?? "-"}</td>
@@ -322,8 +323,8 @@ export function LiveTerminal({
         <span className="badge">status: {status}</span>
         <span className="badge">stage: {job?.stage ?? "-"}</span>
         <span className="badge">progress: {progress}%</span>
-        {job?.artifacts?.length ? (
-          <span className="badge">artifacts: {job.artifacts.length}</span>
+        {Number(job?.artifactCount ?? job?.artifacts?.length ?? 0) > 0 ? (
+          <span className="badge">artifacts: {Number(job?.artifactCount ?? job?.artifacts?.length ?? 0)}</span>
         ) : null}
       </div>
       <div className="terminal-progress" aria-label="작업 진행률">

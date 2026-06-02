@@ -1,7 +1,7 @@
 "use client";
 
 import { apiFetch } from "@/lib/apiClient";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { jobDisplayName } from "@/components/workbench/resultTabs";
 import type { ConfidenceAssessment } from "@/lib/confidence";
 import type { Dataflow, HardwareConfig, SearchRequest } from "@/types/domain";
@@ -9,7 +9,7 @@ import { confidenceFromMarkdown } from "./confidenceMarkdown";
 import { useLiveJobEvents } from "./useLiveJobEvents";
 
 type JobsViewMode = "dashboard" | "paged";
-type RefreshJobsOptions = { switchTab?: boolean; updateReport?: boolean };
+type RefreshJobsOptions = { switchTab?: boolean; updateReport?: boolean; skipIfBusy?: boolean };
 
 type UseWorkbenchJobsArgs = {
   request: SearchRequest;
@@ -25,8 +25,7 @@ function latestCompletedJobId(payload: any): string | undefined {
   const completed = jobs.find(
     (j: any) =>
       ["succeeded", "succeeded_with_warnings"].includes(j?.status) &&
-      Array.isArray(j?.artifacts) &&
-      j.artifacts.includes("report.md"),
+      (j?.hasReport || (Array.isArray(j?.artifacts) && j.artifacts.includes("report.md"))),
   );
   return completed?.id;
 }
@@ -43,7 +42,7 @@ export function useWorkbenchJobs({
   const [jobsPayload, setJobsPayload] = useState<any | null>(null);
   const [jobsViewMode, setJobsViewMode] = useState<JobsViewMode>("paged");
   const [jobsPage, setJobsPage] = useState(1);
-  const [jobsPageSize, setJobsPageSizeState] = useState(100);
+  const [jobsPageSize, setJobsPageSizeState] = useState(20);
   const [statusJson, setStatusJson] = useState("");
   const [statusPayload, setStatusPayload] = useState<any | null>(null);
   const [serverReportMarkdown, setServerReportMarkdown] = useState("");
@@ -55,6 +54,8 @@ export function useWorkbenchJobs({
   const [autoAttachNewJob, setAutoAttachNewJob] = useState(false);
   const [analysisJobId, setAnalysisJobId] = useState("");
   const [selectedJobIds, setSelectedJobIds] = useState<string[]>([]);
+  const jobsRefreshInFlight = useRef(false);
+  const statusRefreshInFlight = useRef(false);
 
   async function fetchJobReport(id: string, options: { manual?: boolean } = {}) {
     if (!id) return;
@@ -89,7 +90,9 @@ export function useWorkbenchJobs({
   }
 
   async function refreshJobs(options: RefreshJobsOptions = {}) {
-    const { switchTab = true, updateReport = false } = options;
+    const { switchTab = true, updateReport = false, skipIfBusy = false } = options;
+    if (skipIfBusy && jobsRefreshInFlight.current) return;
+    jobsRefreshInFlight.current = true;
     const params = jobsViewMode === "dashboard"
       ? `limit=${jobsPageSize}&dashboard=1&external=0&t=${Date.now()}`
       : `limit=${jobsPageSize}&page=${jobsPage}&external=0&t=${Date.now()}`;
@@ -101,9 +104,12 @@ export function useWorkbenchJobs({
     } catch (error: any) {
       setJobsJson(JSON.stringify({ ok: false, error: error?.message ?? String(error), previous: jobsPayload?.counts ?? null }, null, 2));
       return;
+    } finally {
+      jobsRefreshInFlight.current = false;
     }
     setJobsPayload(payload);
-    setJobsJson(JSON.stringify(payload, null, 2));
+    const preview = { ...payload, jobs: Array.isArray(payload?.jobs) ? payload.jobs.slice(0, 20) : [] };
+    setJobsJson(JSON.stringify({ ...preview, note: "jobs 원본 JSON 미리보기는 렌더링 비용을 줄이기 위해 최대 20개만 표시합니다. 전체 목록은 위 표와 페이지 이동을 사용하세요." }, null, 2));
     if (updateReport && reportAutoFollow) {
       const activeCount = Number(payload?.counts?.running ?? 0) + Number(payload?.counts?.queued ?? 0);
       const id = latestCompletedJobId(payload);
@@ -115,7 +121,9 @@ export function useWorkbenchJobs({
     if (switchTab) openTab("jobs");
   }
 
-  async function refreshStatus(switchTab = true) {
+  async function refreshStatus(switchTab = true, options: { skipIfBusy?: boolean } = {}) {
+    if (options.skipIfBusy && statusRefreshInFlight.current) return;
+    statusRefreshInFlight.current = true;
     try {
       const r = await apiFetch("/api/system/status", { cache: "no-store" });
       if (!r.ok) throw new Error(`status api ${r.status}`);
@@ -125,6 +133,8 @@ export function useWorkbenchJobs({
       if (switchTab) openTab("status");
     } catch (error: any) {
       setStatusJson(JSON.stringify({ ok: false, error: error?.message ?? String(error), previous: statusPayload?.summary ?? null }, null, 2));
+    } finally {
+      statusRefreshInFlight.current = false;
     }
   }
 
@@ -150,9 +160,9 @@ export function useWorkbenchJobs({
     void refreshStatus(false);
     const timer = window.setInterval(() => {
       if (!autoRefreshEnabled) return;
-      void refreshJobs({ switchTab: false, updateReport: false });
-      void refreshStatus(false);
-    }, 3000);
+      void refreshJobs({ switchTab: false, updateReport: false, skipIfBusy: true });
+      void refreshStatus(false, { skipIfBusy: true });
+    }, 15000);
     return () => {
       window.clearInterval(timer);
     };
@@ -205,11 +215,13 @@ export function useWorkbenchJobs({
     const unique = Array.from(new Set(ids.filter(Boolean)));
     if (unique.length === 0) return;
     if (!window.confirm(`선택한 작업 ${unique.length}개와 관련 artifact를 삭제할까요?`)) return;
-    let ok = 0;
-    for (const id of unique) {
-      const r = await apiFetch(`/api/jobs/${id}`, { method: "DELETE" });
-      if (r.ok) ok += 1;
-    }
+    const r = await apiFetch(`/api/jobs`, {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ids: unique }),
+    });
+    const payload = await r.json().catch(() => ({ deleted: 0 }));
+    const ok = Number(payload?.deleted ?? 0);
     setSelectedJobIds((prev) => prev.filter((id) => !unique.includes(id)));
     if (unique.includes(serverReportJobId)) {
       setServerReportMarkdown("");
@@ -238,15 +250,13 @@ export function useWorkbenchJobs({
     const unique = Array.from(new Set(ids.filter(Boolean)));
     if (unique.length === 0) return;
     if (!window.confirm(`선택한 작업 ${unique.length}개를 중지할까요? 실행 중인 외부 프로세스는 다음 체크포인트에서 취소됩니다.`)) return;
-    let ok = 0;
-    for (const id of unique) {
-      const r = await apiFetch(`/api/jobs/${id}`, {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ action: "cancel" }),
-      });
-      if (r.ok) ok += 1;
-    }
+    const r = await apiFetch(`/api/jobs`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "cancel", ids: unique }),
+    });
+    const payload = await r.json().catch(() => ({ cancelled: 0 }));
+    const ok = Number(payload?.cancelled ?? 0);
     setServerMessage(`선택 작업 중지 요청 완료: ${ok}/${unique.length}`);
     await refreshJobs({ switchTab: false, updateReport: true });
     await refreshStatus(false);

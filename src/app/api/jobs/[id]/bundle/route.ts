@@ -32,6 +32,13 @@ function parseSelectedPaths(req: Request): string[] | undefined {
   return undefined;
 }
 
+async function parseSelectedPathsFromBody(req: Request): Promise<string[] | undefined> {
+  const body = await req.json().catch(() => ({}));
+  const raw = body?.paths;
+  if (!Array.isArray(raw)) return undefined;
+  return raw.map((x) => String(x)).filter(Boolean);
+}
+
 async function collectSelectedFiles(root: string, selected: string[]): Promise<Array<{ name: string; data: Buffer }>> {
   const out: Array<{ name: string; data: Buffer }> = [];
   const resolvedRoot = path.resolve(root);
@@ -48,14 +55,12 @@ async function collectSelectedFiles(root: string, selected: string[]): Promise<A
   return out;
 }
 
-export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }) {
-  const { id } = await ctx.params;
+async function bundleResponse(id: string, selected: string[] | undefined) {
   const integrity = await verifyJobIntegrityFromManifest(id);
   if (!integrity.ok) {
     return NextResponse.json({ error: "Artifact integrity check failed", code: "ARTIFACT_INTEGRITY_FAILED", failures: integrity.failures }, { status: 409 });
   }
   const dir = jobDir(id);
-  const selected = parseSelectedPaths(req);
   const items = selected?.length ? await collectSelectedFiles(dir, selected) : await collectFiles(dir);
   if (!items.length) {
     return NextResponse.json({ error: "No artifacts selected or found", code: "NO_ARTIFACTS" }, { status: 404 });
@@ -74,4 +79,14 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
   const suffix = selected?.length ? "selected" : "all";
   const body = new Blob([zip as unknown as BlobPart], { type: "application/zip" });
   return new NextResponse(body, { headers: { "content-type": "application/zip", "content-disposition": `attachment; filename=tileforge-${id}-${suffix}.zip` } });
+}
+
+export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }) {
+  const { id } = await ctx.params;
+  return bundleResponse(id, parseSelectedPaths(req));
+}
+
+export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }) {
+  const { id } = await ctx.params;
+  return bundleResponse(id, await parseSelectedPathsFromBody(req));
 }

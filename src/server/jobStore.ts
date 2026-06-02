@@ -16,6 +16,7 @@ import { assertTransition, isTerminalStatus } from "@/lib/stateMachine";
 const DEFAULT_TIMEOUT_MS = Number(process.env.TILEFORGE_JOB_TIMEOUT_MS ?? 10 * 60 * 1000);
 const DEFAULT_MAX_ATTEMPTS = Number(process.env.TILEFORGE_JOB_MAX_ATTEMPTS ?? 1);
 const MAX_JOB_LOG_LINES = Math.max(50, Math.min(Number(process.env.TILEFORGE_MAX_JOB_LOG_LINES ?? 300), 2000));
+const JOB_SUMMARY_FILE = "job.summary.json";
 
 function envNumber(name: string, fallback: number): number {
   const envFile = readProjectDotEnv();
@@ -53,6 +54,26 @@ function trimJobForStorage(job: JobRecord) {
   }
   if (Array.isArray(job.stageHistory) && job.stageHistory.length > 300) {
     job.stageHistory = job.stageHistory.slice(-300);
+  }
+}
+
+async function writeJobSummary(job: JobRecord) {
+  try {
+    await atomicWriteFile(path.join(jobDir(job.id), JOB_SUMMARY_FILE), JSON.stringify(compactJobForList(job)));
+  } catch {
+    // Summary files only accelerate large queue rendering. The full job.json is
+    // still the source of truth, so summary write failures are non-fatal.
+  }
+}
+
+function writeJobSummarySync(job: JobRecord) {
+  try {
+    const file = path.join(jobDir(job.id), JOB_SUMMARY_FILE);
+    const tmp = `${file}.tmp`;
+    writeFileSync(tmp, JSON.stringify(compactJobForList(job)), "utf8");
+    renameSync(tmp, file);
+  } catch {
+    // best-effort only
   }
 }
 
@@ -188,6 +209,7 @@ export async function saveJob(job: JobRecord) {
     trimJobForStorage(job);
     await mkdir(jobDir(id), { recursive: true });
     await atomicWriteFile(path.join(jobDir(id), "job.json"), JSON.stringify(job, null, 2));
+    await writeJobSummary(job);
     try {
       saveJobSqlite(job);
     } catch (error) {
@@ -221,6 +243,38 @@ export async function listJobs(): Promise<JobRecord[]> {
     } catch {}
   }
   return [...merged.values()].sort((a,b)=>b.createdAt.localeCompare(a.createdAt));
+}
+
+async function readJobSummaryFromDir(id: string): Promise<JobRecord | undefined> {
+  const dir = jobDir(id);
+  try {
+    return JSON.parse(await readFile(path.join(dir, JOB_SUMMARY_FILE), "utf8"));
+  } catch {}
+  try {
+    const full: JobRecord = JSON.parse(await readFile(path.join(dir, "job.json"), "utf8"));
+    const summary = compactJobForList(full);
+    void writeJobSummary(full);
+    return summary;
+  } catch {
+    return undefined;
+  }
+}
+
+async function listJobSummaries(): Promise<JobRecord[]> {
+  await ensureJobRoot();
+  const dirs = (await readdir(getJobRoot(), { withFileTypes: true })).filter((d) => d.isDirectory());
+  const jobs: JobRecord[] = [];
+  const concurrency = Math.max(8, Math.min(Number(process.env.TILEFORGE_JOBS_SUMMARY_SCAN_CONCURRENCY ?? 64), 256));
+  let index = 0;
+  async function worker() {
+    while (index < dirs.length) {
+      const d = dirs[index++];
+      const summary = await readJobSummaryFromDir(d.name);
+      if (summary) jobs.push(summary);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, dirs.length) }, worker));
+  return jobs.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
 export async function hasRunningJob(): Promise<boolean> {
@@ -333,6 +387,7 @@ function saveJobSnapshotSync(job: JobRecord) {
   const tmp = path.join(dir, "job.json.tmp");
   writeFileSync(tmp, JSON.stringify(job, null, 2), "utf8");
   renameSync(tmp, path.join(dir, "job.json"));
+  writeJobSummarySync(job);
   try {
     saveJobSqlite(job);
   } catch (error) {
@@ -448,6 +503,48 @@ function sanitizeJobForDisplay(job: JobRecord): JobRecord {
   };
 }
 
+const LIST_ARTIFACT_PREVIEW_LIMIT = Math.max(1, Math.min(Number(process.env.TILEFORGE_JOBS_ARTIFACT_PREVIEW_LIMIT ?? 8), 50));
+
+function hasReportArtifact(job: JobRecord): boolean {
+  return (job.artifacts ?? []).includes("report.md") || Boolean((job as any).hasReport);
+}
+
+export function compactJobForList(job: JobRecord): JobRecord & { artifactCount: number; hasReport: boolean; artifactsPreview: string[]; warningCount: number; logCount: number; stageHistoryCount: number } {
+  const artifacts = Array.isArray(job.artifacts) ? job.artifacts : [];
+  const hasReport = hasReportArtifact(job);
+  const artifactsPreview = artifacts.slice(0, LIST_ARTIFACT_PREVIEW_LIMIT);
+  if (hasReport && !artifactsPreview.includes("report.md")) artifactsPreview.unshift("report.md");
+  return {
+    id: job.id,
+    kind: job.kind,
+    name: job.name,
+    requestHash: job.requestHash,
+    status: job.status,
+    stage: job.stage,
+    progress: job.progress,
+    cancelRequested: job.cancelRequested,
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+    startedAt: job.startedAt,
+    finishedAt: job.finishedAt,
+    attempts: job.attempts,
+    maxAttempts: job.maxAttempts,
+    timeoutMs: job.timeoutMs,
+    request: {} as JobRecord["request"],
+    logs: [],
+    artifacts: hasReport ? ["report.md"] : [],
+    warnings: [],
+    error: job.error ? sanitizeErrorForDisplay(job.error).slice(0, 2000) : undefined,
+    stageHistory: [],
+    artifactCount: Math.max(Number((job as any).artifactCount ?? artifacts.length), hasReport ? 1 : 0),
+    hasReport,
+    artifactsPreview: artifactsPreview.slice(0, LIST_ARTIFACT_PREVIEW_LIMIT),
+    warningCount: (job.warnings ?? []).length,
+    logCount: (job.logs ?? []).length,
+    stageHistoryCount: (job.stageHistory ?? []).length,
+  };
+}
+
 export interface ListJobsOptions { limit?: number; cursor?: string; status?: JobStatus; since?: string; dashboard?: boolean; page?: number; }
 
 function jobCounts(jobs: JobRecord[]): Record<string, number> {
@@ -503,17 +600,12 @@ export async function listJobsPaged(options: ListJobsOptions = {}): Promise<Page
   const page = Math.max(1, Math.floor(options.page ?? 1));
   if (options.dashboard && !options.cursor && !options.status && !options.since && sqlitePrimary()) {
     const dash = listDashboardJobsSqlite(limit);
-    if (dash) return rememberJobsPage({ jobs: dash.jobs.map(sanitizeJobForDisplay), total: dash.total, counts: dash.counts, view: "dashboard", page: 1, pageSize: limit, totalPages: Math.max(1, Math.ceil(dash.total / limit)) });
+    if (dash) return rememberJobsPage({ jobs: dash.jobs.map((j) => compactJobForList(sanitizeJobForDisplay(j))), total: dash.total, counts: dash.counts, view: "dashboard", page: 1, pageSize: limit, totalPages: Math.max(1, Math.ceil(dash.total / limit)) });
   }
   if (!options.dashboard && !options.cursor && !options.since && sqlitePrimary()) {
     const paged = listJobsPageSqlite(limit, page, options.status);
-    if (paged) return rememberJobsPage({ jobs: paged.jobs.map(sanitizeJobForDisplay), total: paged.total, counts: paged.counts, page, pageSize: limit, totalPages: Math.max(1, Math.ceil(paged.total / limit)) });
+    if (paged) return rememberJobsPage({ jobs: paged.jobs.map((j) => compactJobForList(sanitizeJobForDisplay(j))), total: paged.total, counts: paged.counts, page, pageSize: limit, totalPages: Math.max(1, Math.ceil(paged.total / limit)) });
   }
-  if (options.dashboard && jobsFastFallbackEnabled()) {
-    if (lastSuccessfulJobsPage) return { ...lastSuccessfulJobsPage, degraded: true, stale: true, note: "SQLite가 바쁜 동안 마지막 Jobs dashboard 응답을 재사용했습니다." };
-    return { jobs: [], total: 0, counts: {}, view: "dashboard", page: 1, pageSize: limit, totalPages: 1, degraded: true, note: "SQLite가 바빠서 느린 job.json 전체 스캔을 건너뛰었습니다." };
-  }
-
   // Fallback path for environments where better-sqlite3 is unavailable or the
   // native module failed to load. It still has to read job.json files, so avoid
   // stampeding the filesystem when the UI polls repeatedly.
@@ -524,7 +616,7 @@ export async function listJobsPaged(options: ListJobsOptions = {}): Promise<Page
   if (existing) return existing;
 
   const inflight = (async (): Promise<PagedJobsResult> => {
-    const all = (await listJobs()).filter(job => {
+    const all = (await listJobSummaries()).filter(job => {
       if (options.status && job.status !== options.status) return false;
       if (options.since && job.createdAt < options.since) return false;
       return true;
@@ -532,10 +624,10 @@ export async function listJobsPaged(options: ListJobsOptions = {}): Promise<Page
     const counts = jobCounts(all);
     let result: PagedJobsResult;
     if (options.dashboard && !options.cursor && !options.status) {
-      result = { jobs: dashboardJobs(all, limit).map(sanitizeJobForDisplay), total: all.length, counts, view: "dashboard", page: 1, pageSize: limit, totalPages: Math.max(1, Math.ceil(all.length / limit)) };
+      result = { jobs: dashboardJobs(all, limit).map((j) => compactJobForList(sanitizeJobForDisplay(j))), total: all.length, counts, view: "dashboard", page: 1, pageSize: limit, totalPages: Math.max(1, Math.ceil(all.length / limit)) };
     } else {
       const start = options.cursor ? Math.max(0, all.findIndex(j => j.id === options.cursor) + 1) : (page - 1) * limit;
-      const jobs = all.slice(start, start + limit).map(sanitizeJobForDisplay);
+      const jobs = all.slice(start, start + limit).map((j) => compactJobForList(sanitizeJobForDisplay(j)));
       const nextCursor = start + limit < all.length ? jobs.at(-1)?.id : undefined;
       result = { jobs, nextCursor, total: all.length, counts, page, pageSize: limit, totalPages: Math.max(1, Math.ceil(all.length / limit)) };
     }

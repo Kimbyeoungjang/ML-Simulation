@@ -134,12 +134,27 @@ export function JobArtifactText({ jobId, path, title }: { jobId: string; path: s
 
 export function JobArtifactList({ jobId, jobsPayload }: { jobId: string; jobsPayload: any | null }) {
   const job = jobById(jobsPayload, jobId);
-  const summaryArtifacts: string[] = Array.isArray(job?.artifacts) ? job.artifacts : [];
+  const summaryArtifacts: string[] = Array.isArray(job?.artifactsPreview)
+    ? job.artifactsPreview
+    : Array.isArray(job?.artifacts)
+      ? job.artifacts
+      : [];
   const [loadedArtifacts, setLoadedArtifacts] = useState<string[]>([]);
   const [artifactListError, setArtifactListError] = useState("");
+  const [artifactPage, setArtifactPage] = useState(1);
+  const [artifactPageSize, setArtifactPageSize] = useState(200);
+  const [artifactMeta, setArtifactMeta] = useState({ total: summaryArtifacts.length, totalPages: 1, page: 1 });
   const artifacts = loadedArtifacts.length ? loadedArtifacts : summaryArtifacts;
   const storageKey = `tileforge:selected-artifacts:${jobId}`;
   const [selected, setSelected] = useState<string[]>([]);
+  const selectedSet = new Set(selected);
+
+  useEffect(() => {
+    setArtifactPage(1);
+    setLoadedArtifacts([]);
+    setArtifactListError("");
+    setArtifactMeta({ total: summaryArtifacts.length, totalPages: 1, page: 1 });
+  }, [jobId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -149,7 +164,7 @@ export function JobArtifactList({ jobId, jobsPayload }: { jobId: string; jobsPay
         return;
       }
       try {
-        const r = await apiFetch(`/api/jobs/${jobId}/artifacts`, { cache: "no-store" });
+        const r = await apiFetch(`/api/jobs/${jobId}/artifacts?limit=${artifactPageSize}&page=${artifactPage}`, { cache: "no-store" });
         if (!r.ok) throw new Error(`artifact list api ${r.status}`);
         const payload = await r.json();
         const names = Array.isArray(payload?.artifacts)
@@ -157,6 +172,11 @@ export function JobArtifactList({ jobId, jobsPayload }: { jobId: string; jobsPay
           : [];
         if (!cancelled) {
           setLoadedArtifacts(names);
+          setArtifactMeta({
+            total: Number(payload?.total ?? names.length),
+            totalPages: Math.max(1, Number(payload?.totalPages ?? 1)),
+            page: Math.max(1, Number(payload?.page ?? artifactPage)),
+          });
           setArtifactListError("");
         }
       } catch (error: any) {
@@ -165,19 +185,18 @@ export function JobArtifactList({ jobId, jobsPayload }: { jobId: string; jobsPay
     }
     void loadArtifacts();
     return () => { cancelled = true; };
-  }, [jobId]);
+  }, [jobId, artifactPage, artifactPageSize]);
 
   useEffect(() => {
     if (!jobId) return;
     try {
       const raw = window.localStorage.getItem(storageKey);
       const parsed = raw ? JSON.parse(raw) : null;
-      if (Array.isArray(parsed)) setSelected(parsed.filter((x) => artifacts.includes(x)));
-      else setSelected([]);
+      setSelected(Array.isArray(parsed) ? parsed.filter(Boolean) : []);
     } catch {
       setSelected([]);
     }
-  }, [jobId, artifacts.join("|")]);
+  }, [jobId, storageKey]);
 
   useEffect(() => {
     if (!jobId) return;
@@ -186,20 +205,21 @@ export function JobArtifactList({ jobId, jobsPayload }: { jobId: string; jobsPay
     } catch {
       // best-effort UI state persistence only
     }
-  }, [jobId, selected.join("|")]);
+  }, [jobId, storageKey, selected]);
 
   if (!jobId) return null;
   if (artifactListError && !artifacts.length) return <p className="small warn">artifact 목록을 불러오지 못했습니다: {artifactListError}</p>;
   if (!artifacts.length) return <p className="small warn">선택한 작업의 artifact 목록이 아직 없습니다.</p>;
 
-  const allSelected = selected.length === artifacts.length && artifacts.length > 0;
+  const allVisibleSelected = artifacts.length > 0 && artifacts.every((a) => selectedSet.has(a));
   const toggleOne = (artifactPath: string) => {
     setSelected((prev) => prev.includes(artifactPath) ? prev.filter((x) => x !== artifactPath) : [...prev, artifactPath]);
   };
-  const selectAll = () => setSelected(artifacts);
+  const selectVisible = () => setSelected((prev) => Array.from(new Set([...prev, ...artifacts])));
+  const clearVisible = () => setSelected((prev) => prev.filter((name) => !artifacts.includes(name)));
   const clearAll = () => setSelected([]);
-  const saveBlob = async (url: string, filename: string) => {
-    const r = await apiFetch(url, { cache: "no-store" });
+  const saveBlob = async (url: string, filename: string, init?: RequestInit) => {
+    const r = await apiFetch(url, { cache: "no-store", ...init });
     if (!r.ok) { alert(await r.text()); return; }
     const blob = await r.blob();
     const objectUrl = URL.createObjectURL(blob);
@@ -212,32 +232,49 @@ export function JobArtifactList({ jobId, jobsPayload }: { jobId: string; jobsPay
     URL.revokeObjectURL(objectUrl);
   };
   const downloadArtifact = async (artifactPath: string) => {
-    await saveBlob(`/api/jobs/${jobId}/artifact?path=${encodeURIComponent(artifactPath)}&download=1`, artifactPath.split(/[\\/]/).pop() || artifactPath);
+    await saveBlob(`/api/jobs/${jobId}/artifact?path=${encodeURIComponent(artifactPath)}&download=1`, artifactPath.split(/[\/]/).pop() || artifactPath);
   };
   const downloadSelected = async () => {
-    const paths = selected.length ? selected : artifacts;
-    const label = selected.length ? "selected" : "all";
-    await saveBlob(`/api/jobs/${jobId}/bundle?paths=${encodeURIComponent(JSON.stringify(paths))}`, `tileforge-${jobId}-${label}.zip`);
+    if (!selected.length) {
+      await saveBlob(`/api/jobs/${jobId}/bundle`, `tileforge-${jobId}-all.zip`);
+      return;
+    }
+    await saveBlob(`/api/jobs/${jobId}/bundle`, `tileforge-${jobId}-selected.zip`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ paths: selected }),
+    });
   };
+  const totalArtifacts = Number(artifactMeta.total || artifacts.length || job?.artifactCount || 0);
+  const totalPages = Math.max(1, Number(artifactMeta.totalPages || 1));
 
   return (
     <section className="job-artifact-view">
       <div className="artifact-list-header">
         <div>
           <h3>선택 작업 산출물</h3>
-          <p className="small">체크한 산출물만 ZIP으로 내려받을 수 있습니다. 선택 상태는 작업별로 유지됩니다.</p>
+          <p className="small">대량 artifact는 {artifactPageSize}개씩 나누어 표시합니다. 선택이 없으면 전체 artifact ZIP을 서버에서 바로 묶어 내려받습니다.</p>
         </div>
         <div className="artifact-actions">
-          <button className="secondary" title="현재 작업의 모든 artifact를 선택합니다." onClick={selectAll} disabled={allSelected}>모두 선택</button>
-          <button className="secondary" title="선택한 artifact 목록을 모두 해제합니다." onClick={clearAll} disabled={selected.length === 0}>모두 해제</button>
-          <button title="선택한 artifact만 ZIP으로 내려받습니다. 선택이 없으면 전체 artifact를 다운로드합니다." onClick={downloadSelected}>{selected.length ? `선택 ${selected.length}개 다운로드` : "모두 다운로드"}</button>
+          <button className="secondary" title="현재 페이지에 보이는 artifact를 선택합니다." onClick={selectVisible} disabled={allVisibleSelected}>현재 페이지 선택</button>
+          <button className="secondary" title="현재 페이지에 보이는 artifact 선택을 해제합니다." onClick={clearVisible} disabled={!artifacts.some((a) => selectedSet.has(a))}>현재 페이지 해제</button>
+          <button className="secondary" title="모든 페이지의 선택 상태를 해제합니다." onClick={clearAll} disabled={selected.length === 0}>전체 선택 해제</button>
+          <button title="선택한 artifact만 ZIP으로 내려받습니다. 선택이 없으면 전체 artifact를 다운로드합니다." onClick={downloadSelected}>{selected.length ? `선택 ${selected.length}개 다운로드` : `전체 ${totalArtifacts}개 다운로드`}</button>
         </div>
+      </div>
+      <div className="queue-pagination" title="대량 artifact 페이지 이동">
+        <button className="secondary" title="이전 artifact 페이지로 이동합니다." onClick={() => setArtifactPage(Math.max(1, artifactPage - 1))} disabled={artifactPage <= 1}>이전</button>
+        <span className="small">page {artifactMeta.page || artifactPage} / {totalPages} · total {totalArtifacts}</span>
+        <button className="secondary" title="다음 artifact 페이지로 이동합니다." onClick={() => setArtifactPage(Math.min(totalPages, artifactPage + 1))} disabled={artifactPage >= totalPages}>다음</button>
+        <select value={artifactPageSize} title="한 페이지에 표시할 artifact 수" onChange={(e) => { setArtifactPageSize(Number(e.target.value)); setArtifactPage(1); }}>
+          {[100, 200, 500, 1000].map((n) => <option key={n} value={n}>{n}개</option>)}
+        </select>
       </div>
       <div className="artifact-grid selectable-artifacts">
         {artifacts.map((a) => (
-          <div key={a} className={`artifact-download artifact-card ${selected.includes(a) ? "selected" : ""}`} title={a}>
+          <div key={a} className={`artifact-download artifact-card ${selectedSet.has(a) ? "selected" : ""}`} title={a}>
             <label className="artifact-select-label">
-              <input title="이 artifact를 ZIP 다운로드 대상에 포함하거나 제외합니다." type="checkbox" checked={selected.includes(a)} onChange={() => toggleOne(a)} />
+              <input title="이 artifact를 ZIP 다운로드 대상에 포함하거나 제외합니다." type="checkbox" checked={selectedSet.has(a)} onChange={() => toggleOne(a)} />
               <span>{a}</span>
             </label>
             <button className="secondary tiny-download" title="이 artifact 하나만 다운로드합니다." onClick={() => downloadArtifact(a)}>다운로드</button>
@@ -247,4 +284,3 @@ export function JobArtifactList({ jobId, jobsPayload }: { jobId: string; jobsPay
     </section>
   );
 }
-

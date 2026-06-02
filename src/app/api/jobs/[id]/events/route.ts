@@ -1,4 +1,4 @@
-import { readJob } from "@/server/jobStore";
+import { compactJobForList, readJob } from "@/server/jobStore";
 
 export const dynamic = "force-dynamic";
 
@@ -33,7 +33,8 @@ export async function GET(req: Request, ctx: { params: Promise<{ id: string }> }
         if (closed) return;
         try {
           const job = await readJob(id);
-          send("job", { id: job.id, status: job.status, stage: job.stage, progress: job.progress, logs: sanitizeLogLines(job.logs.slice(-tail)), artifacts: job.artifacts, warnings: job.warnings, stageHistory: job.stageHistory, error: job.error });
+          const summary = compactJobForList(job);
+          send("job", { ...summary, logs: sanitizeLogLines((job.logs ?? []).slice(-tail)), warnings: (job.warnings ?? []).slice(-20), error: job.error });
           if (["succeeded", "succeeded_with_warnings", "failed", "cancelled", "skipped_external_tool"].includes(job.status)) { send("done", { status: job.status }); controller.close(); closed = true; return; }
         } catch (e:any) { send("error", { message: e.message }); controller.close(); closed = true; return; }
         setTimeout(tick, 1000);
