@@ -276,10 +276,10 @@ export function isHeavyScaleSimPlanRow(row: EstimatorSamplingPlanRow): boolean {
     Math.ceil(row.n / Math.max(1, row.tileN)) *
     Math.ceil(row.k / Math.max(1, row.tileK));
   const opsPerPe = macs / peCount;
-  const peThreshold = envNumber("TILEFORGE_HEAVY_SCALESIM_PE_THRESHOLD", 131_072);
-  const tileThreshold = envNumber("TILEFORGE_HEAVY_SCALESIM_TILE_COUNT_THRESHOLD", 50_000);
-  const opsPerPeThreshold = envNumber("TILEFORGE_HEAVY_SCALESIM_OPS_PER_PE_THRESHOLD", 15_000_000);
-  const macThreshold = envNumber("TILEFORGE_HEAVY_SCALESIM_MAC_THRESHOLD", 2_000_000_000_000);
+  const peThreshold = envNumber("TILEFORGE_HEAVY_SCALESIM_PE_THRESHOLD", 65_536);
+  const tileThreshold = envNumber("TILEFORGE_HEAVY_SCALESIM_TILE_COUNT_THRESHOLD", 10_000);
+  const opsPerPeThreshold = envNumber("TILEFORGE_HEAVY_SCALESIM_OPS_PER_PE_THRESHOLD", 5_000_000);
+  const macThreshold = envNumber("TILEFORGE_HEAVY_SCALESIM_MAC_THRESHOLD", 10_000_000_000);
   return (
     peCount >= peThreshold ||
     tileCount >= tileThreshold ||

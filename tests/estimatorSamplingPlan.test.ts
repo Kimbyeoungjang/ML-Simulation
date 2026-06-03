@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { defaultHardware } from "../src/lib/defaults";
-import { buildEstimatorSamplingPlan, parseArrayRange, parsePlanRange } from "../src/lib/estimatorSamplingPlan";
+import { buildEstimatorSamplingPlan, isHeavyScaleSimPlanRow, parseArrayRange, parsePlanRange, requestFromPlanRow } from "../src/lib/estimatorSamplingPlan";
+import { estimatorPresets } from "../src/lib/estimatorPresets";
 import type { SearchRequest } from "../src/types/domain";
 
 describe("estimator sampling plan", () => {
@@ -59,6 +60,57 @@ describe("estimator sampling plan", () => {
     expect(plan.rows).toHaveLength(12);
     expect(new Set(plan.rows.map((r) => r.dataflow))).toEqual(new Set(["WS", "OS", "IS"]));
     expect(plan.rows.slice(0, 3).map((r) => r.dataflow).sort()).toEqual(["IS", "OS", "WS"]);
+  });
+
+  it("builds lite real-ML presets without synthetic or Llama-scale rows", () => {
+    const request: SearchRequest = {
+      hardware: defaultHardware,
+      shapes: [{ id: "base", model: "demo", opName: "gemm", m: 64, n: 64, k: 64, dtypeBytes: 2 }],
+      candidates: { tileM: [16, 32], tileN: [16, 32], tileK: [16, 32] },
+      objective: "balanced",
+      maxResultsPerOp: 2,
+    };
+    const preset = estimatorPresets.find((p) => p.id === "real-ml-lite-1024");
+    expect(preset).toBeTruthy();
+    const plan = buildEstimatorSamplingPlan(request, preset!.planOptions);
+    expect(plan.rows).toHaveLength(1024);
+    expect(plan.rows.some((row) => /llama/i.test(`${row.model} ${row.opName}`))).toBe(false);
+    expect(plan.rows.some((row) => row.model === "sampling_plan")).toBe(false);
+    expect(Math.max(...plan.rows.map((row) => row.n))).toBeLessThanOrEqual(4096);
+    expect(Math.max(...plan.rows.map((row) => row.k))).toBeLessThanOrEqual(4096);
+  });
+
+  it("routes heavy SCALE-Sim rows to tile-policy mode", () => {
+    const request: SearchRequest = {
+      hardware: defaultHardware,
+      shapes: [{ id: "base", model: "demo", opName: "gemm", m: 64, n: 64, k: 64, dtypeBytes: 2 }],
+      candidates: { tileM: [16], tileN: [16], tileK: [16] },
+      objective: "balanced",
+    };
+    const row = {
+      id: "heavy",
+      model: "llama",
+      opName: "gate_up_projection",
+      arrayRows: 128,
+      arrayCols: 128,
+      sramKB: 8192,
+      frequencyMHz: 700,
+      memoryBandwidthGBs: "",
+      dispatchOverheadUs: "",
+      dataflow: "WS" as const,
+      dtypeBytes: 2,
+      m: 128,
+      n: 22016,
+      k: 4096,
+      tileM: 128,
+      tileN: 512,
+      tileK: 512,
+      estimatorCycles: 1,
+      measuredCycles: "",
+      scaleSimRunName: "heavy",
+    };
+    expect(isHeavyScaleSimPlanRow(row)).toBe(true);
+    expect(requestFromPlanRow(request, row).scaleSim?.measurementMode).toBe("tile-policy");
   });
 
 });
