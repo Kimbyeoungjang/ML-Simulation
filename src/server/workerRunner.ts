@@ -68,30 +68,6 @@ async function throwIfCancelled(job: JobRecord) {
   }
 }
 
-async function withTimeout<T>(
-  job: JobRecord,
-  label: string,
-  work: () => Promise<T>,
-): Promise<T> {
-  const timeoutMs =
-    job.timeoutMs ??
-    Number(process.env.TILEFORGE_JOB_TIMEOUT_MS ?? 10 * 60 * 1000);
-  let timer: NodeJS.Timeout | undefined;
-  try {
-    return await Promise.race([
-      work(),
-      new Promise<T>((_, reject) => {
-        timer = setTimeout(
-          () => reject(new Error(`${label} timed out after ${timeoutMs} ms`)),
-          timeoutMs,
-        );
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
-
 export async function runJob(job: JobRecord, options: { lockHeld?: boolean } = {}) {
   let lockHeld = Boolean(options.lockHeld);
   if (!lockHeld) {
@@ -226,9 +202,7 @@ async function runJobOnce(job: JobRecord) {
         65,
         "SCALE-Sim 실제 실행 중",
       );
-      scaleSummary = await withTimeout(job, "SCALE-Sim", () =>
-        runScaleSimForJob(job, res),
-      );
+      scaleSummary = await runScaleSimForJob(job, res);
       await writeStageMarker(dir, "scalesim", scaleSummary);
     } else {
       await addLog(job, "완료된 SCALE-Sim 단계를 재사용합니다");
@@ -245,9 +219,7 @@ async function runJobOnce(job: JobRecord) {
         82,
         "IREE 실제 compile 실행 중",
       );
-      ireeSummary = await withTimeout(job, "IREE compile", () =>
-        runIreeForJob(job),
-      );
+      ireeSummary = await runIreeForJob(job);
       await writeStageMarker(dir, "iree", ireeSummary);
     } else {
       await addLog(job, "완료된 IREE 단계를 재사용합니다");
@@ -501,6 +473,7 @@ type ExternalRunSummary = {
   vmfbBytes?: number;
   layers?: ScaleSimLayerSummary[];
   candidateLayers?: ScaleSimLayerSummary[];
+  measurementMode?: "full-layer" | "tile-policy" | "both";
 };
 
 type ScaleSimLayerSummary = {
@@ -738,6 +711,41 @@ async function runCommandCandidates(
   throw new Error(formatCandidateErrors(errors));
 }
 
+function envNumber(name: string, fallback: number): number {
+  const parsed = Number(process.env[name]);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function effectiveExternalTimeoutMs(job: JobRecord, toolEnvName?: string, fallback = 10 * 60 * 1000): number {
+  const generic = envNumber("TILEFORGE_JOB_TIMEOUT_MS", fallback);
+  const toolSpecific = toolEnvName ? envNumber(toolEnvName, generic) : generic;
+  const saved = Number(job.timeoutMs ?? 0);
+  return Math.max(30_000, saved, toolSpecific);
+}
+
+function scaleSimFullLayerTimeoutMs(job: JobRecord): number {
+  return effectiveExternalTimeoutMs(job, "TILEFORGE_SCALE_SIM_TIMEOUT_MS");
+}
+
+function scaleSimTopkTimeoutMs(job: JobRecord): number {
+  const fullLayerTimeout = scaleSimFullLayerTimeoutMs(job);
+  const fallback = Math.min(fullLayerTimeout, 30 * 60 * 1000);
+  return Math.max(30_000, envNumber("TILEFORGE_SCALE_SIM_TOPK_TIMEOUT_MS", fallback));
+}
+
+function ireeTimeoutMs(job: JobRecord): number {
+  return effectiveExternalTimeoutMs(job, "TILEFORGE_IREE_TIMEOUT_MS");
+}
+
+function normalizeScaleSimMeasurementMode(mode: unknown): "full-layer" | "tile-policy" | "both" {
+  if (mode === "full-layer" || mode === "tile-policy" || mode === "both") return mode;
+  return "both";
+}
+
+function appendJobWarning(job: JobRecord, warning: string) {
+  job.warnings = [...new Set([...(job.warnings ?? []), warning])];
+}
+
 async function runScaleSimForJob(
   job: JobRecord,
   res: ReturnType<typeof estimateAll>,
@@ -746,6 +754,8 @@ async function runScaleSimForJob(
   const outDir = path.join(dir, "scalesim-output");
   await mkdir(outDir, { recursive: true });
   const commands = scaleSimCommandCandidates();
+  const measurementMode = normalizeScaleSimMeasurementMode(job.request.scaleSim?.measurementMode);
+  const skipOnTimeout = job.request.scaleSim?.skipOnTimeout === true;
   const args = scaleSimArgs({
     config: path.join(dir, "scalesim.cfg"),
     topology: path.join(dir, "topology.csv"),
@@ -754,61 +764,82 @@ async function runScaleSimForJob(
     useLayout: res.request.scaleSim?.useLayout !== false,
   });
   const startedAt = Date.now();
+  let run: Awaited<ReturnType<typeof runCommandCandidates>> | undefined;
+  let computeReport: string | undefined;
+  let layers: ScaleSimLayerSummary[] = [];
+  let totalCycles = 0;
+  let candidateLayers: ScaleSimLayerSummary[] = [];
+  let topkError: string | undefined;
+
   try {
-    const run = await runCommandCandidates(
-      commands,
-      args,
-      outDir,
-      job.timeoutMs ??
-        Number(process.env.TILEFORGE_JOB_TIMEOUT_MS ?? 10 * 60 * 1000),
-      "scalesim",
-      withPrependedPythonPath(path.resolve("external/SCALE-Sim"), {
-        TILEFORGE_MOCK_OUTPUT_DIR: outDir,
-      }),
-    );
-    const computeReport = await findFirstExistingFile(
-      outDir,
-      "COMPUTE_REPORT.csv",
-    );
-    if (!computeReport)
-      throw new Error(
-        "SCALE-Sim 실행은 성공했지만 COMPUTE_REPORT.csv를 찾지 못했습니다",
+    if (measurementMode !== "tile-policy") {
+      run = await runCommandCandidates(
+        commands,
+        args,
+        outDir,
+        scaleSimFullLayerTimeoutMs(job),
+        "scalesim",
+        withPrependedPythonPath(path.resolve("external/SCALE-Sim"), {
+          TILEFORGE_MOCK_OUTPUT_DIR: outDir,
+        }),
       );
-    const layerMetadata = res.results.map((r) => ({
-      name: r.shape.opName,
-      opName: r.shape.opName,
-      shapeId: r.shape.id,
-      predictedCycles: r.best.cycles,
-      predictedTimeUs: r.best.timeUs,
-      predictedUtilization: r.best.utilization,
-      predictedPaddingRatio: r.best.paddingRatio,
-      predictedSramBytes: r.best.sramBytes,
-      tileM: r.best.tileM,
-      tileN: r.best.tileN,
-      tileK: r.best.tileK,
-    }));
-    const layers = (await parseScaleSimLayerReports(computeReport, layerMetadata))
-      .filter((layer) => layer.cycles > 0);
-    const totalCycles = layers.reduce((sum, layer) => sum + layer.cycles, 0);
-    const candidateLayers = await runScaleSimTopkForJob(job, res, commands);
-    await pruneScaleSimRawOutputs(job, outDir, [computeReport]);
+      computeReport = await findFirstExistingFile(
+        outDir,
+        "COMPUTE_REPORT.csv",
+      );
+      if (!computeReport)
+        throw new Error(
+          "SCALE-Sim 실행은 성공했지만 COMPUTE_REPORT.csv를 찾지 못했습니다",
+        );
+      const layerMetadata = res.results.map((r) => ({
+        name: r.shape.opName,
+        opName: r.shape.opName,
+        shapeId: r.shape.id,
+        predictedCycles: r.best.cycles,
+        predictedTimeUs: r.best.timeUs,
+        predictedUtilization: r.best.utilization,
+        predictedPaddingRatio: r.best.paddingRatio,
+        predictedSramBytes: r.best.sramBytes,
+        tileM: r.best.tileM,
+        tileN: r.best.tileN,
+        tileK: r.best.tileK,
+      }));
+      layers = (await parseScaleSimLayerReports(computeReport, layerMetadata))
+        .filter((layer) => layer.cycles > 0);
+      totalCycles = layers.reduce((sum, layer) => sum + layer.cycles, 0);
+      await pruneScaleSimRawOutputs(job, outDir, [computeReport]);
+    }
+
+    if (measurementMode !== "full-layer") {
+      try {
+        candidateLayers = await runScaleSimTopkForJob(job, res, commands);
+      } catch (error) {
+        topkError = error instanceof Error ? error.message : String(error);
+        if (!skipOnTimeout) throw error;
+        appendJobWarning(job, `SCALE-Sim tile-policy 수집 실패: ${topkError}`);
+        await addLog(job, `SCALE-Sim tile-policy 수집 실패를 skip 처리했습니다: ${topkError}`);
+      }
+    }
+
     const summary: ExternalRunSummary = {
       ok: true,
-      skipped: false,
+      skipped: measurementMode === "tile-policy",
       tool: "scalesim",
-      command: commandLabel(run.command),
+      command: run ? commandLabel(run.command) : undefined,
       triedCommands: commands.map(commandLabel),
       elapsedMs: Date.now() - startedAt,
-      logPath: path.relative(dir, run.logPath),
-      computeReport: path.relative(dir, computeReport),
+      logPath: run ? path.relative(dir, run.logPath) : undefined,
+      computeReport: computeReport ? path.relative(dir, computeReport) : undefined,
       layerCount: layers.length,
-      totalCycles,
+      totalCycles: totalCycles > 0 ? totalCycles : undefined,
       layers,
       candidateLayers,
+      measurementMode,
       cycleRatio:
-        res.summary.totalCycles > 0
+        totalCycles > 0 && res.summary.totalCycles > 0
           ? totalCycles / res.summary.totalCycles
           : undefined,
+      error: topkError,
     };
     await atomicWriteFile(
       path.join(dir, "scalesim_summary.json"),
@@ -821,14 +852,16 @@ async function runScaleSimForJob(
           "scalesim_summary.json",
           summary.logPath,
           summary.computeReport,
-          "scalesim_top3_summary.json",
+          candidateLayers.length ? "scalesim_top3_summary.json" : undefined,
         ].filter(Boolean) as string[],
       ),
     ];
     await saveJob(job);
     await addLog(
       job,
-      `SCALE-Sim 완료: ${summary.computeReport}, 전체 cycle=${totalCycles.toLocaleString()}`,
+      measurementMode === "tile-policy"
+        ? `SCALE-Sim tile-policy 완료: 후보 ${candidateLayers.length}개`
+        : `SCALE-Sim 완료: ${summary.computeReport}, 전체 cycle=${totalCycles.toLocaleString()}, tile-policy 후보=${candidateLayers.length}개`,
     );
     return summary;
   } catch (error) {
@@ -845,6 +878,49 @@ async function runScaleSimForJob(
       `files under scalesim-output: ${files.length ? files.join(", ") : "(none)"}`,
       logTails.length ? `log tail:\n${logTails.join("\n")}` : "log tail: (empty)",
     ].join("\n");
+
+    if (skipOnTimeout) {
+      let fallbackCandidateLayers: ScaleSimLayerSummary[] = [];
+      let fallbackError = "";
+      if (measurementMode !== "full-layer") {
+        try {
+          fallbackCandidateLayers = await runScaleSimTopkForJob(job, res, commands);
+        } catch (fallback) {
+          fallbackError = fallback instanceof Error ? fallback.message : String(fallback);
+        }
+      }
+      const skippedMessage = fallbackError
+        ? `${message}\n\nSCALE-Sim tile-policy fallback도 실패했습니다:\n${fallbackError}`
+        : message;
+      const summary: ExternalRunSummary = {
+        ok: fallbackCandidateLayers.length > 0,
+        skipped: true,
+        tool: "scalesim",
+        triedCommands: commands.map(commandLabel),
+        elapsedMs: Date.now() - startedAt,
+        error: skippedMessage,
+        candidateLayers: fallbackCandidateLayers,
+        layerCount: 0,
+        layers: [],
+        measurementMode,
+      };
+      await atomicWriteFile(
+        path.join(dir, "scalesim_summary.json"),
+        JSON.stringify(summary, null, 2),
+      );
+      job.artifacts = [
+        ...new Set([
+          ...(job.artifacts ?? []),
+          "scalesim_summary.json",
+          fallbackCandidateLayers.length ? "scalesim_top3_summary.json" : undefined,
+        ].filter(Boolean) as string[]),
+      ];
+      appendJobWarning(job, "SCALE-Sim full-layer 실행을 timeout/실패로 skip하고 학습용 job을 계속 진행했습니다.");
+      await saveJob(job);
+      await addLog(job, `SCALE-Sim skipOnTimeout 적용: ${baseError}`);
+      return summary;
+    }
+
     const summary: ExternalRunSummary = {
       ok: false,
       skipped: false,
@@ -852,6 +928,7 @@ async function runScaleSimForJob(
       triedCommands: commands.map(commandLabel),
       elapsedMs: Date.now() - startedAt,
       error: message,
+      measurementMode,
     };
     await atomicWriteFile(
       path.join(dir, "scalesim_summary.json"),
@@ -892,8 +969,7 @@ async function runScaleSimTopkForJob(
     commands,
     args,
     outDir,
-    job.timeoutMs ??
-      Number(process.env.TILEFORGE_JOB_TIMEOUT_MS ?? 10 * 60 * 1000),
+    scaleSimTopkTimeoutMs(job),
     "scalesim-top3",
     withPrependedPythonPath(path.resolve("external/SCALE-Sim"), {
       TILEFORGE_MOCK_OUTPUT_DIR: outDir,
@@ -1062,9 +1138,7 @@ async function runIreeForJob(job: JobRecord): Promise<ExternalRunSummary> {
     try {
       await runExternalCommand(command, args, {
         cwd: dir,
-        timeoutMs:
-          job.timeoutMs ??
-          Number(process.env.TILEFORGE_JOB_TIMEOUT_MS ?? 10 * 60 * 1000),
+        timeoutMs: ireeTimeoutMs(job),
         logPath,
         env: { TILEFORGE_MOCK_VMFB: vmfb },
       });

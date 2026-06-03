@@ -69,7 +69,9 @@ export const ScaleSimOverridesSchema = z.object({
   filterSRAMBankBandwidth: positiveNum.optional(),
   filterSRAMBankNum: positiveInt.optional(),
   filterSRAMBankPort: positiveInt.optional(),
-  emitLayoutSection: z.boolean().optional()
+  emitLayoutSection: z.boolean().optional(),
+  measurementMode: z.enum(["full-layer", "tile-policy", "both"]).optional(),
+  skipOnTimeout: z.boolean().optional()
 }).optional();
 
 export const SearchRequestSchema = z.object({

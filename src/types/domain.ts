@@ -1,5 +1,6 @@
 export type Dataflow = "WS" | "OS" | "IS";
 export type Objective = "balanced" | "cycles" | "utilization" | "hardware-design" | "pareto";
+export type ScaleSimMeasurementMode = "full-layer" | "tile-policy" | "both";
 
 export interface ScaleSimOverrides {
   runName?: string;
@@ -24,6 +25,18 @@ export interface ScaleSimOverrides {
   filterSRAMBankNum?: number;
   filterSRAMBankPort?: number;
   emitLayoutSection?: boolean;
+  /**
+   * Controls how much SCALE-Sim evidence is collected for this request.
+   * - full-layer: run the full topology only.
+   * - tile-policy: run only top-k tile micro-runs and record extrapolated targets.
+   * - both: run full-layer plus top-k tile micro-runs.
+   */
+  measurementMode?: ScaleSimMeasurementMode;
+  /**
+   * For large estimator-suite sampling jobs, keep the job successful when
+   * optional SCALE-Sim evidence cannot be collected within the configured budget.
+   */
+  skipOnTimeout?: boolean;
 }
 
 export interface HardwareConfig {

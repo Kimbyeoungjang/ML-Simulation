@@ -263,7 +263,34 @@ export function buildEstimatorSamplingPlan(base: SearchRequest, options: Estimat
   return { rows, csv, totalRows: rows.length };
 }
 
+function envNumber(name: string, fallback: number): number {
+  const parsed = Number(process.env[name]);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+export function isHeavyScaleSimPlanRow(row: EstimatorSamplingPlanRow): boolean {
+  const peCount = Math.max(1, row.arrayRows * row.arrayCols);
+  const macs = row.m * row.n * row.k;
+  const tileCount =
+    Math.ceil(row.m / Math.max(1, row.tileM)) *
+    Math.ceil(row.n / Math.max(1, row.tileN)) *
+    Math.ceil(row.k / Math.max(1, row.tileK));
+  const opsPerPe = macs / peCount;
+  const peThreshold = envNumber("TILEFORGE_HEAVY_SCALESIM_PE_THRESHOLD", 131_072);
+  const tileThreshold = envNumber("TILEFORGE_HEAVY_SCALESIM_TILE_COUNT_THRESHOLD", 50_000);
+  const opsPerPeThreshold = envNumber("TILEFORGE_HEAVY_SCALESIM_OPS_PER_PE_THRESHOLD", 15_000_000);
+  const macThreshold = envNumber("TILEFORGE_HEAVY_SCALESIM_MAC_THRESHOLD", 2_000_000_000_000);
+  return (
+    peCount >= peThreshold ||
+    tileCount >= tileThreshold ||
+    opsPerPe >= opsPerPeThreshold ||
+    macs >= macThreshold
+  );
+}
+
 export function requestFromPlanRow(base: SearchRequest, row: EstimatorSamplingPlanRow): SearchRequest {
+  const heavyScaleSim = isHeavyScaleSimPlanRow(row);
+  const inheritedScaleSim = base.scaleSim ?? {};
   return {
     ...base,
     hardware: {
@@ -278,7 +305,13 @@ export function requestFromPlanRow(base: SearchRequest, row: EstimatorSamplingPl
     },
     shapes: [{ id: row.id, model: row.model, opName: row.opName, m: row.m, n: row.n, k: row.k, dtypeBytes: row.dtypeBytes, source: "manual" }],
     candidates: { tileM: [row.tileM], tileN: [row.tileN], tileK: [row.tileK] },
-    scaleSim: { ...(base.scaleSim ?? {}), runName: row.scaleSimRunName, dataflow: row.dataflow },
+    scaleSim: {
+      ...inheritedScaleSim,
+      runName: row.scaleSimRunName,
+      dataflow: row.dataflow,
+      measurementMode: inheritedScaleSim.measurementMode ?? (heavyScaleSim ? "tile-policy" : "both"),
+      skipOnTimeout: inheritedScaleSim.skipOnTimeout ?? heavyScaleSim,
+    },
     maxResultsPerOp: 1,
   };
 }

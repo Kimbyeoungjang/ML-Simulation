@@ -28,6 +28,12 @@ function envNumber(name: string, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function effectiveJobTimeoutMs(job: Pick<JobRecord, "timeoutMs">): number {
+  const saved = Number(job.timeoutMs ?? 0);
+  const configured = envNumber("TILEFORGE_JOB_TIMEOUT_MS", DEFAULT_TIMEOUT_MS);
+  return Math.max(60_000, saved, configured);
+}
+
 function processIsAlive(pid: unknown): boolean | undefined {
   const n = Number(pid);
   if (!Number.isInteger(n) || n <= 0) return undefined;
@@ -365,7 +371,7 @@ export async function recoverStaleRunningJobs(): Promise<number> {
     const lockDead = await lockProcessIsDead(job);
     const staleMs = lockDead
       ? deadLockGraceMs
-      : Math.max(Number(job.timeoutMs ?? DEFAULT_TIMEOUT_MS) + 30_000, 90_000);
+      : Math.max(effectiveJobTimeoutMs(job) + 30_000, 90_000);
     if (!Number.isFinite(ageMs) || ageMs < staleMs) continue;
     job.status = "failed";
     job.stage = "failed" as any;
@@ -475,7 +481,7 @@ export async function acquireJobLock(job: JobRecord): Promise<boolean> {
       const s = await stat(lock);
       const ageMs = Date.now() - s.mtimeMs;
       const dead = await lockProcessIsDead(job);
-      if (dead || ageMs > Math.max(job.timeoutMs ?? DEFAULT_TIMEOUT_MS, 60_000)) {
+      if (dead || ageMs > Math.max(effectiveJobTimeoutMs(job), 60_000)) {
         await rm(lock, { force: true });
         await writeFile(lock, JSON.stringify({ pid: process.pid, acquiredAt: nowIso(), recoveredStale: true, previousLockDead: dead }), { flag: "wx" });
         await addLog(job, dead ? "Recovered dead-process job lock" : "Recovered stale job lock");
