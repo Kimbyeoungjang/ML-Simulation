@@ -115,7 +115,14 @@ export interface ScaleSimPathArgs { config: string; topology: string; layout?: s
 
 export function scaleSimArgs(paths: ScaleSimPathArgs): string[] {
   const args = ["-c", paths.config, "-t", paths.topology];
-  if (paths.layout && paths.useLayout !== false && process.env.TILEFORGE_SCALE_SIM_USE_LAYOUT !== "0") {
+  // The SCALE-Sim build used by TileForge attempts to read its bundled
+  // ./layouts/conv_nets/test.csv when the -l argument is omitted. Because we
+  // intentionally execute SCALE-Sim from each job output directory, that
+  // relative bundled path is not available and SCALE-Sim exits with
+  // "Layout file not found". Always pass TileForge's generated layout CSV
+  // when it exists; the cfg's CustomLayout flags still decide whether custom
+  // banking/layout behavior is enabled.
+  if (paths.layout) {
     args.push("-l", paths.layout);
   }
   if (process.env.TILEFORGE_SCALE_SIM_USE_OUTPUT_ARG === "1") {

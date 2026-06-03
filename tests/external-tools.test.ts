@@ -17,13 +17,13 @@ describe("external tool command construction", () => {
     }
   });
 
-  it("omits layout when disabled and adds output arg only when requested", () => {
+  it("keeps layout available for SCALE-Sim and adds output arg only when requested", () => {
     const oldLayout = process.env.TILEFORGE_SCALE_SIM_USE_LAYOUT;
     const oldOutput = process.env.TILEFORGE_SCALE_SIM_USE_OUTPUT_ARG;
     process.env.TILEFORGE_SCALE_SIM_USE_LAYOUT = "0";
     process.env.TILEFORGE_SCALE_SIM_USE_OUTPUT_ARG = "1";
     try {
-      expect(scaleSimArgs({ config: "cfg", topology: "topology", layout: "layout", outDir: "out" })).toEqual(["-c", "cfg", "-t", "topology", "-p", "out"]);
+      expect(scaleSimArgs({ config: "cfg", topology: "topology", layout: "layout", outDir: "out" })).toEqual(["-c", "cfg", "-t", "topology", "-l", "layout", "-p", "out"]);
     } finally {
       if (oldLayout === undefined) delete process.env.TILEFORGE_SCALE_SIM_USE_LAYOUT;
       else process.env.TILEFORGE_SCALE_SIM_USE_LAYOUT = oldLayout;
