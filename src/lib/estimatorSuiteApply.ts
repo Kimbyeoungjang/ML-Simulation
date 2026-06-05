@@ -115,13 +115,17 @@ function fullLayerSample(req: SearchRequest, candidate: TileCandidateResult, est
     estimatorCycles: Math.max(1, estimatorCycles),
     measuredCycles: Math.max(1, estimatorCycles),
     targetScope: "full-layer",
-    // The learned feature extractor canonicalizes full-layer tile features, but
-    // keeping the selected tile here still makes CSV/report traceability easier.
+    // Full-layer targets are whole-topology measurements. Use canonical
+    // no-tiling dimensions so full-layer models do not learn a fake dependency
+    // on the currently selected tile-policy candidate.
     measuredSource: "full-layer-prediction",
     dtypeBytes: shape?.dtypeBytes ?? req.hardware.bytesPerElement ?? 2,
     m: shape?.m ?? 1,
     n: shape?.n ?? 1,
     k: shape?.k ?? 1,
+    tileM: Math.max(1, shape?.m ?? candidate.tileM),
+    tileN: Math.max(1, shape?.n ?? candidate.tileN),
+    tileK: Math.max(1, shape?.k ?? candidate.tileK),
   };
 }
 

@@ -46,6 +46,12 @@ import { activateEstimatorSuiteModel, readActiveEstimatorSuiteModel } from "./ac
 import { trainEstimatorSuite } from "@/lib/estimatorSuite";
 import { buildEstimatorSuiteArtifacts, normalizeSuiteSplitKinds, parseEstimatorSamplesCsv } from "@/lib/estimatorSuiteArtifacts";
 import { buildEstimatorDataset, estimatorDatasetSummaryMarkdown } from "@/lib/estimatorSuiteDataset";
+import {
+  applyEstimatorSuiteTrainingPolicy,
+  estimatorSuiteTrainingPolicyJson,
+  estimatorSuiteTrainingPolicyMarkdown,
+  normalizeEstimatorSuiteTrainingTargetScope,
+} from "@/lib/estimatorSuiteTrainingPolicy";
 import { buildValidationReport, type ValidationSample } from "@/lib/verification";
 
 import {
@@ -304,11 +310,28 @@ async function runEstimatorSuiteTrainingJob(job: JobRecord) {
   }
   await saveJob(job);
 
+  const requestedTargetScope = normalizeEstimatorSuiteTrainingTargetScope(
+    (payload.options as any)?.targetScope ?? (payload as any).targetScope ?? "auto",
+  );
+  const trainingPolicy = applyEstimatorSuiteTrainingPolicy(samples, { targetScope: requestedTargetScope });
+  samples = trainingPolicy.samples;
+  const policyFiles = {
+    "estimator-suite-training-policy.json": estimatorSuiteTrainingPolicyJson(trainingPolicy),
+    "estimator-suite-training-policy.md": estimatorSuiteTrainingPolicyMarkdown(trainingPolicy),
+  };
+  for (const [name, text] of Object.entries(policyFiles)) {
+    await writeFile(path.join(runDir, name), text, "utf8");
+    await writeFile(path.join(localDir, name), text, "utf8");
+  }
+  job.artifacts = [...new Set([...(job.artifacts ?? []), ...Object.keys(policyFiles)])];
+  await saveJob(job);
+  for (const warning of trainingPolicy.warnings) addLogImmediate(job, `Training policy: ${warning}`);
+
   if (samples.length < 40) {
-    throw new Error(`Estimator suite requires at least 40 valid measured samples; parsed ${samples.length}.`);
+    throw new Error(`Estimator suite requires at least 40 valid measured samples after scope policy; parsed ${samples.length} (input ${trainingPolicy.inputSamples}, requestedScope=${trainingPolicy.requestedScope}, effectiveScope=${trainingPolicy.effectiveScope}).`);
   }
 
-  addLogImmediate(job, `학습 sample ${samples.length.toLocaleString()}개 파싱 완료`);
+  addLogImmediate(job, `학습 sample ${samples.length.toLocaleString()}개 선택 완료(scope=${trainingPolicy.effectiveScope}, input=${trainingPolicy.inputSamples.toLocaleString()})`);
   addLogImmediate(job, `설정: trees=${suiteNum(payload, "trees", 160)}, maxDepth=${suiteNum(payload, "maxDepth", suiteNum(payload, "max-depth", 10))}, hidden=${suiteNum(payload, "hiddenUnits", suiteNum(payload, "hidden", 64))}, epochs=${suiteNum(payload, "epochs", 900)}, maxFinalTrain=${suiteNum(payload, "maxFinalTrainSamples", suiteNum(payload, "max-final-train", 20000))}`);
   await throwIfCancelled(job);
 

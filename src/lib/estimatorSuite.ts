@@ -383,6 +383,22 @@ function covariance(xs: number[], ys: number[]) {
   return mean(xs.map((x, i) => (x - mx) * (ys[i] - my)));
 }
 
+
+function effectiveSuiteTile(sample: LearnedEstimatorSample) {
+  if (String(sample.targetScope ?? "mixed") === "full-layer") {
+    return {
+      tileM: Math.max(1, Number(sample.m) || 1),
+      tileN: Math.max(1, Number(sample.n) || 1),
+      tileK: Math.max(1, Number(sample.k) || 1),
+    };
+  }
+  return {
+    tileM: Math.max(1, Number(sample.tileM) || 1),
+    tileN: Math.max(1, Number(sample.tileN) || 1),
+    tileK: Math.max(1, Number(sample.tileK) || 1),
+  };
+}
+
 const RESOURCE_TREND_FEATURES = [
   "logSramPressure",
   "logArithmeticIntensity",
@@ -398,9 +414,7 @@ function resourceTrendFeature(
   const m = Math.max(1, Number(sample.m) || 1);
   const n = Math.max(1, Number(sample.n) || 1);
   const k = Math.max(1, Number(sample.k) || 1);
-  const tileM = Math.max(1, Number(sample.tileM) || 1);
-  const tileN = Math.max(1, Number(sample.tileN) || 1);
-  const tileK = Math.max(1, Number(sample.tileK) || 1);
+  const { tileM, tileN, tileK } = effectiveSuiteTile(sample);
   const dtype = Math.max(1, Number(sample.dtypeBytes) || 1);
   const tileBytes = Math.max(
     1,
@@ -535,9 +549,7 @@ function tilingTrendFeature(
   const m = Math.max(1, Number(sample.m) || 1);
   const n = Math.max(1, Number(sample.n) || 1);
   const k = Math.max(1, Number(sample.k) || 1);
-  const tileM = Math.max(1, Number(sample.tileM) || 1);
-  const tileN = Math.max(1, Number(sample.tileN) || 1);
-  const tileK = Math.max(1, Number(sample.tileK) || 1);
+  const { tileM, tileN, tileK } = effectiveSuiteTile(sample);
   const wavesM = ceilDiv(m, tileM);
   const wavesN = ceilDiv(n, tileN);
   const wavesK = ceilDiv(k, tileK);
@@ -675,9 +687,7 @@ function localCalibrationFeature(
   const m = Math.max(1, Number(sample.m) || 1);
   const n = Math.max(1, Number(sample.n) || 1);
   const k = Math.max(1, Number(sample.k) || 1);
-  const tileM = Math.max(1, Number(sample.tileM) || 1);
-  const tileN = Math.max(1, Number(sample.tileN) || 1);
-  const tileK = Math.max(1, Number(sample.tileK) || 1);
+  const { tileM, tileN, tileK } = effectiveSuiteTile(sample);
   if (name === "workOps") return safeLog1p(m * n * k);
   if (name === "tileOps") return safeLog1p(tileM * tileN * tileK);
   if (name === "tileCoverage") return tileM / m + tileN / n + tileK / k;

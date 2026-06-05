@@ -9,6 +9,12 @@ import { collectEstimatorSamplesFromJobs, mergeCollectedSamplesIntoCsv } from "@
 import { createJob, createJobsBulk, listJobs, saveJob } from "@/server/jobStore";
 import { trainEstimatorSuite } from "@/lib/estimatorSuite";
 import { buildScopedEstimatorDatasets, buildScopedEstimatorPipeline } from "@/lib/estimatorSuitePipelines";
+import {
+  applyEstimatorSuiteTrainingPolicy,
+  estimatorSuiteTrainingPolicyJson,
+  estimatorSuiteTrainingPolicyMarkdown,
+  normalizeEstimatorSuiteTrainingTargetScope,
+} from "@/lib/estimatorSuiteTrainingPolicy";
 import { activateEstimatorSuiteModel, clearActiveEstimatorSuiteModel, listEstimatorSuiteModels, readActiveEstimatorSuiteModel } from "@/server/activeEstimatorSuite";
 import { formatZodError, parseSearchRequest } from "@/lib/validation";
 import { getJobRoot, getWorkspaceRoot, jobDir } from "@/server/workspace";
@@ -220,9 +226,19 @@ export async function POST(req: Request) {
     }
 
     const csvText = String(body.csvText ?? body.csv ?? "");
-    const samples = parseEstimatorSamplesCsv(csvText);
+    let samples = parseEstimatorSamplesCsv(csvText);
+    const targetScope = normalizeEstimatorSuiteTrainingTargetScope(
+      body.options?.targetScope ?? body.targetScope ?? "auto",
+    );
+    const trainingPolicy = applyEstimatorSuiteTrainingPolicy(samples, { targetScope });
+    samples = trainingPolicy.samples;
     if (samples.length < 40) {
-      return NextResponse.json({ ok: false, error: `Estimator suite requires at least 40 valid measured samples; parsed ${samples.length}.` }, { status: 400 });
+      return NextResponse.json({
+        ok: false,
+        error: `Estimator suite requires at least 40 valid measured samples after scope policy; parsed ${samples.length} (input ${trainingPolicy.inputSamples}, requestedScope=${trainingPolicy.requestedScope}, effectiveScope=${trainingPolicy.effectiveScope}).`,
+        trainingPolicy: JSON.parse(estimatorSuiteTrainingPolicyJson(trainingPolicy)),
+        reportMarkdown: estimatorSuiteTrainingPolicyMarkdown(trainingPolicy),
+      }, { status: 400 });
     }
     const model = trainEstimatorSuite(samples, {
       trees: num(body, "trees", 160),
@@ -248,8 +264,10 @@ export async function POST(req: Request) {
       "estimator-suite-validation.csv": bundle.validationCsv,
       "estimator-suite-predictions.csv": bundle.predictionsCsv,
       "estimator-suite-report.md": bundle.reportMarkdown,
+      "estimator-suite-training-policy.json": estimatorSuiteTrainingPolicyJson(trainingPolicy),
+      "estimator-suite-training-policy.md": estimatorSuiteTrainingPolicyMarkdown(trainingPolicy),
     });
-    return NextResponse.json({ ok: true, action, runId, dir, artifacts, model, reportMarkdown: bundle.reportMarkdown, validationCsv: bundle.validationCsv, predictionsCsv: bundle.predictionsCsv });
+    return NextResponse.json({ ok: true, action, runId, dir, artifacts, model, trainingPolicy: JSON.parse(estimatorSuiteTrainingPolicyJson(trainingPolicy)), reportMarkdown: bundle.reportMarkdown, validationCsv: bundle.validationCsv, predictionsCsv: bundle.predictionsCsv });
   } catch (error) {
     return NextResponse.json({ ok: false, error: formatZodError(error) }, { status: 400 });
   }

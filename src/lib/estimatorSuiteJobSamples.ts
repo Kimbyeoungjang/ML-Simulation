@@ -71,6 +71,20 @@ function accessBytes(accesses: unknown, dtypeBytes: number) {
   return Math.round(x * Math.max(1, dtypeBytes || 1));
 }
 
+
+function inferredMemoryBandwidthGBs(req: SearchRequest, dtypeBytes: number) {
+  const explicit = n(req.hardware?.memoryBandwidthGBs);
+  if (explicit > 0) return explicit;
+  const scale = req.scaleSim as any;
+  const scaleBandwidth = firstPositive([scale?.dramBandwidth, scale?.bandwidth]);
+  const freqMHz = n(req.hardware?.frequencyMHz);
+  if (scaleBandwidth > 0 && freqMHz > 0) {
+    // SCALE-Sim bandwidth is specified as words/elements per cycle. Convert to an
+    // approximate GB/s feature so memory-bound jobs do not train with BW=0.
+    return (scaleBandwidth * Math.max(1, dtypeBytes || 1) * freqMHz) / 1000;
+  }
+  return undefined;
+}
 function utilizationFraction(value: unknown) {
   const x = n(value);
   if (!(x > 0)) return undefined;
@@ -267,19 +281,34 @@ export async function collectEstimatorSamplesFromJobs(jobs: JobRecord[], jobRoot
         continue;
       }
 
-      let estimatorCycles = firstPositive([best?.rawCycles, best?.cycles, resultRow?.cycles, response?.summary?.analyticalTotalCycles, response?.summary?.totalCycles]);
-      let estimatorSramBytes = firstPositive([best?.sramBytes, resultRow?.sramBytes]);
+      let fullLayerEstimatorCycles = firstPositive([
+        best?.fullLayerRawCycles,
+        best?.predictionTarget === "full-layer" ? best?.rawCycles : undefined,
+        resultRow?.fullLayerRawCycles,
+        response?.summary?.analyticalTotalCycles,
+        response?.summary?.totalCycles,
+      ]);
+      let tilePolicyEstimatorCycles = firstPositive([
+        best?.tilePolicyRawCycles,
+        best?.predictionTarget === "tile-policy" ? best?.rawCycles : undefined,
+        best?.tilePolicyCycles,
+        resultRow?.tilePolicyRawCycles,
+        resultRow?.tilePolicyCycles,
+      ]);
+      let estimatorSramBytes = firstPositive([best?.fullLayerSramBytes, best?.sramBytes, resultRow?.sramBytes]);
       let estimatorUtilization = firstFinite([best?.utilization, resultRow?.utilization]);
-      if (!(estimatorCycles > 0) || !(estimatorSramBytes > 0) || estimatorUtilization === undefined) {
+      if (!(fullLayerEstimatorCycles > 0) || !(tilePolicyEstimatorCycles > 0) || !(estimatorSramBytes > 0) || estimatorUtilization === undefined) {
         try {
           const oneShapeReq: SearchRequest = { ...req, shapes: [shape], candidates: { tileM: [tileM], tileN: [tileN], tileK: [tileK] } };
           const fresh = estimateAll(oneShapeReq);
           const freshRow = fresh.results?.[0];
-          estimatorCycles = estimatorCycles > 0 ? estimatorCycles : fresh.summary.totalCycles;
+          fullLayerEstimatorCycles = fullLayerEstimatorCycles > 0 ? fullLayerEstimatorCycles : fresh.summary.totalCycles;
+          tilePolicyEstimatorCycles = tilePolicyEstimatorCycles > 0 ? tilePolicyEstimatorCycles : firstPositive([freshRow?.best?.rawCycles, freshRow?.best?.cycles, fresh.summary.totalTilePolicyCycles]);
           estimatorSramBytes = estimatorSramBytes > 0 ? estimatorSramBytes : firstPositive([freshRow?.best?.sramBytes, fresh.summary.maxSramBytes]);
           estimatorUtilization = estimatorUtilization ?? firstFinite([fresh.summary.meanUtilization, freshRow?.best?.utilization]);
         } catch {
-          estimatorCycles = estimatorCycles > 0 ? estimatorCycles : NaN;
+          fullLayerEstimatorCycles = fullLayerEstimatorCycles > 0 ? fullLayerEstimatorCycles : NaN;
+          tilePolicyEstimatorCycles = tilePolicyEstimatorCycles > 0 ? tilePolicyEstimatorCycles : NaN;
         }
       }
 
@@ -287,8 +316,8 @@ export async function collectEstimatorSamplesFromJobs(jobs: JobRecord[], jobRoot
       const dtypeBytes = shape.dtypeBytes ?? hw.bytesPerElement ?? 2;
       const traffic = memoryTrafficFor(hw, shape, {
         shapeId: shape.id, model: shape.model, opName: shape.opName,
-        tileM, tileN, tileK, cycles: Math.max(1, estimatorCycles), rawCycles: Math.max(1, estimatorCycles),
-        timeUs: Math.max(1, estimatorCycles) / Math.max(1, hw.frequencyMHz), utilization: estimatorUtilization ?? 0,
+        tileM, tileN, tileK, cycles: Math.max(1, fullLayerEstimatorCycles), rawCycles: Math.max(1, fullLayerEstimatorCycles),
+        timeUs: Math.max(1, fullLayerEstimatorCycles) / Math.max(1, hw.frequencyMHz), utilization: estimatorUtilization ?? 0,
         paddingRatio: 0, sramBytes: estimatorSramBytes > 0 ? estimatorSramBytes : 0,
         boundaryPenalty: 0, score: 0, isPareto: false, warnings: [], explanation: ""
       });
@@ -302,13 +331,18 @@ export async function collectEstimatorSamplesFromJobs(jobs: JobRecord[], jobRoot
         traffic.sramReadBytes + traffic.sramWriteBytes,
         estimatorSramBytes,
       ]);
-      if (!(estimatorCycles > 0) || !measuredTargets.length) {
+      if (!(fullLayerEstimatorCycles > 0) || !(tilePolicyEstimatorCycles > 0) || !measuredTargets.length) {
         skipped.push({ jobId: job.id, name: job.name, reason: `shape=${shape.id}: missing positive estimatorCycles or measuredCycles` });
         continue;
       }
       for (const measured of measuredTargets) {
         const matchedLayer = measured.layer;
         const measuredCycles = measured.measuredCycles;
+        const rowEstimatorCycles = measured.targetScope === "tile-policy" ? tilePolicyEstimatorCycles : fullLayerEstimatorCycles;
+        const rowTileM = measured.targetScope === "full-layer" ? shape.m : tileM;
+        const rowTileN = measured.targetScope === "full-layer" ? shape.n : tileN;
+        const rowTileK = measured.targetScope === "full-layer" ? shape.k : tileK;
+        const rowMemoryBandwidthGBs = inferredMemoryBandwidthGBs(req, dtypeBytes);
         const measuredSramBytes = accessBytes(firstPositive([matchedLayer?.sramAccessBytes, matchedLayer?.sramBytes, matchedLayer?.sramAccesses]), dtypeBytes);
         const measuredDramBytes = accessBytes(firstPositive([matchedLayer?.dramAccessBytes, matchedLayer?.dramBytes, matchedLayer?.dramAccesses]), dtypeBytes);
         const measuredUtilization = utilizationFraction(firstFinite([matchedLayer?.computeUtil, matchedLayer?.overallUtil, matchedLayer?.mappingEfficiency]));
@@ -321,17 +355,17 @@ export async function collectEstimatorSamplesFromJobs(jobs: JobRecord[], jobRoot
           arrayCols: hw.arrayCols,
           sramKB: hw.sramKB,
           frequencyMHz: hw.frequencyMHz,
-          memoryBandwidthGBs: hw.memoryBandwidthGBs,
+          memoryBandwidthGBs: rowMemoryBandwidthGBs,
           dispatchOverheadUs: hw.dispatchOverheadUs,
           dataflow: hw.dataflow,
           dtypeBytes,
           m: shape.m,
           n: shape.n,
           k: shape.k,
-          tileM,
-          tileN,
-          tileK,
-          estimatorCycles: Math.round(estimatorCycles),
+          tileM: rowTileM,
+          tileN: rowTileN,
+          tileK: rowTileK,
+          estimatorCycles: Math.round(rowEstimatorCycles),
           measuredCycles: Math.round(measuredCycles),
           estimatorSramBytes: estimatorSramTrafficBytes > 0 ? Math.round(estimatorSramTrafficBytes) : undefined,
           measuredSramBytes,

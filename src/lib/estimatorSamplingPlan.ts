@@ -263,6 +263,12 @@ export function buildEstimatorSamplingPlan(base: SearchRequest, options: Estimat
   return { rows, csv, totalRows: rows.length };
 }
 
+
+function finitePositive(value: unknown): number | undefined {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
 function envNumber(name: string, fallback: number): number {
   const parsed = Number(process.env[name]);
   return Number.isFinite(parsed) ? parsed : fallback;
@@ -301,6 +307,8 @@ export function requestFromPlanRow(base: SearchRequest, row: EstimatorSamplingPl
       sramKB: row.sramKB,
       dataflow: row.dataflow,
       frequencyMHz: row.frequencyMHz,
+      memoryBandwidthGBs: finitePositive(row.memoryBandwidthGBs) ?? base.hardware.memoryBandwidthGBs,
+      dispatchOverheadUs: finitePositive(row.dispatchOverheadUs) ?? base.hardware.dispatchOverheadUs,
       bytesPerElement: row.dtypeBytes,
     },
     shapes: [{ id: row.id, model: row.model, opName: row.opName, m: row.m, n: row.n, k: row.k, dtypeBytes: row.dtypeBytes, source: "manual" }],
