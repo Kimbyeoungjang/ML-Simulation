@@ -52,7 +52,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--plan", required=True, help="Path to tpu_plan.json produced by scripts/tiling-experiment.ts")
     parser.add_argument("--out", default=".tileforge/experiments/tpu-run", help="Output directory")
     parser.add_argument("--target", default="", help="Only run samples for this target id, e.g. tpu-v6e")
-    parser.add_argument("--strategy", default="", help="Only run one strategy: no_tiling, baseline_tiling, recommended_tiling")
+    parser.add_argument("--strategy", default="", help="Only run one strategy: no_tiling, baseline_tiling, recommended_tiling, oracle_tiling")
     parser.add_argument("--limit", type=int, default=0, help="Maximum number of plan rows to run")
     parser.add_argument("--warmup", type=int, default=2, help="Warmup iterations per sample")
     parser.add_argument("--iterations", type=int, default=10, help="Timed iterations per sample")
@@ -266,7 +266,8 @@ def aggregate_totals(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         g = dict(g)
         g["speedup_vs_no_tiling_mean"] = (base / g["total_mean_ms"]) if base and g["total_mean_ms"] else ""
         totals.append(g)
-    return sorted(totals, key=lambda x: (x["target"], ["no_tiling", "baseline_tiling", "recommended_tiling"].index(x["strategy"])))
+    order = {name: i for i, name in enumerate(["no_tiling", "baseline_tiling", "recommended_tiling", "oracle_tiling"])}
+    return sorted(totals, key=lambda x: (x["target"], order.get(str(x["strategy"]), 999)))
 
 
 def write_totals_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
@@ -289,8 +290,8 @@ def fmt_short(value: float) -> str:
 
 
 def write_svg(path: Path, totals: List[Dict[str, Any]]) -> None:
-    strategies = ["no_tiling", "baseline_tiling", "recommended_tiling"]
-    colors = {"no_tiling": "#7f8c8d", "baseline_tiling": "#3498db", "recommended_tiling": "#2ecc71"}
+    strategies = ["no_tiling", "baseline_tiling", "recommended_tiling", "oracle_tiling"]
+    colors = {"no_tiling": "#7f8c8d", "baseline_tiling": "#3498db", "recommended_tiling": "#2ecc71", "oracle_tiling": "#9b59b6"}
     targets = sorted({str(row["target"]) for row in totals})
     values = {(str(row["target"]), str(row["strategy"])): float(row["total_mean_ms"]) for row in totals}
     max_v = max(values.values(), default=1.0)
@@ -298,7 +299,7 @@ def write_svg(path: Path, totals: List[Dict[str, Any]]) -> None:
     left, right, top, bottom = 90, 40, 70, 120
     plot_w, plot_h = width - left - right, height - top - bottom
     group_w = plot_w / max(1, len(targets))
-    bar_w = min(70, group_w / 5)
+    bar_w = min(60, group_w / 6)
     parts = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">']
     parts.append('<rect width="100%" height="100%" fill="white"/>')
     parts.append(f'<text x="{width/2}" y="34" text-anchor="middle" font-family="Arial, sans-serif" font-size="24" font-weight="700">Real TPU tiling benchmark: total mean latency</text>')
@@ -315,7 +316,7 @@ def write_svg(path: Path, totals: List[Dict[str, Any]]) -> None:
         for si, strategy in enumerate(strategies):
             v = values.get((target, strategy), 0.0)
             h = plot_h * v / max_v if max_v else 0
-            x = cx - (bar_w * 1.5) + si * bar_w
+            x = cx - (bar_w * len(strategies) / 2) + si * bar_w
             y = top + plot_h - h
             parts.append(f'<rect x="{x}" y="{y}" width="{bar_w * 0.82}" height="{h}" rx="4" fill="{colors[strategy]}"/>')
             parts.append(f'<text x="{x + bar_w * 0.41}" y="{max(top + 12, y - 6)}" text-anchor="middle" font-family="Arial, sans-serif" font-size="11">{fmt_short(v)}</text>')

@@ -1,11 +1,11 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { estimateForShape, estimateTile } from "@/lib/estimator";
+import { estimateTile } from "@/lib/estimator";
 import { estimateAll } from "@/lib/estimator";
 import type { HardwareConfig, MatmulShape, Objective, ProjectFile, ScaleSimOverrides, SearchResponse, TileCandidateResult, TileCandidates } from "@/types/domain";
 import { commandLabel, csvRows, getStringOpt, hasFlag, numberFromRow, parseArgs, runScaleSimUntilReport, scaleSimArgs, scaleSimCommandCandidates, writeArtifacts } from "./external-utils";
 
-const STRATEGIES = ["no_tiling", "baseline_tiling", "recommended_tiling"] as const;
+const STRATEGIES = ["no_tiling", "baseline_tiling", "recommended_tiling", "oracle_tiling"] as const;
 type StrategyName = typeof STRATEGIES[number];
 
 interface TargetPreset {
@@ -17,7 +17,7 @@ interface TargetPreset {
 }
 
 interface LoadedInput {
-  sourceKind: "search-response" | "project" | "shape-list" | "csv" | "default";
+  sourceKind: "search-response" | "job-result" | "project" | "project-artifact" | "shape-list" | "csv" | "default";
   sourcePath?: string;
   shapes: MatmulShape[];
   candidates: TileCandidates;
@@ -40,6 +40,10 @@ interface PlanEntry {
   estimatedSramBytes: number;
   unitCount: number;
   totalRepeats: number;
+  sramFeasible: boolean;
+  sramFitRatio: number;
+  candidateCount?: number;
+  oracleCandidates?: TileSpec[];
 }
 
 interface ScaleSimResultRow extends PlanEntry {
@@ -139,6 +143,127 @@ function clampTile(shape: MatmulShape, tile: TileSpec): TileSpec {
     tileN: Math.max(1, Math.min(Math.floor(tile.tileN), shape.n)),
     tileK: Math.max(1, Math.min(Math.floor(tile.tileK), shape.k)),
   };
+}
+
+function tileKey(tile: TileSpec): string {
+  return `${tile.tileM}x${tile.tileN}x${tile.tileK}`;
+}
+
+function tileSramBytes(shape: MatmulShape, hw: HardwareConfig, tile: TileSpec): number {
+  const bytes = shape.dtypeBytes || hw.bytesPerElement || 2;
+  return (tile.tileM * tile.tileK + tile.tileK * tile.tileN + tile.tileM * tile.tileN) * bytes;
+}
+
+function sramFitRatio(shape: MatmulShape, hw: HardwareConfig, tile: TileSpec): number {
+  return tileSramBytes(shape, hw, tile) / Math.max(1, hw.sramKB * 1024);
+}
+
+function pushUnique(values: number[], value: number, max: number): void {
+  const v = Math.max(1, Math.min(Math.floor(value), max));
+  if (!values.includes(v)) values.push(v);
+}
+
+function divisorsAround(value: number, center: number, maxCount = 6): number[] {
+  const out: number[] = [];
+  for (let d = 1; d * d <= value; d++) {
+    if (value % d !== 0) continue;
+    out.push(d);
+    if (d !== value / d) out.push(value / d);
+  }
+  return out
+    .filter(v => v > 0)
+    .sort((a, b) => Math.abs(a - center) - Math.abs(b - center) || b - a)
+    .slice(0, maxCount);
+}
+
+function targetAwareCandidateValues(max: number, arrayDim: number): number[] {
+  const values: number[] = [];
+  for (const v of [16, 32, 64, 96, 128, 192, 256, 384, 512, 768, 1024, 1536, 2048]) pushUnique(values, v, max);
+  for (const mul of [0.25, 0.5, 1, 1.5, 2, 3, 4, 6, 8]) pushUnique(values, Math.round(arrayDim * mul), max);
+  pushUnique(values, max, max);
+  for (const d of divisorsAround(max, arrayDim)) pushUnique(values, d, max);
+  return values.sort((a, b) => a - b);
+}
+
+function makeTargetAwareCandidates(shape: MatmulShape, target: TargetPreset, input: LoadedInput): TileSpec[] {
+  const mValues = targetAwareCandidateValues(shape.m, target.hardware.arrayRows);
+  const nValues = targetAwareCandidateValues(shape.n, target.hardware.arrayCols);
+  const kValues = targetAwareCandidateValues(shape.k, target.hardware.arrayRows);
+
+  // Respect user/job-provided candidate grids as additional hints, but do not limit the target-aware search to them.
+  for (const v of input.candidates.tileM ?? []) pushUnique(mValues, v, shape.m);
+  for (const v of input.candidates.tileN ?? []) pushUnique(nValues, v, shape.n);
+  for (const v of input.candidates.tileK ?? []) pushUnique(kValues, v, shape.k);
+
+  const candidates = new Map<string, TileSpec>();
+  const add = (tile: TileSpec) => {
+    const clamped = clampTile(shape, tile);
+    candidates.set(tileKey(clamped), clamped);
+  };
+
+  // Full-shape candidate: important for small/skinny GEMMs where splitting is pure overhead.
+  add({ tileM: shape.m, tileN: shape.n, tileK: shape.k });
+
+  // Array-aligned and shape-clamped candidates.
+  for (const m of mValues) for (const n of nValues) for (const k of kValues) {
+    add({ tileM: m, tileN: n, tileK: k });
+  }
+
+  // Skinny-GEMM guards: do not force small N/K dimensions up to the full array width.
+  add({ tileM: target.hardware.arrayRows, tileN: shape.n, tileK: target.hardware.arrayRows });
+  add({ tileM: target.hardware.arrayRows * 2, tileN: shape.n, tileK: target.hardware.arrayRows });
+  add({ tileM: target.hardware.arrayRows * 4, tileN: shape.n, tileK: target.hardware.arrayRows });
+  add({ tileM: shape.m, tileN: shape.n, tileK: target.hardware.arrayRows });
+  add({ tileM: target.hardware.arrayRows, tileN: Math.min(shape.n, target.hardware.arrayCols), tileK: shape.k });
+  add({ tileM: Math.min(shape.m, target.hardware.arrayRows), tileN: Math.min(shape.n, target.hardware.arrayCols), tileK: shape.k });
+
+  const sramLimit = target.hardware.sramKB * 1024;
+  return Array.from(candidates.values())
+    .filter(tile => tileSramBytes(shape, target.hardware, tile) <= sramLimit || tile.tileM === shape.m && tile.tileN === shape.n && tile.tileK === shape.k)
+    .sort((a, b) => {
+      const af = tileSramBytes(shape, target.hardware, a) <= sramLimit ? 0 : 1;
+      const bf = tileSramBytes(shape, target.hardware, b) <= sramLimit ? 0 : 1;
+      return af - bf
+        || Math.abs(a.tileM - target.hardware.arrayRows) - Math.abs(b.tileM - target.hardware.arrayRows)
+        || Math.abs(a.tileN - target.hardware.arrayCols) - Math.abs(b.tileN - target.hardware.arrayCols)
+        || Math.abs(a.tileK - target.hardware.arrayRows) - Math.abs(b.tileK - target.hardware.arrayRows)
+        || (b.tileM * b.tileN * b.tileK) - (a.tileM * a.tileN * a.tileK);
+    });
+}
+
+function makeCandidateGrid(candidates: TileSpec[]): TileCandidates {
+  const tileM = Array.from(new Set(candidates.map(c => c.tileM))).sort((a, b) => a - b);
+  const tileN = Array.from(new Set(candidates.map(c => c.tileN))).sort((a, b) => a - b);
+  const tileK = Array.from(new Set(candidates.map(c => c.tileK))).sort((a, b) => a - b);
+  return { tileM, tileN, tileK };
+}
+
+function chooseShapeAwareBaselineTile(target: TargetPreset, shape: MatmulShape): TileSpec {
+  const ar = target.hardware.arrayRows;
+  const ac = target.hardware.arrayCols;
+  const smallN = shape.n <= ac;
+  const smallK = shape.k <= ar;
+  const tileM = shape.m <= ar ? shape.m : Math.min(shape.m, ar * (smallN ? 4 : 1));
+  const tileN = smallN ? shape.n : Math.min(shape.n, ac);
+  const tileK = smallK ? shape.k : Math.min(shape.k, ar);
+  return clampTile(shape, { tileM, tileN, tileK });
+}
+
+function rankCandidateByEstimator(target: TargetPreset, shape: MatmulShape, candidates: TileSpec[], objective: Objective, limit = 1): TileSpec[] {
+  const sramLimit = target.hardware.sramKB * 1024;
+  const scored = candidates
+    .map(tile => ({ tile, est: estimateStrategy(target, shape, tile, objective) }))
+    .sort((a, b) => {
+      const af = a.est.sramBytes <= sramLimit ? 0 : 1;
+      const bf = b.est.sramBytes <= sramLimit ? 0 : 1;
+      return af - bf
+        || a.est.score - b.est.score
+        || a.est.cycles - b.est.cycles
+        || b.est.utilization - a.est.utilization
+        || a.est.sramBytes - b.est.sramBytes
+        || (b.tile.tileM * b.tile.tileN * b.tile.tileK) - (a.tile.tileM * a.tile.tileN * a.tile.tileK);
+    });
+  return scored.slice(0, Math.max(1, limit)).map(s => s.tile);
 }
 
 function splitIntoTileUnits(shape: MatmulShape, tile: TileSpec): TileUnit[] {
@@ -256,16 +381,20 @@ function chooseRecommendedTile(input: LoadedInput, target: TargetPreset, shape: 
     const existing = candidateFromInput(input, shape);
     if (existing) return clampTile(shape, existing);
   }
-  const scaleSim = targetScaleSimOverrides(target);
-  const result = estimateForShape(target.hardware, shape, input.candidates, objective, 32, scaleSim);
-  return clampTile(shape, { tileM: result.best.tileM, tileN: result.best.tileN, tileK: result.best.tileK });
+
+  const candidates = makeTargetAwareCandidates(shape, target, input);
+  return rankCandidateByEstimator(target, shape, candidates, objective, 1)[0] ?? chooseShapeAwareBaselineTile(target, shape);
 }
 
 function chooseTile(input: LoadedInput, target: TargetPreset, shape: MatmulShape, strategy: StrategyName, objective: Objective, recommendedSource: "input" | "per-target", baselineOverride?: TileSpec): TileSpec {
   if (strategy === "no_tiling") return { tileM: shape.m, tileN: shape.n, tileK: shape.k };
   if (strategy === "baseline_tiling") {
-    const base = baselineOverride ?? { tileM: target.hardware.arrayRows, tileN: target.hardware.arrayCols, tileK: target.hardware.arrayRows };
+    const base = baselineOverride ?? chooseShapeAwareBaselineTile(target, shape);
     return clampTile(shape, base);
+  }
+  if (strategy === "oracle_tiling") {
+    const candidates = makeTargetAwareCandidates(shape, target, input);
+    return rankCandidateByEstimator(target, shape, candidates, objective, 1)[0] ?? chooseShapeAwareBaselineTile(target, shape);
   }
   return chooseRecommendedTile(input, target, shape, objective, recommendedSource);
 }
@@ -274,15 +403,24 @@ function estimateStrategy(target: TargetPreset, shape: MatmulShape, tile: TileSp
   return estimateTile(target.hardware, shape, tile.tileM, tile.tileN, tile.tileK, objective, targetScaleSimOverrides(target));
 }
 
-function makePlan(input: LoadedInput, targets: TargetPreset[], objective: Objective, recommendedSource: "input" | "per-target", baselineOverride?: TileSpec): PlanEntry[] {
+interface MakePlanOptions {
+  includeOracle: boolean;
+  oracleTopK: number;
+}
+
+function makePlan(input: LoadedInput, targets: TargetPreset[], objective: Objective, recommendedSource: "input" | "per-target", baselineOverride: TileSpec | undefined, options: MakePlanOptions): PlanEntry[] {
   const entries: PlanEntry[] = [];
   for (const target of targets) {
     const scaleSim = targetScaleSimOverrides(target);
     for (const shape of input.shapes) {
       for (const strategy of STRATEGIES) {
+        if (strategy === "oracle_tiling" && !options.includeOracle) continue;
         const tile = chooseTile(input, target, shape, strategy, objective, recommendedSource, baselineOverride);
         const units = splitIntoTileUnits(shape, tile);
         const est = estimateStrategy(target, shape, tile, objective);
+        const oracleCandidates = strategy === "oracle_tiling"
+          ? rankCandidateByEstimator(target, shape, makeTargetAwareCandidates(shape, target, input), objective, options.oracleTopK)
+          : undefined;
         entries.push({
           targetId: target.id,
           targetLabel: target.label,
@@ -296,6 +434,10 @@ function makePlan(input: LoadedInput, targets: TargetPreset[], objective: Object
           estimatedSramBytes: est.sramBytes,
           unitCount: units.length,
           totalRepeats: units.reduce((sum, u) => sum + u.repeats, 0),
+          sramFeasible: est.sramBytes <= target.hardware.sramKB * 1024,
+          sramFitRatio: est.sramBytes / Math.max(1, target.hardware.sramKB * 1024),
+          candidateCount: oracleCandidates?.length,
+          oracleCandidates,
         });
       }
     }
@@ -358,10 +500,11 @@ function summarizeComputeCsv(text: string): { cycles: number; overallUtil?: numb
   };
 }
 
-async function runScaleSimForEntry(entry: PlanEntry, target: TargetPreset, outDir: string, commands: string[], timeoutMs: number): Promise<ScaleSimResultRow> {
+async function runScaleSimForTile(entry: PlanEntry, target: TargetPreset, outDir: string, commands: string[], timeoutMs: number, tile: TileSpec, variantLabel?: string): Promise<Pick<ScaleSimResultRow, "scaleSimCycles" | "scaleSimOverallUtil" | "scaleSimMappingEfficiency" | "elapsedMs" | "artifactDir" | "computeReports">> {
   const shape = entry.shape;
-  const units = splitIntoTileUnits(shape, entry.tile);
-  const artifactRoot = path.join(outDir, "scalesim-artifacts", entry.targetId, sanitizeId(shape.id), entry.strategy);
+  const units = splitIntoTileUnits(shape, tile);
+  const variant = variantLabel ? sanitizeId(variantLabel) : tileKey(tile);
+  const artifactRoot = path.join(outDir, "scalesim-artifacts", entry.targetId, sanitizeId(shape.id), entry.strategy, variant);
   const computeReports: string[] = [];
   const startedAt = Date.now();
   let totalCycles = 0;
@@ -404,14 +547,52 @@ async function runScaleSimForEntry(entry: PlanEntry, target: TargetPreset, outDi
   }
 
   return {
-    ...entry,
-    status: "ok",
     scaleSimCycles: Math.round(totalCycles),
     scaleSimOverallUtil: utilWeight > 0 ? utilWeighted / utilWeight : undefined,
     scaleSimMappingEfficiency: mappingWeight > 0 ? mappingWeighted / mappingWeight : undefined,
     elapsedMs: Date.now() - startedAt,
     artifactDir: artifactRoot,
     computeReports,
+  };
+}
+
+async function runScaleSimForEntry(entry: PlanEntry, target: TargetPreset, outDir: string, commands: string[], timeoutMs: number): Promise<ScaleSimResultRow> {
+  if (entry.strategy !== "oracle_tiling") {
+    const measured = await runScaleSimForTile(entry, target, outDir, commands, timeoutMs, entry.tile);
+    return {
+      ...entry,
+      status: "ok",
+      ...measured,
+    };
+  }
+
+  const candidates = entry.oracleCandidates?.length ? entry.oracleCandidates : [entry.tile];
+  let best: { tile: TileSpec; measured: Awaited<ReturnType<typeof runScaleSimForTile>>; est: TileCandidateResult } | undefined;
+  let tried = 0;
+  for (const candidate of candidates) {
+    tried += 1;
+    const variant = `candidate_${String(tried).padStart(2, "0")}_${tileKey(candidate)}`;
+    const measured = await runScaleSimForTile(entry, target, outDir, commands, timeoutMs, candidate, variant);
+    const est = estimateStrategy(target, entry.shape, candidate, "cycles");
+    if (!best || (measured.scaleSimCycles ?? Number.POSITIVE_INFINITY) < (best.measured.scaleSimCycles ?? Number.POSITIVE_INFINITY)) {
+      best = { tile: candidate, measured, est };
+    }
+  }
+  if (!best) throw new Error("oracle 후보가 비어 있습니다.");
+  const units = splitIntoTileUnits(entry.shape, best.tile);
+  return {
+    ...entry,
+    tile: best.tile,
+    estimatedCycles: best.est.cycles,
+    estimatedUtilization: best.est.utilization,
+    estimatedSramBytes: best.est.sramBytes,
+    unitCount: units.length,
+    totalRepeats: units.reduce((sum, u) => sum + u.repeats, 0),
+    sramFeasible: best.est.sramBytes <= target.hardware.sramKB * 1024,
+    sramFitRatio: best.est.sramBytes / Math.max(1, target.hardware.sramKB * 1024),
+    candidateCount: candidates.length,
+    status: "ok",
+    ...best.measured,
   };
 }
 
@@ -425,8 +606,8 @@ function resultRowsToCsv(rows: ScaleSimResultRow[]): string {
   const header = [
     "target", "target_label", "strategy", "shape_id", "model", "op_name", "M", "N", "K",
     "tileM", "tileN", "tileK", "unit_count", "total_repeats", "estimated_cycles", "estimated_utilization",
-    "estimated_sram_bytes", "scalesim_cycles", "speedup_vs_no_tiling", "scalesim_overall_util", "scalesim_mapping_efficiency",
-    "status", "elapsed_ms", "artifact_dir", "error",
+    "estimated_sram_bytes", "sram_feasible", "sram_fit_ratio", "candidate_count", "scalesim_cycles", "speedup_vs_no_tiling",
+    "scalesim_overall_util", "scalesim_mapping_efficiency", "status", "elapsed_ms", "artifact_dir", "error",
   ];
   const noTilingByTargetShape = new Map<string, number>();
   for (const row of rows) {
@@ -439,8 +620,8 @@ function resultRowsToCsv(rows: ScaleSimResultRow[]): string {
     lines.push([
       row.targetId, row.targetLabel, row.strategy, row.shape.id, row.shape.model, row.shape.opName, row.shape.m, row.shape.n, row.shape.k,
       row.tile.tileM, row.tile.tileN, row.tile.tileK, row.unitCount, row.totalRepeats, row.estimatedCycles, row.estimatedUtilization,
-      row.estimatedSramBytes, row.scaleSimCycles, speedup, row.scaleSimOverallUtil, row.scaleSimMappingEfficiency,
-      row.status, row.elapsedMs, row.artifactDir, row.error,
+      row.estimatedSramBytes, row.sramFeasible, row.sramFitRatio, row.candidateCount, row.scaleSimCycles, speedup,
+      row.scaleSimOverallUtil, row.scaleSimMappingEfficiency, row.status, row.elapsedMs, row.artifactDir, row.error,
     ].map(csvEscape).join(","));
   }
   return lines.join("\n") + "\n";
@@ -511,11 +692,12 @@ function simpleGroupedBarSvg(rows: ScaleSimResultRow[]): string {
   const plotW = width - margin.left - margin.right;
   const plotH = height - margin.top - margin.bottom;
   const groupW = plotW / Math.max(1, targets.length);
-  const barW = Math.min(70, groupW / 5);
+  const barW = Math.min(60, groupW / 6);
   const colors: Record<StrategyName, string> = {
     no_tiling: "#7f8c8d",
     baseline_tiling: "#3498db",
     recommended_tiling: "#2ecc71",
+    oracle_tiling: "#9b59b6",
   };
   const parts: string[] = [];
   parts.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`);
@@ -537,7 +719,7 @@ function simpleGroupedBarSvg(rows: ScaleSimResultRow[]): string {
       const strategy = STRATEGIES[si];
       const value = totals.get(`${target}:${strategy}`) ?? 0;
       const h = plotH * value / maxValue;
-      const x = cx - (barW * 1.5) + si * barW;
+      const x = cx - (barW * STRATEGIES.length / 2) + si * barW;
       const y = margin.top + plotH - h;
       parts.push(`<rect x="${x}" y="${y}" width="${barW * 0.82}" height="${h}" rx="4" fill="${colors[strategy]}"/>`);
       parts.push(`<text x="${x + barW * 0.41}" y="${Math.max(margin.top + 12, y - 6)}" text-anchor="middle" font-family="Arial, sans-serif" font-size="11">${formatShort(value)}</text>`);
@@ -581,6 +763,8 @@ async function main(): Promise<void> {
   const recommendedSource = getStringOpt(opts, "recommended-source", "per-target") as "input" | "per-target";
   if (!["input", "per-target"].includes(recommendedSource)) throw new Error("--recommended-source 는 input 또는 per-target 이어야 합니다.");
   const baselineOverride = parseTileSpec(typeof opts["baseline-tile"] === "string" ? opts["baseline-tile"] : undefined);
+  const includeOracle = !hasFlag(opts, "no-oracle");
+  const oracleTopK = Math.max(1, Number(getStringOpt(opts, "oracle-top-k", "8")));
   const timeoutMs = Number(getStringOpt(opts, "timeout-ms", "300000"));
   const limit = Number(getStringOpt(opts, "limit", "0"));
   const dryRun = hasFlag(opts, "dry-run");
@@ -591,12 +775,15 @@ async function main(): Promise<void> {
   const limitedInput: LoadedInput = limit > 0 ? { ...input, shapes: input.shapes.slice(0, limit) } : input;
 
   await mkdir(outDir, { recursive: true });
-  const plan = makePlan(limitedInput, targets, objective, recommendedSource, baselineOverride);
+  const plan = makePlan(limitedInput, targets, objective, recommendedSource, baselineOverride, { includeOracle, oracleTopK });
   await writeFile(path.join(outDir, "tpu_plan.json"), planToTpuJson(plan, limitedInput), "utf8");
   await writeFile(path.join(outDir, "experiment_plan.json"), JSON.stringify({
     createdAt: new Date().toISOString(),
     source: { kind: limitedInput.sourceKind, path: limitedInput.sourcePath },
     commandCandidates: commands.map(commandLabel),
+    includeOracle,
+    oracleTopK,
+    strategyOrder: STRATEGIES,
     targets: targets.map(t => ({ id: t.id, label: t.label, hardware: t.hardware, scaleSim: targetScaleSimOverrides(t), note: t.note })),
     entries: plan,
   }, null, 2), "utf8");
