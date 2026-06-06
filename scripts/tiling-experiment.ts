@@ -213,19 +213,28 @@ async function loadInput(inputPath?: string): Promise<LoadedInput> {
   }
 
   const obj = JSON.parse(text);
-  if (obj?.request?.shapes && obj?.results) {
-    const response = obj as SearchResponse;
+
+  // TileForge job artifacts are schema-stamped as:
+  // { schemaVersion, payload: { response: SearchResponse } }
+  // Older/demo exports may store the SearchResponse directly.
+  const responseCandidate = obj?.payload?.response ?? obj?.response ?? obj;
+  if (responseCandidate?.request?.shapes && responseCandidate?.results) {
+    const response = responseCandidate as SearchResponse;
     return {
-      sourceKind: "search-response",
+      sourceKind: obj === responseCandidate ? "search-response" : "job-result",
       sourcePath: absolute,
       shapes: response.request.shapes,
       candidates: response.request.candidates ?? defaultCandidates,
       inputResponse: response,
     };
   }
-  if (obj?.hardware && obj?.shapes && obj?.candidates) {
-    const project = obj as ProjectFile;
-    return { sourceKind: "project", sourcePath: absolute, shapes: project.shapes, candidates: project.candidates };
+
+  // Project artifacts can also be schema-stamped as { payload: { project: ... } }
+  // or nested in a generic payload object.
+  const projectCandidate = obj?.payload?.project ?? obj?.project ?? obj?.payload ?? obj;
+  if (projectCandidate?.hardware && projectCandidate?.shapes && projectCandidate?.candidates) {
+    const project = projectCandidate as ProjectFile;
+    return { sourceKind: obj === projectCandidate ? "project" : "project-artifact", sourcePath: absolute, shapes: project.shapes, candidates: project.candidates };
   }
   if (Array.isArray(obj)) {
     return { sourceKind: "shape-list", sourcePath: absolute, shapes: obj as MatmulShape[], candidates: defaultCandidates };
