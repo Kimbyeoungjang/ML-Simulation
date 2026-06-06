@@ -68,7 +68,9 @@
     "estimator:suite": "tsx -r tsconfig-paths/register scripts/estimator-lab.ts suite",
     "clean:generated": "tsx -r tsconfig-paths/register scripts/clean-generated.ts",
     "check:clean": "tsx -r tsconfig-paths/register scripts/check-clean-tree.ts",
-    "jobs:recover": "tsx -r tsconfig-paths/register scripts/recover-running-jobs.ts"
+    "jobs:recover": "tsx -r tsconfig-paths/register scripts/recover-running-jobs.ts",
+    "experiment:scalesim": "npm run setup:env && tsx -r tsconfig-paths/register scripts/tiling-experiment.ts",
+    "experiment:tpu": "python scripts/tpu_matmul_bench.py"
   },
   "dependencies": {
     "@next/env": "^15.1.0",
